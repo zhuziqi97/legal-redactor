@@ -42,6 +42,10 @@ python apps/desktop/scripts/export-otter.py models/otter-checkpoint models/otter
 
 将生成的文件和检查点的 `config.json`、`tokenizer.json`、`README.md` 一起用于打包。[组装脚本](apps/desktop/scripts/stage-portable.py) 接收目标平台、Electron 分发文件目录、输出目录和模型目录。输入目录使用 `electron-linux.zip` 或 `electron-windows.zip`，Windows 另需对应的应用本地 C++ 运行库文件。运行脚本的 `--help` 可查看参数。
 
+## 测试
+
+在 `apps/desktop` 运行 `npm test`，验证映射编辑、冲突处理、撤销和推理任务调度。
+
 ## 许可证
 
 本项目采用 [Apache-2.0](LICENSE)。第三方声明见 [NOTICE](NOTICE)。所用拼音数据保留 [MIT 许可证](apps/desktop/engine/pinyin-LICENSE.txt)，模型及其他依赖适用各自的许可。

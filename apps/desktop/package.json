@@ -10,7 +10,8 @@
   "scripts": {
     "typecheck": "vue-tsc --noEmit",
     "build": "npm run typecheck && vite build --base=./ && tsc -p tsconfig.engine.json && node scripts/build-electron.mjs",
-    "start": "node scripts/start.mjs"
+    "start": "node scripts/start.mjs",
+    "test": "npm run build && node tests/inference-routing.cjs && node --test tests/mapping-plan.mjs"
   },
   "dependencies": {
     "onnxruntime-node": "1.31.1",
