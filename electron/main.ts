@@ -82,13 +82,16 @@ function infer(op: 'providers' | 'prepare' | 'probe' | 'predict', ep: string, in
   });
 }
 
+type TextImport = { path: string; title: string; bytes: Uint8Array; readMs: number };
+
 type Session = {
   state: Workspace;
   worker?: ReturnType<typeof utilityProcess.fork>;
   pending?: Pending;
   nextId: number;
   allowClose?: boolean;
-  importInput?: { path: string; title: string; bytes: Uint8Array; readMs: number };
+  importInput?: TextImport;
+  restoreInput?: TextImport;
   queue?: Promise<unknown>;
   analysis?: Session;
   scan?: { materialId: string; cancelled: boolean };
@@ -381,13 +384,14 @@ function diagnose(record: Record<string, unknown>) {
   void appendFile(join(app.getPath('userData'), 'diagnostics.jsonl'), `${JSON.stringify(record)}\n`, 'utf8').catch(() => {});
 }
 
-function decodeImport(session: Session, encoding?: 'gb18030') {
-  const source = session.importInput;
+function decodeImport(session: Session, restoring: boolean, encoding?: 'gb18030') {
+  const slot = restoring ? 'restoreInput' : 'importInput';
+  const source = session[slot];
   if (!source) throw new Error('请先打开 TXT 文件。');
   const started = performance.now();
   let result: ReturnType<typeof decodeInput>;
   try {
-    result = decodeInput(source.bytes, encoding);
+    result = decodeInput(source.bytes, encoding, restoring);
   } catch (error) {
     diagnose({stage: 'import', status: 'decode-error', bytes: source.bytes.length, readMs: source.readMs,
       decodeMs: performance.now() - started});
@@ -399,11 +403,11 @@ function decodeImport(session: Session, encoding?: 'gb18030') {
   }
   diagnose({ stage: 'import', bytes: source.bytes.length, readMs: source.readMs, decodeMs: performance.now() - started,
     encoding: result.encoding, characters: Array.from(result.text).length });
-  session.importInput = undefined;
+  session[slot] = undefined;
   return { path: source.path, title: source.title, ...result };
 }
 
-ipcMain.handle('redaction:open', async (event) => {
+ipcMain.handle('redaction:open', async (event, mode = 'redact') => {
   const owner = BrowserWindow.fromWebContents(event.sender);
   const choice = await dialog.showOpenDialog(owner, {
     title: '打开 TXT', properties: ['openFile'], filters: [{ name: '纯文本', extensions: ['txt'] }],
@@ -411,7 +415,9 @@ ipcMain.handle('redaction:open', async (event) => {
   if (choice.canceled) return null;
   const [path] = choice.filePaths;
   const session = windowSession(event.sender);
-  session.importInput = undefined;
+  const restoring = mode === 'restore';
+  const slot = restoring ? 'restoreInput' : 'importInput';
+  session[slot] = undefined;
   const started = performance.now();
   let bytes, sourcePath;
   try {
@@ -420,10 +426,10 @@ ipcMain.handle('redaction:open', async (event) => {
     diagnose({stage: 'import', status: 'read-error', readMs: performance.now() - started});
     throw new Error('读取 TXT 文件失败。请检查文件仍可访问，再打开一次。');
   }
-  session.importInput = { path: sourcePath, title: basename(path, extname(path)), bytes, readMs: performance.now() - started };
-  return decodeImport(session);
+  session[slot] = { path: sourcePath, title: basename(path, extname(path)), bytes, readMs: performance.now() - started };
+  return decodeImport(session, restoring);
 });
-ipcMain.handle('redaction:decode-gb18030', (event) => decodeImport(windowSession(event.sender), 'gb18030'));
+ipcMain.handle('redaction:decode-gb18030', (event, mode = 'redact') => decodeImport(windowSession(event.sender), mode === 'restore', 'gb18030'));
 ipcMain.handle('redaction:inference-settings', async () => ({
   enabled: nativeEnabled, provider, providers: nativeEnabled ? await infer('providers', 'auto') : [],
 }));
@@ -482,10 +488,11 @@ ipcMain.handle('redaction:close', (event, discard: boolean) => {
   BrowserWindow.fromWebContents(event.sender)?.close();
 });
 ipcMain.handle('redaction:copy', (_event, output: string) => clipboard.writeText(output));
-ipcMain.handle('redaction:save', async (event, { output, sourcePaths, filename }) => {
+ipcMain.handle('redaction:save', async (event, { output, sourcePaths, filename, mode }) => {
   const owner = BrowserWindow.fromWebContents(event.sender);
+  const restoring = mode === 'restore';
   const choice = await dialog.showSaveDialog(owner, {
-    title: '另存脱敏正文', defaultPath: join(app.getPath('documents'), filename),
+    title: restoring ? '另存恢复文本' : '另存脱敏正文', defaultPath: join(app.getPath('documents'), filename),
     filters: [{ name: '纯文本', extensions: ['txt'] }],
   });
   if (choice.canceled || !choice.filePath) return null;
@@ -494,9 +501,9 @@ ipcMain.handle('redaction:save', async (event, { output, sourcePaths, filename }
     if (error.code === 'ENOENT') return resolve(path);
     throw error;
   });
-  const comparable = (name: string) => process.platform === 'win32' ? name.toLowerCase() : name;
-  if (sourcePaths.some((source: string) => comparable(target) === comparable(source))) {
-    throw new Error('此路径是案内材料的原件，请选择另一处保存。');
+  const projectSources = restoring ? windowSession(event.sender).state.sourcePaths ?? [] : [];
+  if ([...sourcePaths, ...projectSources].some((source: string) => comparablePath(target) === comparablePath(source))) {
+    throw new Error(restoring ? '此路径是已导入的原件，请选择另一处保存。' : '此路径是案内材料的原件，请选择另一处保存。');
   }
   const staging = await mkdtemp(join(dirname(path), '.redaction-'));
   try {

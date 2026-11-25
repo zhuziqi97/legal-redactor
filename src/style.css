@@ -211,6 +211,7 @@ dialog::backdrop { background: #17284a40; }
 }
 
 /* Workspace shell */
+.workspace-modes { flex: none; padding: 6px 14px; border-bottom: 1px solid var(--line); background: var(--paper); }
 .desktop-body { display: flex; flex: 1; min-height: 0; }
 .materials {
   width: clamp(144px, 15.5vw, 222px); flex: none; min-height: 0;

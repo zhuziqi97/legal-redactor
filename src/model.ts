@@ -57,8 +57,8 @@ export type OutputResult = { output: string; sourcePaths: string[]; filename: st
 declare global {
   interface Window {
     redaction: {
-      open: () => Promise<ImportSelection | null>;
-      decodeImport: () => Promise<SourceFile>;
+      open: (mode?: 'restore') => Promise<ImportSelection | null>;
+      decodeImport: (mode?: 'restore') => Promise<SourceFile>;
       inferenceSettings: () => Promise<InferenceSettings>;
       setProvider: (provider: string) => Promise<string>;
       onOpenSettings: (callback: () => void) => void;
@@ -71,7 +71,7 @@ declare global {
       recordRender: (milliseconds: number) => void;
       closeWorkspace: (discard: boolean) => Promise<void>;
       copy: (text: string) => Promise<void>;
-      save: (output: string, sourcePaths: string[], filename: string) => Promise<string | null>;
+      save: (output: string, sourcePaths: string[], filename: string, mode?: 'restore') => Promise<string | null>;
       onProgress: (callback: (message: string) => void) => void;
       onConfirmClose: (callback: () => void) => void;
     };

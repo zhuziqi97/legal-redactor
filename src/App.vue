@@ -4,6 +4,7 @@ import AdjustmentPanel from './components/AdjustmentPanel.vue';
 import DocumentReader from './components/DocumentReader.vue';
 import MaterialSidebar from './components/MaterialSidebar.vue';
 import ReviewPanel from './components/ReviewPanel.vue';
+import RestoreWorkspace from './components/RestoreWorkspace.vue';
 import { positionKey, prettyError, samePersonKind, type Adjustment, type AdjustmentPreviewResult, type Evidence,
   type Group, type InferenceSettings, type Issue, type Occurrence, type OutputResult, type RangeSuggestion, type SourceChange, type Span, type Term,
   type SourceFile, type Workspace, type WorkspaceResult } from './model';
@@ -11,6 +12,7 @@ import { indexText } from './positions';
 
 const api = window.redaction;
 const workspace = shallowRef<Workspace>({ documents: [], groups: [], current: null, pending: [], canUndo: false, revision: 0 });
+const mode = ref<'redact' | 'restore'>('redact');
 const material = computed(() => workspace.value.current);
 const ready = computed(() => material.value?.status === 'ready');
 const collapsed = ref(false);
@@ -829,7 +831,13 @@ function showEvidence(link: Evidence) {
 </script>
 
 <template>
-  <div class="desktop-body" :class="{ 'sidebar-collapsed': collapsed }">
+  <div class="workspace-modes">
+    <div class="segments" role="group" aria-label="工作区">
+      <button :aria-pressed="mode === 'redact'" @click="mode = 'redact'">脱敏</button>
+      <button :aria-pressed="mode === 'restore'" @click="mode = 'restore'">恢复</button>
+    </div>
+  </div>
+  <div v-show="mode === 'redact'" class="desktop-body" :class="{ 'sidebar-collapsed': collapsed }">
     <MaterialSidebar :documents="workspace.documents" :current="material?.id" :collapsed="collapsed" :locked="busy" :scanning="scanning"
       :queued="queued" :phases="scanPhases" :errors="scanErrors"
       @toggle="collapsed = !collapsed" @add="showImport" @open="openMaterial" @manage="manageMaterial" @settings="openSettings" />
@@ -889,6 +897,8 @@ function showEvidence(link: Evidence) {
       </div>
     </main>
   </div>
+
+  <RestoreWorkspace v-show="mode === 'restore'" :groups="workspace.groups" :notice="notice" @notice="announce" />
 
   <dialog ref="closeDialog" class="close-workspace-dialog" aria-labelledby="close-title" aria-describedby="close-description"
     @cancel.prevent="!projectBusy && closeDialog?.close()">

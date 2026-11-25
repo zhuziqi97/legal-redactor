@@ -1,8 +1,8 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('redaction', {
-  open: () => ipcRenderer.invoke('redaction:open'),
-  decodeImport: () => ipcRenderer.invoke('redaction:decode-gb18030'),
+  open: (mode?: 'restore') => ipcRenderer.invoke('redaction:open', mode),
+  decodeImport: (mode?: 'restore') => ipcRenderer.invoke('redaction:decode-gb18030', mode),
   inferenceSettings: () => ipcRenderer.invoke('redaction:inference-settings'),
   setProvider: (provider: string) => ipcRenderer.invoke('redaction:set-provider', provider),
   onOpenSettings: (callback: () => void) => ipcRenderer.on('redaction:open-settings', () => callback()),
@@ -17,8 +17,8 @@ contextBridge.exposeInMainWorld('redaction', {
   recordRender: (milliseconds: number) => ipcRenderer.send('redaction:rendered', milliseconds),
   closeWorkspace: (discard: boolean) => ipcRenderer.invoke('redaction:close', discard),
   copy: (output: string) => ipcRenderer.invoke('redaction:copy', output),
-  save: (output: string, sourcePaths: string[], filename: string) =>
-    ipcRenderer.invoke('redaction:save', { output, sourcePaths, filename }),
+  save: (output: string, sourcePaths: string[], filename: string, mode?: 'restore') =>
+    ipcRenderer.invoke('redaction:save', { output, sourcePaths, filename, mode }),
   onProgress: (callback: (phase: string) => void) => {
     ipcRenderer.on('redaction:progress', (_event: unknown, phase: string) => callback(phase));
   },
