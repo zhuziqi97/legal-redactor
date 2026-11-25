@@ -1,0 +1,399 @@
+const { app, BrowserWindow, Menu, clipboard, dialog, ipcMain, utilityProcess } = require('electron');
+const { existsSync, mkdirSync, readFileSync } = require('node:fs');
+const { appendFile, readFile, writeFile, realpath, mkdtemp, rename, rm } = require('node:fs/promises');
+const { decodeInput } = require('./text-input.cjs');
+const { findOriginal } = require('./text-engine.cjs');
+const { basename, dirname, extname, join, resolve } = require('node:path');
+type Workspace = import('../engine/workspace-types.js').Workspace;
+type Request = import('../engine/workspace-types.js').Request;
+
+type Pending = {
+  id: number;
+  resolve: (result: unknown) => void;
+  reject: (error: Error) => void;
+  progress: (phase: string) => void;
+  provider: string;
+  started: number;
+};
+
+const project = resolve(__dirname, '..');
+const bundledModel = join(process.resourcesPath, 'otter');
+const nativeModel = app.isPackaged ? bundledModel : process.env.REDACTOR_ONNX_DIR;
+const userData = process.env.REDACTOR_USER_DATA;
+if (userData) {
+  mkdirSync(userData, { recursive: true });
+  app.setPath('userData', resolve(userData));
+}
+
+const nativeEnabled = !!nativeModel && existsSync(join(nativeModel, 'otter.onnx'));
+const rulesOnly = !app.isPackaged && process.env.REDACTOR_RULES_ONLY === '1';
+const settingsPath = join(app.getPath('userData'), 'inference-settings.json');
+let provider = 'auto';
+try {
+  const saved = JSON.parse(readFileSync(settingsPath, 'utf8'));
+  if (typeof saved.provider === 'string') provider = saved.provider;
+} catch {
+  // Default to the Runtime's automatic selection on a new installation.
+}
+
+type InferenceRoute = {provider: string; fallbackReason?: string; reusedSession: boolean; loadMs: number};
+type InferencePending = {
+  resolve: (value: unknown) => void;
+  reject: (error: Error) => void;
+  progress?: (phase: string) => void;
+};
+
+function fallbackNotice(route: InferenceRoute) {
+  return route.fallbackReason ? `自动初始化失败，已改用 ${route.provider}。原因：${route.fallbackReason}` : '';
+}
+const inferencePending = new Map<number, InferencePending>();
+let nativeWorker: ReturnType<typeof utilityProcess.fork> | undefined;
+let inferenceId = 0;
+function infer(op: 'providers' | 'prepare' | 'probe' | 'predict', ep: string, input?: { texts: string[]; labels: string[] },
+  progress?: (phase: string) => void) {
+  if (!nativeWorker) {
+    const child = utilityProcess.fork(join(__dirname, 'inference-worker.cjs'), [], { serviceName: 'Otter ONNX Runtime' });
+    child.on('message', (message: { id: number; result?: unknown; error?: string; phase?: string }) => {
+      const waiter = inferencePending.get(message.id);
+      if (!waiter) return;
+      if (message.phase) {
+        waiter.progress?.(message.phase);
+        return;
+      }
+      inferencePending.delete(message.id);
+      if (message.error) waiter.reject(new Error(message.error));
+      else waiter.resolve(message.result);
+    });
+    child.on('exit', () => {
+      if (nativeWorker !== child) return;
+      nativeWorker = undefined;
+      for (const waiter of inferencePending.values()) waiter.reject(new Error('ONNX Runtime 进程已经退出。'));
+      inferencePending.clear();
+    });
+    nativeWorker = child;
+  }
+  const id = ++inferenceId;
+  return new Promise((resolve, reject) => {
+    inferencePending.set(id, { resolve, reject, progress });
+    nativeWorker.postMessage({ id, op, directory: nativeModel, provider: ep, ...input });
+  });
+}
+
+type Session = {
+  state: Workspace;
+  worker?: ReturnType<typeof utilityProcess.fork>;
+  pending?: Pending;
+  nextId: number;
+  allowClose?: boolean;
+  importInput?: { path: string; title: string; bytes: Uint8Array; readMs: number };
+  queue?: Promise<unknown>;
+  analysis?: Session;
+  scan?: { materialId: string; cancelled: boolean };
+};
+
+const sessions = new Map<number, Session>();
+
+function finishWorker(session: Session, child: ReturnType<typeof utilityProcess.fork>, message: string) {
+  if (session.worker !== child) return;
+  session.worker = undefined;
+  const request = session.pending;
+  session.pending = undefined;
+  request?.reject(new Error(message));
+}
+
+function startWorker(session: Session) {
+  const child = utilityProcess.fork(join(__dirname, 'workspace-worker.cjs'), [], { serviceName: '案卷脱敏引擎' });
+  session.worker = child;
+  child.on('message', message => {
+    const pending = session.pending;
+    if (session.worker !== child || !pending || message.id !== pending.id) return;
+    if (message.inference) {
+      const reply = (value: object) => {
+        if (session.worker === child && session.pending === pending) child.postMessage({id: pending.id, ...value});
+      };
+      infer('predict', pending.provider, message.inference, pending.progress).then(
+        predictions => reply({predictions}),
+        error => reply({inferenceError: `ONNX Runtime（${pending.provider}）运行失败。${error.message}`}),
+      );
+
+      return;
+    }
+    if (message.diagnostic) {
+      diagnose({...message.diagnostic, elapsedMs: performance.now() - pending.started});
+      return;
+    }
+    if (message.phase) {
+      pending.progress(message.phase);
+      return;
+    }
+    session.pending = undefined;
+    if (message.error) pending.reject(new Error(message.error));
+    else pending.resolve(message.result);
+  });
+  child.on('exit', () => finishWorker(session, child, '本地脱敏引擎已退出，请重试。'));
+  return child;
+}
+
+async function runEngine(session: Session, request: Request, progress: (phase: string) => void, ep = provider) {
+  if (session.pending) throw new Error('请等待当前操作完成。');
+  const child = session.worker ?? startWorker(session);
+  const result = await new Promise<unknown>((resolve, reject) => {
+    const id = ++session.nextId;
+    session.pending = {id, resolve, reject, progress, provider: ep, started: performance.now()};
+    child.postMessage({id, state: session.state, request, provider: ep, rulesOnly});
+  });
+  if (typeof result === 'object' && result !== null && 'state' in result) {
+    const {state, ...payload} = result;
+    session.state = state as Workspace;
+    return payload;
+  }
+  return result;
+}
+
+function stopWorker(session: Session) {
+  const child = session.worker;
+  if (!child) return;
+  finishWorker(session, child, '已取消识别。');
+  child.kill();
+}
+
+function serialize<T>(session: Session, task: () => T | Promise<T>) {
+  const result = (session.queue ?? Promise.resolve()).then(task);
+  session.queue = result.catch(() => {});
+  return result;
+}
+
+function cancelAnalysis(session: Session) {
+  if (!session.scan) return;
+  session.scan.cancelled = true;
+  if (session.analysis) stopWorker(session.analysis);
+}
+
+async function analyze(session: Session, input: { materialId: string; revision: number; queueMs?: number },
+  progress: (phase: string) => void) {
+  if (session.scan) throw new Error('当前工作区已有分析任务。');
+  if (!nativeEnabled && !rulesOnly) throw new Error('找不到本地 ONNX 模型，请检查发行包资源或开发环境的 REDACTOR_ONNX_DIR。');
+  const job = { materialId: input.materialId, cancelled: false };
+  const preferredEP = provider;
+  const started = performance.now();
+  session.scan = job;
+  const analysis = session.analysis ??= { state: session.state, nextId: 0 };
+  const assertCurrent = () => {
+    if (job.cancelled) throw new Error('已取消识别。');
+    const doc = session.state.materials.find(row => row.id === input.materialId);
+    if (!doc || doc.revision !== input.revision) throw new Error('材料已更新，请分析最新修订。');
+  };
+  let firstFeedbackMs: number | undefined;
+  const phase = (message: string) => {
+    if (job.cancelled) return;
+    firstFeedbackMs ??= performance.now() - started;
+    progress(message);
+  };
+  try {
+    assertCurrent();
+    let route: InferenceRoute | undefined;
+    if (!rulesOnly) {
+      try {
+        route = await infer('prepare', preferredEP, undefined, phase) as InferenceRoute;
+      } catch (error) {
+        assertCurrent();
+        throw new Error(`ONNX Runtime（${preferredEP}）无法初始化模型。${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    assertCurrent();
+    const ep = route?.provider ?? preferredEP;
+    const notice = route ? fallbackNotice(route) : '';
+    const showPhase = (value: string) => phase(notice ? `${value} · ${notice}` : value);
+    for (;;) {
+      const base = await serialize(session, () => { assertCurrent(); return session.state; });
+      analysis.state = base;
+      await runEngine(analysis, { op: 'scan', materialId: input.materialId, revision: input.revision }, showPhase, ep);
+      const result = await serialize(session, async () => {
+        assertCurrent();
+        if (session.state.revision !== base.revision) return null;
+        const exported = new Map(session.state.materials.map(doc => [doc.id, doc.exported]));
+        for (const doc of analysis.state.materials) {
+          const output = exported.get(doc.id);
+          if (output === undefined) delete doc.exported;
+          else doc.exported = output;
+        }
+        analysis.state.activeId = session.state.activeId;
+        session.state = analysis.state;
+        const previewStart = performance.now();
+        const view = await runEngine(session, { op: 'view' }, showPhase) as object;
+        diagnose({stage: 'analysis-view', preferredEP, provider: route?.provider, usedFallback: !!route?.fallbackReason,
+          reusedSession: route?.reusedSession, modelLoadMs: route?.loadMs, queueMs: input.queueMs ?? 0, firstFeedbackMs,
+          previewMs: performance.now() - previewStart, elapsedMs: performance.now() - started});
+        return {...view, inferenceNotice: notice};
+      });
+      if (result) return result;
+      showPhase('工作区已有更新，正在重新整理映射');
+    }
+  } finally {
+    session.scan = undefined;
+    analysis.state = session.state;
+  }
+}
+
+function windowSession(sender: { id: number }) {
+  const session = sessions.get(sender.id);
+  if (!session) throw new Error('此工作区已关闭。');
+  return session;
+}
+
+function diagnose(record: Record<string, unknown>) {
+  void appendFile(join(app.getPath('userData'), 'diagnostics.jsonl'), `${JSON.stringify(record)}\n`, 'utf8').catch(() => {});
+}
+
+function decodeImport(session: Session, encoding?: 'gb18030') {
+  const source = session.importInput;
+  if (!source) throw new Error('请先打开 TXT 文件。');
+  const started = performance.now();
+  let result: ReturnType<typeof decodeInput>;
+  try {
+    result = decodeInput(source.bytes, encoding);
+  } catch (error) {
+    diagnose({stage: 'import', status: 'decode-error', bytes: source.bytes.length, readMs: source.readMs,
+      decodeMs: performance.now() - started});
+    throw error;
+  }
+  if (result.requiresEncoding) {
+    diagnose({ stage: 'import', bytes: source.bytes.length, readMs: source.readMs, decodeMs: performance.now() - started, encoding: 'unknown' });
+    return { requiresEncoding: true, title: source.title };
+  }
+  diagnose({ stage: 'import', bytes: source.bytes.length, readMs: source.readMs, decodeMs: performance.now() - started,
+    encoding: result.encoding, characters: Array.from(result.text).length });
+  session.importInput = undefined;
+  return { path: source.path, title: source.title, ...result };
+}
+
+ipcMain.handle('redaction:open', async (event) => {
+  const owner = BrowserWindow.fromWebContents(event.sender);
+  const choice = await dialog.showOpenDialog(owner, {
+    title: '打开 TXT', properties: ['openFile'], filters: [{ name: '纯文本', extensions: ['txt'] }],
+  });
+  if (choice.canceled) return null;
+  const [path] = choice.filePaths;
+  const session = windowSession(event.sender);
+  session.importInput = undefined;
+  event.sender.send('redaction:import-reading');
+  const started = performance.now();
+  let bytes, sourcePath;
+  try {
+    [bytes, sourcePath] = await Promise.all([readFile(path), realpath(path)]);
+  } catch {
+    diagnose({stage: 'import', status: 'read-error', readMs: performance.now() - started});
+    throw new Error('读取 TXT 文件失败。请检查文件仍可访问，再打开一次。');
+  }
+  session.importInput = { path: sourcePath, title: basename(path, extname(path)), bytes, readMs: performance.now() - started };
+  return decodeImport(session);
+});
+ipcMain.handle('redaction:decode-gb18030', (event) => decodeImport(windowSession(event.sender), 'gb18030'));
+ipcMain.handle('redaction:inference-settings', async () => ({
+  enabled: nativeEnabled, provider, providers: nativeEnabled ? await infer('providers', 'auto') : [],
+}));
+ipcMain.handle('redaction:set-provider', async (_event, choice: string) => {
+  const available = await infer('providers', 'auto') as { name: string; bundled: boolean }[];
+  if (!nativeEnabled || (choice !== 'auto' && !available.some(ep => ep.name === choice))) {
+    throw new Error('此执行提供程序在当前发行包中不可用。');
+  }
+  let route: InferenceRoute;
+  try {
+    route = await infer('probe', choice) as InferenceRoute;
+  } catch (error) {
+    throw new Error(`无法使用 ${choice} 运行本地模型。${error instanceof Error ? error.message : String(error)}`);
+  }
+  await mkdirSync(app.getPath('userData'), { recursive: true });
+  await writeFile(settingsPath, JSON.stringify({ provider: choice }), 'utf8');
+  provider = choice;
+  return fallbackNotice(route);
+});
+ipcMain.handle('redaction:engine', (event, request) => {
+  const session = windowSession(event.sender);
+  const progress = (phase: string) => {
+    if (!event.sender.isDestroyed()) event.sender.send('redaction:progress', phase);
+  };
+  if (request.op === 'scan') return analyze(session, request, progress);
+  if (['editMaterial', 'deleteMaterial'].includes(request.op) && request.materialId === session.scan?.materialId) cancelAnalysis(session);
+  if (request.op === 'findOriginal') return serialize(session, () => findOriginal(session.state.materials, request.text));
+  return serialize(session, () => runEngine(session, request, progress));
+});
+ipcMain.on('redaction:rendered', (_event, renderMs: number) => {
+  if (Number.isFinite(renderMs) && renderMs >= 0) diagnose({stage: 'view-render', renderMs});
+});
+ipcMain.handle('redaction:cancel', (event) => cancelAnalysis(windowSession(event.sender)));
+ipcMain.handle('redaction:close', (event) => {
+  windowSession(event.sender).allowClose = true;
+  BrowserWindow.fromWebContents(event.sender)?.close();
+});
+ipcMain.handle('redaction:copy', (_event, output: string) => clipboard.writeText(output));
+ipcMain.handle('redaction:save', async (event, { output, sourcePaths, filename }) => {
+  const owner = BrowserWindow.fromWebContents(event.sender);
+  const choice = await dialog.showSaveDialog(owner, {
+    title: '另存脱敏正文', defaultPath: join(app.getPath('documents'), filename),
+    filters: [{ name: '纯文本', extensions: ['txt'] }],
+  });
+  if (choice.canceled || !choice.filePath) return null;
+  const path = extname(choice.filePath).toLowerCase() === '.txt' ? choice.filePath : `${choice.filePath}.txt`;
+  const target = await realpath(path).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return resolve(path);
+    throw error;
+  });
+  const comparable = (name: string) => process.platform === 'win32' ? name.toLowerCase() : name;
+  if (sourcePaths.some((source: string) => comparable(target) === comparable(source))) {
+    throw new Error('此路径是案内材料的原件，请选择另一处保存。');
+  }
+  const staging = await mkdtemp(join(dirname(path), '.redaction-'));
+  try {
+    const prepared = join(staging, 'output.txt');
+    await writeFile(prepared, output, 'utf8');
+    await rename(prepared, path);
+  } finally {
+    await rm(staging, { recursive: true, force: true }).catch(() => {});
+  }
+  return path;
+});
+
+function openWindow() {
+  const window = new BrowserWindow({
+    title: '案卷脱敏', width: 1450, height: 940, minWidth: 780, minHeight: 620,
+    backgroundColor: '#f5f7fb', autoHideMenuBar: true,
+    webPreferences: { preload: join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true },
+  });
+  const id = window.webContents.id;
+  const session: Session = { state: { materials: [], groups: {}, activeId: null, undo: null, revision: 0 }, nextId: 0 };
+  sessions.set(id, session);
+  window.on('close', (event: { preventDefault(): void }) => {
+    if (session.allowClose || !session.state.materials.length) return;
+    event.preventDefault();
+    window.webContents.send('redaction:confirm-close');
+  });
+  window.on('closed', () => {
+    cancelAnalysis(session);
+    if (session.analysis) stopWorker(session.analysis);
+    stopWorker(session);
+    sessions.delete(id);
+  });
+  window.loadFile(join(project, 'dist', 'index.html'));
+}
+
+if (app.requestSingleInstanceLock()) {
+  app.on('second-instance', () => openWindow());
+  app.whenReady().then(() => {
+    Menu.setApplicationMenu(Menu.buildFromTemplate([
+      { label: '文件', submenu: [
+        { label: '新建工作区窗口', accelerator: 'CmdOrCtrl+Shift+N', click: () => openWindow() },
+        { role: 'close', label: '关闭窗口' },
+      ] },
+      { label: '编辑', submenu: [
+        { role: 'cut', label: '剪切' }, { role: 'copy', label: '复制' },
+        { role: 'paste', label: '粘贴' }, { role: 'selectAll', label: '全选' },
+      ] },
+      { label: '设置', submenu: [{ label: '推理设置…', click: (_item, window) => window?.webContents.send('redaction:open-settings') }] },
+    ]));
+    openWindow();
+  });
+} else {
+  app.quit();
+}
+app.on('window-all-closed', () => app.quit());

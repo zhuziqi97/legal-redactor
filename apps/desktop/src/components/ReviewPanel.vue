@@ -1,0 +1,152 @@
+<script setup lang="ts">
+import { computed, nextTick, ref } from 'vue';
+import { categoryColor, type Group, type Issue, type Material, type Occurrence } from '../model';
+import MappingMenu from './MappingMenu.vue';
+import OccurrenceRow from './OccurrenceRow.vue';
+
+const props = defineProps<{
+  material: Material | null; groups: Group[]; pending: Occurrence[]; issues: Issue[];
+  selected: number | null; locked: boolean; canUndo: boolean;
+}>();
+const emit = defineEmits<{
+  jump: [row: Occurrence]; issue: [issue: Issue]; undo: []; create: [];
+  group: [action: 'edit' | 'add' | 'merge' | 'delete', group: Group];
+  term: [action: 'edit' | 'remove' | 'primary', group: Group, rows: Occurrence[]];
+}>();
+
+const query = ref('');
+const scope = ref<'all' | 'current'>('all');
+const showPending = ref(false);
+const groupId = ref<string | null>(null);
+const termFilter = ref('');
+const list = ref<HTMLElement>();
+const positionList = ref<HTMLElement>();
+const search = computed(() => query.value.trim().toLocaleLowerCase());
+const belongs = (row: Occurrence) => scope.value === 'all' || row.materialId === props.material?.id;
+const isCurrent = (row: Occurrence) => row.materialId === props.material?.id && row.itemId === props.selected;
+
+function terms(group: Group) {
+  const all = new Map<string, Occurrence[]>();
+  for (const row of group.occurrences) {
+    if (!all.has(row.original)) all.set(row.original, []);
+    all.get(row.original)!.push(row);
+  }
+  return [...all].map(([original, rows]) => ({ original, rows, primary: original === group.primary }))
+    .sort((a, b) => Number(b.primary) - Number(a.primary));
+}
+
+const filtered = computed(() => props.groups.flatMap(group => {
+  const scoped = group.occurrences.filter(belongs);
+  if (!scoped.length) return [];
+  const direct = [group.primary, group.code].some(word => word.toLocaleLowerCase().includes(search.value));
+  const matched = direct ? [] : [...new Set(scoped.filter(row => [row.original, row.replacement]
+    .some(word => word.toLocaleLowerCase().includes(search.value))).map(row => row.original))];
+  return direct || matched.length ? [{ group, matched, count: scoped.length }] : [];
+}));
+const pending = computed(() => props.pending.filter(belongs));
+const mapping = computed(() => showPending.value ? null : props.groups.find(group => group.id === groupId.value));
+const options = computed(() => mapping.value ? terms(mapping.value) : []);
+const selectedTerm = computed(() => options.value.find(term => term.original === termFilter.value));
+const positions = computed(() => {
+  const rows = showPending.value ? pending.value : (selectedTerm.value?.rows || mapping.value?.occurrences || []).filter(belongs);
+  return [...rows].sort((a, b) => Number(a.materialId) - Number(b.materialId) || a.start - b.start);
+});
+const activeIndex = computed(() => positions.value.findIndex(isCurrent));
+const hidden = computed(() => !!mapping.value && !filtered.value.some(entry => entry.group.id === mapping.value?.id));
+
+function selectGroup(id: string) {
+  showPending.value = false;
+  groupId.value = id;
+  termFilter.value = '';
+  resetPositionScroll();
+}
+
+function resetPositionScroll() {
+  if (positionList.value) positionList.value.scrollTop = 0;
+}
+
+async function reveal() {
+  await nextTick();
+  list.value?.querySelector('.mapping-selected')?.scrollIntoView({ block: 'nearest' });
+  positionList.value?.querySelector('.occurrence.current')?.scrollIntoView({ block: 'nearest' });
+}
+function showCurrent() {
+  scope.value = 'all';
+  query.value = '';
+  void reveal();
+}
+defineExpose({ selectGroup, reveal });
+</script>
+
+<template>
+  <section class="card review" aria-label="映射清单">
+    <div class="review-heading">
+      <h2>映射清单</h2>
+      <button class="button small" :disabled="locked || material?.status !== 'ready'" @click="emit('create')">＋ 新建映射</button>
+    </div>
+    <div class="mapping-filters">
+      <input v-model="query" type="search" aria-label="搜索映射" placeholder="搜索原词、别称或代号">
+      <select v-model="scope" aria-label="映射材料范围">
+        <option value="all">全部材料</option><option value="current">本份材料</option>
+      </select>
+    </div>
+    <div class="review-filters">
+      <button class="button small quiet" :aria-pressed="showPending" @click="showPending = !showPending">待核 {{ pending.length }}</button>
+      <button v-if="canUndo" class="button small quiet" :disabled="locked" @click="emit('undo')">撤销上次订正</button>
+    </div>
+    <div v-if="issues.length" class="issue-list">
+      <h3>输出检查</h3>
+      <button v-for="(issue, i) in issues" :key="i" @click="emit('issue', issue)">{{ issue.message }}</button>
+    </div>
+    <div v-if="hidden" class="hidden-mapping"><button class="button small quiet" @click="showCurrent">查看所属映射</button></div>
+    <div ref="list" class="review-list">
+      <p v-if="!filtered.length" class="muted-empty">{{ search ? '没有匹配的映射' : '没有映射' }}</p>
+      <div v-for="{group, matched, count} in filtered" :key="group.id" class="mapping"
+        :class="{ 'mapping-selected': mapping?.id === group.id }">
+        <div class="mapping-row">
+          <button class="mapping-toggle" :aria-pressed="mapping?.id === group.id" @click="selectGroup(group.id)">
+            <span class="mapping-title"><strong>{{ group.primary }}</strong><span class="mapping-arrow"> → </span><span class="chip" :class="categoryColor(group.type)">{{ group.code }}</span></span>
+          </button>
+          <div class="mapping-actions">
+            <span v-if="count === group.occurrences.length" class="mapping-count">{{ count }} 处</span>
+            <button class="button small quiet rename-button" :disabled="locked" @click="emit('group', 'edit', group)">修改映射</button>
+            <MappingMenu :label="`${group.primary}的映射操作`" :disabled="locked">
+              <button v-if="['person', 'nickname', 'organization', 'address'].includes(group.type)" @click="emit('group', 'add', group)">添加别称</button>
+              <button v-if="['person', 'nickname', 'organization', 'address'].includes(group.type)" @click="emit('group', 'merge', group)">合并到其他映射</button>
+              <button class="danger" @click="emit('group', 'delete', group)">删除映射</button>
+            </MappingMenu>
+          </div>
+        </div>
+        <div v-if="matched.length || count !== group.occurrences.length" class="mapping-meta">
+          <span v-if="matched.length">命中 {{ matched.join('、') }}</span>
+          <span v-if="count !== group.occurrences.length" class="scope-count">本份 {{ count }} 处 / 共 {{ group.occurrences.length }} 处</span>
+        </div>
+      </div>
+    </div>
+    <section v-if="mapping || showPending" class="mapping-positions" :aria-label="showPending ? '待核位置' : '出现位置'">
+      <div class="position-heading">
+        <h3>{{ showPending ? '待核位置' : '出现位置' }}</h3>
+        <div v-if="mapping && options.length > 1" class="position-filter">
+          <select v-model="termFilter" aria-label="按原词或别称筛选位置" @change="resetPositionScroll">
+            <option value="">全部原词</option>
+            <option v-for="term in options" :key="term.original" :value="term.original">{{ term.original }}</option>
+          </select>
+          <MappingMenu v-if="selectedTerm && !selectedTerm.primary" :label="`${selectedTerm.original}的别称操作`" :disabled="locked">
+            <button @click="emit('term', 'edit', mapping, selectedTerm.rows)">编辑别称</button>
+            <button @click="emit('term', 'primary', mapping, selectedTerm.rows)">设为主名</button>
+            <button class="danger" @click="emit('term', 'remove', mapping, selectedTerm.rows)">移除别称</button>
+          </MappingMenu>
+        </div>
+      </div>
+      <div ref="positionList" class="position-list">
+        <p v-if="!positions.length" class="muted-empty">{{ showPending ? '当前范围没有待核位置' : '当前范围没有出现位置' }}</p>
+        <OccurrenceRow v-for="row in positions" :key="`${row.materialId}/${row.itemId}`" :row="row" :current="isCurrent(row)" :disabled="locked" @locate="emit('jump', $event)" />
+      </div>
+      <div v-if="mapping && positions.length" class="item-nav">
+        <button class="button small quiet" :disabled="locked || activeIndex <= 0" @click="emit('jump', positions[activeIndex - 1]!)">↑ 上一处</button>
+        <button class="button small quiet" :disabled="locked || activeIndex >= positions.length - 1" @click="emit('jump', positions[activeIndex + 1]!)">↓ 下一处</button>
+        <span>{{ activeIndex < 0 ? '–' : activeIndex + 1 }} / {{ positions.length }}</span>
+      </div>
+    </section>
+  </section>
+</template>
