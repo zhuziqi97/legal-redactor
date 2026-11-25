@@ -6,11 +6,12 @@ const { existsSync, mkdirSync, readFileSync } = require('node:fs');
 const { appendFile, readFile, writeFile, realpath, mkdtemp, rename, rm, stat } = require('node:fs/promises');
 const { decodeInput } = require('./text-input.cjs');
 const { findOriginal } = require('./text-engine.cjs');
-const { readProject, writeProject } = require('./project-file.cjs');
+const { projectProtection, readProject, writeProject } = require('./project-file.cjs');
 const { basename, dirname, extname, join, resolve } = require('node:path');
 type Workspace = import('../engine/workspace-types.js').Workspace;
 type Request = import('../engine/workspace-types.js').Request;
-type ProjectCommand = 'open' | 'save' | 'saveAs';
+type ProjectCommand = 'open' | 'save' | 'saveAs' | 'password';
+type ProjectProtection = import('./project-file.js').ProjectProtection;
 type ProjectFile = { path: string; mtimeMs: number; size: number };
 
 type Pending = {
@@ -110,6 +111,8 @@ type WindowSession = Session & {
   changeSeq: number;
   savedSeq: number;
   editingDraft?: boolean;
+  protection?: ProjectProtection;
+  unlockPath?: string;
 };
 
 const sessions = new Map<number, WindowSession>();
@@ -305,17 +308,35 @@ function focusProject(session: WindowSession) {
   return null;
 }
 
-async function openProject(session: WindowSession) {
-  const choice = await dialog.showOpenDialog(session.window, {
-    title: '打开项目', properties: ['openFile'], filters: [projectFilter],
-  });
-  if (choice.canceled || !choice.filePaths.length) return null;
-  const path = await realpath(choice.filePaths[0]);
+async function openProject(session: WindowSession, password?: string | null) {
+  if (password === null) {
+    session.unlockPath = undefined;
+    return null;
+  }
+  let path = session.unlockPath;
+  if (password === undefined) {
+    session.unlockPath = undefined;
+    const choice = await dialog.showOpenDialog(session.window, {
+      title: '打开项目', properties: ['openFile'], filters: [projectFilter],
+    });
+    if (choice.canceled || !choice.filePaths.length) return null;
+    path = await realpath(choice.filePaths[0]);
+  }
+  if (!path) return null;
   const existing = findProjectWindow(path);
-  if (existing) return focusProject(existing);
+  if (existing) {
+    session.unlockPath = undefined;
+    return focusProject(existing);
+  }
   if (isSavingTo(path)) throw new Error('项目正在保存，请稍后再打开。');
   const { mtimeMs, size } = await stat(path);
-  const state: Workspace = await readProject(path);
+  const opened = await readProject(path, password);
+  if (opened.locked) {
+    session.unlockPath = path;
+    return { locked: true, title: basename(path, extname(path)) };
+  }
+  session.unlockPath = undefined;
+  const { state, protection } = opened;
   const { view } = await (await import('./engine/workspace.js')).runWorkspace(state, { op: 'view' }) as { view: unknown };
   const file = { path, mtimeMs, size };
   return serialize(session, () => {
@@ -323,16 +344,16 @@ async function openProject(session: WindowSession) {
     if (other) return focusProject(other);
     if (isSavingTo(path)) throw new Error('项目正在保存，请稍后再打开。');
     if (session.file || session.state.materials.length || session.scan) {
-      openWindow({ state, file, view });
+      openWindow({ state, file, view, protection });
       return null;
     }
-    Object.assign(session, { state, file, changeSeq: 0, savedSeq: 0 });
+    Object.assign(session, { state, file, protection, changeSeq: 0, savedSeq: 0 });
     updateProjectTitle(session);
-    return view;
+    return { view };
   });
 }
 
-async function saveProject(session: WindowSession, saveAs: boolean) {
+async function saveProject(session: WindowSession, saveAs: boolean, password?: string | null) {
   let path = session.file?.path;
   if (!path || saveAs) {
     const choice = await dialog.showSaveDialog(session.window, {
@@ -366,8 +387,10 @@ async function saveProject(session: WindowSession, saveAs: boolean) {
     if (state.sourcePaths?.some(source => comparablePath(source) === comparablePath(path))) {
       throw new Error('此路径是已导入的原件，请选择另一处保存。');
     }
-    const stamp = await writeProject(path, state);
+    const protection = password === undefined ? session.protection : password === null ? undefined : await projectProtection(password);
+    const stamp = await writeProject(path, state, protection);
     session.file = { path, ...stamp };
+    session.protection = protection;
     session.savedSeq = changeSeq;
     updateProjectTitle(session);
     return { dirty: projectDirty(session) };
@@ -477,13 +500,19 @@ ipcMain.handle('redaction:initial-project', event => {
   delete session.initialView;
   return view ?? null;
 });
-ipcMain.handle('redaction:open-project', event => {
+ipcMain.handle('redaction:open-project', (event, password?: string | null) => {
   const session = windowSession(event.sender);
-  return projectOperation(session, () => openProject(session));
+  return projectOperation(session, () => openProject(session, password));
 });
 ipcMain.handle('redaction:save-project', (event, saveAs: boolean) => {
   const session = windowSession(event.sender);
   return projectOperation(session, () => saveProject(session, saveAs));
+});
+ipcMain.handle('redaction:project-password-status', event => !!windowSession(event.sender).protection);
+ipcMain.handle('redaction:change-project-password', (event, password: string | null) => {
+  const session = windowSession(event.sender);
+  if (session.editingDraft) throw new Error('请先应用或取消原文修改，再保存项目。');
+  return projectOperation(session, () => saveProject(session, false, password));
 });
 ipcMain.on('redaction:rendered', (_event, renderMs: number) => {
   if (Number.isFinite(renderMs) && renderMs >= 0) diagnose({stage: 'view-render', renderMs});
@@ -523,7 +552,7 @@ ipcMain.handle('redaction:save', async (event, { output, sourcePaths, filename, 
   return path;
 });
 
-function openWindow(initial?: { state: Workspace; file: ProjectFile; view: unknown }) {
+function openWindow(initial?: { state: Workspace; file: ProjectFile; view: unknown; protection?: ProjectProtection }) {
   const window = new BrowserWindow({
     width: 1450, height: 940, minWidth: 780, minHeight: 620,
     icon: applicationIcon,
@@ -533,7 +562,7 @@ function openWindow(initial?: { state: Workspace; file: ProjectFile; view: unkno
   const id = window.webContents.id;
   const session: WindowSession = {
     window, state: initial?.state ?? { materials: [], groups: {}, activeId: null, undo: null, revision: 0 },
-    file: initial?.file, initialView: initial?.view, nextId: 0, changeSeq: 0, savedSeq: 0,
+    file: initial?.file, protection: initial?.protection, initialView: initial?.view, nextId: 0, changeSeq: 0, savedSeq: 0,
   };
   sessions.set(id, session);
   updateProjectTitle(session);
@@ -559,7 +588,7 @@ function openWindow(initial?: { state: Workspace; file: ProjectFile; view: unkno
   window.loadFile(join(project, 'dist', 'index.html'));
 }
 
-function projectMenu(label: string, accelerator: string, command: ProjectCommand) {
+function projectMenu(label: string, accelerator: string | undefined, command: ProjectCommand) {
   return { label, accelerator, click: (_item, window) => window?.webContents.send('redaction:project-command', command) };
 }
 
@@ -573,6 +602,7 @@ if (app.requestSingleInstanceLock()) {
         projectMenu('打开项目…', 'CmdOrCtrl+O', 'open'),
         projectMenu('保存项目', 'CmdOrCtrl+S', 'save'),
         projectMenu('项目另存为…', 'CmdOrCtrl+Shift+S', 'saveAs'),
+        projectMenu('项目密码…', undefined, 'password'),
         { type: 'separator' },
         { role: 'close', label: '关闭窗口' },
       ] },

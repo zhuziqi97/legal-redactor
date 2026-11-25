@@ -7,8 +7,10 @@ contextBridge.exposeInMainWorld('redaction', {
   setProvider: (provider: string) => ipcRenderer.invoke('redaction:set-provider', provider),
   onOpenSettings: (callback: () => void) => ipcRenderer.on('redaction:open-settings', () => callback()),
   initialProject: () => ipcRenderer.invoke('redaction:initial-project'),
-  openProject: () => ipcRenderer.invoke('redaction:open-project'),
+  openProject: (password?: string | null) => ipcRenderer.invoke('redaction:open-project', password),
   saveProject: (saveAs: boolean) => ipcRenderer.invoke('redaction:save-project', saveAs),
+  projectPasswordStatus: () => ipcRenderer.invoke('redaction:project-password-status'),
+  changeProjectPassword: (password: string | null) => ipcRenderer.invoke('redaction:change-project-password', password),
   onProjectCommand: (callback: (command: string) => void) => {
     ipcRenderer.on('redaction:project-command', (_event: unknown, command: string) => callback(command));
   },

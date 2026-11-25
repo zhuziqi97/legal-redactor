@@ -6,7 +6,7 @@ import test from 'node:test';
 import { ZipReader, ZipWriter, Uint8ArrayReader, Uint8ArrayWriter, TextReader } from '@zip.js/zip.js';
 import { runWorkspace } from '../build/engine/workspace.js';
 import { encodeProject } from '../build/engine/project-state.js';
-import { readProject, writeProject } from '../build/project-file.cjs';
+import { projectProtection, readProject, writeProject } from '../build/project-file.cjs';
 
 function workspace() {
   let state = { materials: [], groups: {}, activeId: null, undo: null, revision: 0 };
@@ -53,7 +53,7 @@ test('项目保留跨材料改绑、派生代号、导出状态和待识别原�
   } finally {
     await zip.close();
   }
-  const restored = await readProject(path);
+  const {state: restored} = await readProject(path);
   const { view: after } = await runWorkspace(restored, { op: 'view' });
   assert.deepEqual(after, { ...before, revision: 0, canUndo: false });
   assert.equal(after.documents[1].exportState, 'current');
@@ -74,7 +74,7 @@ test('修改原文后、重新识别前保存的项目仍可接续人工订正',
   assert.equal(reviewed.view.current.items.find(row => row.original === '张甲').action, 'keep');
   const edited = await project.run({ op: 'editMaterial', materialId: '1', text: text + '\n补充一行。' });
   await writeProject(path, project.state);
-  const restored = await readProject(path);
+  const {state: restored} = await readProject(path);
   const { view: reopened } = await runWorkspace(restored, { op: 'view' });
   assert.equal(reopened.current.status, 'unrecognized');
   assert.equal(reopened.current.previousOutput, edited.view.current.previousOutput);
@@ -111,4 +111,39 @@ test('替换失败保留目标及其内容，并清理临时目录', async t => 
   await assert.rejects(writeProject(path, workspace().state));
   assert.equal(await readFile(join(path, '原有内容.txt'), 'utf8'), '原有内容');
   assert.deepEqual(await readdir(join(path, '..')), ['复核.lrproj']);
+});
+
+test('加密项目可解锁、续存、另存、改密和移除保护', async t => {
+  const path = await localProject(t);
+  const copy = join(path, '..', '副本.lrproj');
+  const project = workspace();
+  await project.add('姓名：张甲\n内部复核原文。', '受保护材料', join(tmpdir(), 'source-case.txt'));
+  const key = await projectProtection('合成密码 A');
+  await writeProject(path, project.state, key);
+  const first = await readFile(path);
+  assert.equal(first.includes(Buffer.from('受保护材料')), false);
+  assert.equal(first.includes(Buffer.from('project.json')), false);
+  assert.deepEqual(await readProject(path), {locked:true});
+  await assert.rejects(readProject(path, '错误密码'), /密码不正确或项目文件已损坏/);
+  const opened = await readProject(path, '合成密码 A');
+  assert.deepEqual(encodeProject(opened.state), encodeProject(project.state));
+  await writeProject(path, opened.state, opened.protection);
+  assert.notDeepEqual(await readFile(path), first, '同一密码续存也使用新的随机初始值');
+  await writeProject(copy, opened.state, opened.protection);
+  assert.deepEqual(await readProject(copy), {locked:true});
+
+  const changed = await projectProtection('合成密码 B');
+  await writeProject(path, opened.state, changed);
+  await assert.rejects(readProject(path, '合成密码 A'), /密码不正确或项目文件已损坏/);
+  const reopened = await readProject(path, '合成密码 B');
+  assert.deepEqual(encodeProject(reopened.state), encodeProject(project.state));
+  const damaged = await readFile(path);
+  damaged[damaged.length - 1] ^= 1;
+  await writeFile(path, damaged);
+  await assert.rejects(readProject(path, '合成密码 B'), /密码不正确或项目文件已损坏/);
+
+  await writeProject(path, reopened.state);
+  const clear = await readProject(path);
+  assert.equal(clear.protection, undefined);
+  assert.deepEqual(encodeProject(clear.state), encodeProject(project.state));
 });

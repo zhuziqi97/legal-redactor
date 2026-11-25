@@ -63,9 +63,11 @@ declare global {
       setProvider: (provider: string) => Promise<string>;
       onOpenSettings: (callback: () => void) => void;
       initialProject: () => Promise<Workspace | null>;
-      openProject: () => Promise<Workspace | null>;
+      openProject: (password?: string | null) => Promise<{view: Workspace} | {locked: true; title: string} | null>;
       saveProject: (saveAs: boolean) => Promise<{ dirty: boolean } | null>;
-      onProjectCommand: (callback: (command: 'open' | 'save' | 'saveAs') => void) => void;
+      projectPasswordStatus: () => Promise<boolean>;
+      changeProjectPassword: (password: string | null) => Promise<{ dirty: boolean } | null>;
+      onProjectCommand: (callback: (command: 'open' | 'save' | 'saveAs' | 'password') => void) => void;
       engine: <T>(request: { op: string } & Record<string, unknown>) => Promise<T>;
       cancel: () => Promise<void>;
       setDraftDirty: (dirty: boolean) => void;
