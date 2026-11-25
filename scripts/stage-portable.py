@@ -6,8 +6,7 @@ from pathlib import Path
 import shutil
 from zipfile import ZipFile
 
-DESKTOP = Path(__file__).resolve().parents[1]
-PROJECT = DESKTOP.parents[1]
+PROJECT = Path(__file__).resolve().parents[1]
 
 
 def unpack_zip(archive, destination):
@@ -20,7 +19,7 @@ def unpack_zip(archive, destination):
 
 
 def stage(target, inputs, staging, model, windows_crt):
-    metadata = json.loads((DESKTOP / "package.json").read_text(encoding="utf-8"))
+    metadata = json.loads((PROJECT / "package.json").read_text(encoding="utf-8"))
     folder = staging / f"LegalRedactor-{metadata['version']}-{target}-x64"
     folder.mkdir(parents=True)
     unpack_zip(inputs / f"electron-{target}.zip", folder)
@@ -39,9 +38,9 @@ def stage(target, inputs, staging, model, windows_crt):
     }
     (app / "package.json").write_text(json.dumps(manifest, ensure_ascii=False) + "\n", encoding="utf-8")
     for path in ("dist", "build"):
-        shutil.copytree(DESKTOP / path, app / path)
+        shutil.copytree(PROJECT / path, app / path)
     node_modules = app / "node_modules"
-    native = DESKTOP / "node_modules"
+    native = PROJECT / "node_modules"
     platform = "win32" if target == "windows" else "linux"
     shutil.copytree(native / "onnxruntime-common", node_modules / "onnxruntime-common")
     bindings = node_modules / "onnxruntime-node"
@@ -60,7 +59,7 @@ def stage(target, inputs, staging, model, windows_crt):
     shutil.copy2(PROJECT / "LICENSE", resources / "otter" / "LICENSE")
     shutil.copy2(PROJECT / "LICENSE", resources / "legal-redactor-LICENSE")
     shutil.copy2(PROJECT / "NOTICE", resources / "legal-redactor-NOTICE")
-    shutil.copy2(DESKTOP / "engine" / "pinyin-LICENSE.txt", resources / "pypinyin-LICENSE.txt")
+    shutil.copy2(PROJECT / "engine" / "pinyin-LICENSE.txt", resources / "pypinyin-LICENSE.txt")
 
     instructions = (
         f"案卷脱敏 {metadata['version']} · {target.capitalize()} x64\n\n"
