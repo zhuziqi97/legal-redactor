@@ -1,3 +1,6 @@
+// Prefer Simplified Chinese glyphs in the native Linux menus.
+if (process.platform === 'linux') process.env.FC_LANG ||= 'zh-cn';
+
 const { app, BrowserWindow, Menu, clipboard, dialog, ipcMain, utilityProcess } = require('electron');
 const { existsSync, mkdirSync, readFileSync } = require('node:fs');
 const { appendFile, readFile, writeFile, realpath, mkdtemp, rename, rm, stat } = require('node:fs/promises');
