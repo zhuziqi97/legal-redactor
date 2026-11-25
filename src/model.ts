@@ -64,8 +64,9 @@ declare global {
       onOpenSettings: (callback: () => void) => void;
       initialProject: () => Promise<Workspace | null>;
       openProject: (password?: string | null) => Promise<{view: Workspace} | {locked: true; title: string} | null>;
-      saveProject: (saveAs: boolean, password?: string | null) => Promise<{ dirty: boolean } | null>;
-      projectSaveStatus: () => Promise<{hasFile: boolean; protected: boolean}>;
+      saveProject: (password?: string | null, destination?: {name: string; directory: string}) => Promise<{ dirty: boolean } | null>;
+      projectSaveStatus: () => Promise<{hasFile: boolean; protected: boolean; name: string; directory: string}>;
+      pickProjectDirectory: (directory: string) => Promise<string | null>;
       onProjectCommand: (callback: (command: 'open' | 'save' | 'saveAs' | 'password') => void) => void;
       engine: <T>(request: { op: string } & Record<string, unknown>) => Promise<T>;
       cancel: () => Promise<void>;

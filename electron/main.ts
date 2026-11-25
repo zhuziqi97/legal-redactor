@@ -11,6 +11,7 @@ const { basename, dirname, extname, join, resolve } = require('node:path');
 type Workspace = import('../engine/workspace-types.js').Workspace;
 type Request = import('../engine/workspace-types.js').Request;
 type ProjectCommand = 'open' | 'save' | 'saveAs' | 'password';
+export type ProjectDestination = { name: string; directory: string };
 type ProjectProtection = import('./project-file.js').ProjectProtection;
 type ProjectFile = { path: string; mtimeMs: number; size: number };
 
@@ -353,30 +354,31 @@ async function openProject(session: WindowSession, password?: string | null) {
   });
 }
 
-async function saveProject(session: WindowSession, saveAs: boolean, password?: string | null) {
+function projectSaveDefaults(session: WindowSession) {
+  const current = session.file?.path;
+  const location = current ? dirname(current) : app.getPath('documents');
+  return {
+    hasFile: !!current,
+    protected: !!session.protection,
+    directory: existsSync(location) ? location : app.getPath('home'),
+    name: current ? `${basename(current, extname(current))} 副本` : '未命名项目',
+  };
+}
+
+async function saveProject(session: WindowSession, password?: string | null, destination?: ProjectDestination) {
   if (session.editingDraft) throw new Error('请先应用或取消原文修改，再保存项目。');
   let path = session.file?.path;
-  if (!path || saveAs) {
-    const choice = await dialog.showSaveDialog(session.window, {
-      title: saveAs ? '项目另存为' : '保存项目',
-      defaultPath: path ?? join(app.getPath('documents'), '未命名项目.lrproj'),
-      filters: [projectFilter],
-    });
-    if (choice.canceled || !choice.filePath) return null;
-    path = extname(choice.filePath).toLowerCase() === '.lrproj' ? choice.filePath : `${choice.filePath}.lrproj`;
-    if (path !== choice.filePath && existsSync(path) && comparablePath(path) !== comparablePath(session.file?.path ?? '')) {
-      const { response } = await dialog.showMessageBox(session.window, {
-        type: 'question', message: '这个位置已有项目文件。要替换它吗？',
-        buttons: ['取消', '替换'], defaultId: 0, cancelId: 0,
-      });
-      if (response !== 1) return null;
+  if (destination) {
+    const name = destination.name.trim().replace(/\.lrproj$/iu, '').trim();
+    if (!name || name === '.' || name === '..' || /[<>:"/\\|?*\u0000-\u001f]/u.test(name)) {
+      throw new Error('请输入有效的项目文件名。');
     }
-    path = await projectPath(path);
+    path = await projectPath(join(destination.directory, `${name}.lrproj`));
+    if (session.file && comparablePath(path) === comparablePath(session.file.path)) {
+      throw new Error('请为副本选择不同的文件名或保存位置。');
+    }
   }
-
-  if (saveAs && password !== undefined && session.file && comparablePath(path) === comparablePath(session.file.path)) {
-    throw new Error('请为副本选择不同的保存位置。更改当前项目的密码请使用「项目密码」。');
-  }
+  if (!path) throw new Error('请先选择项目的保存位置。');
   const owner = findProjectWindow(path);
   if ((owner && owner !== session) || isSavingTo(path)) throw new Error('这个项目已在另一窗口打开，请选择其他位置。');
   session.savingTo = comparablePath(path);
@@ -390,6 +392,14 @@ async function saveProject(session: WindowSession, saveAs: boolean, password?: s
     const { state, changeSeq } = await serialize(session, () => ({ state: session.state, changeSeq: session.changeSeq }));
     if (state.sourcePaths?.some(source => comparablePath(source) === comparablePath(path))) {
       throw new Error('此路径是已导入的原件，请选择另一处保存。');
+    }
+    if (destination && existsSync(path)) {
+      if ((await stat(path)).isDirectory()) throw new Error('此名称已被文件夹占用，请换一个文件名。');
+      const { response } = await dialog.showMessageBox(session.window, {
+        type: 'question', message: '要替换已有的项目文件吗？', detail: path,
+        buttons: ['取消', '替换'], defaultId: 0, cancelId: 0,
+      });
+      if (response !== 1) return null;
     }
     const protection = password === undefined ? session.protection : password === null ? undefined : await projectProtection(password);
     const stamp = await writeProject(path, state, protection);
@@ -508,13 +518,19 @@ ipcMain.handle('redaction:open-project', (event, password?: string | null) => {
   const session = windowSession(event.sender);
   return projectOperation(session, () => openProject(session, password));
 });
-ipcMain.handle('redaction:save-project', (event, saveAs: boolean, password?: string | null) => {
+ipcMain.handle('redaction:save-project', (event, password?: string | null, destination?: ProjectDestination) => {
   const session = windowSession(event.sender);
-  return projectOperation(session, () => saveProject(session, saveAs, password));
+  return projectOperation(session, () => saveProject(session, password, destination));
 });
-ipcMain.handle('redaction:project-save-status', event => {
+ipcMain.handle('redaction:project-save-status', event => projectSaveDefaults(windowSession(event.sender)));
+ipcMain.handle('redaction:project-save-directory', (event, directory: string) => {
   const session = windowSession(event.sender);
-  return {hasFile: !!session.file, protected: !!session.protection};
+  return projectOperation(session, async () => {
+    const choice = await dialog.showOpenDialog(session.window, {
+      title: '选择保存位置', defaultPath: directory, properties: ['openDirectory', 'createDirectory'],
+    });
+    return choice.canceled ? null : choice.filePaths[0] ?? null;
+  });
 });
 ipcMain.on('redaction:rendered', (_event, renderMs: number) => {
   if (Number.isFinite(renderMs) && renderMs >= 0) diagnose({stage: 'view-render', renderMs});

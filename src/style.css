@@ -178,14 +178,43 @@ dialog::backdrop { background: #17284a40; }
 .dialog-form { display: grid; gap: 9px; padding: 15px; }
 .dialog-form label { display: grid; gap: 5px; color: var(--muted); font-size: 13px; }
 .project-password-dialog { width: min(430px, calc(100vw - 36px)); }
-.project-save-choices { min-width: 0; margin: 0; padding: 0; border: 0; display: grid; gap: 4px; }
-.project-save-choices legend { padding: 0; margin-bottom: 4px; color: var(--muted); font-size: 13px; }
-.project-save-choices label {
-  display: flex; align-items: center; gap: 8px; padding: 6px 8px; border: 1px solid transparent;
-  border-radius: 6px; color: var(--ink); cursor: pointer;
+.project-save-dialog { width: min(480px, calc(100vw - 36px)); }
+.project-save-dialog .dialog-form { gap: 16px; padding: 20px; }
+.project-save-dialog .dialog-heading h2 { font-size: 18px; }
+.project-save-dialog .dialog-actions { border-top: 1px solid var(--line); padding-top: 13px; }
+.project-save-dialog .dialog-actions .primary { min-width: 78px; }
+.project-save-fields { display: grid; gap: 6px; }
+.project-save-fields label, .project-field-label { color: var(--ink); font-size: 13px; font-weight: 550; }
+.project-field-label { margin-top: 8px; }
+.project-filename, .project-save-location {
+  display: flex; align-items: center; min-width: 0; min-height: 39px; border: 1px solid var(--edge);
+  border-radius: 7px; background: var(--paper);
 }
-.project-save-choices label:has(input:checked) { background: var(--accent-soft); border-color: var(--accent-edge); }
-.project-save-choices input { margin: 0; accent-color: var(--accent); }
+.project-filename input { flex: 1; min-width: 0; border: 0; background: transparent; padding: 7px 10px; }
+.project-filename input:focus-visible { outline: 0; }
+.project-filename:focus-within { border-color: var(--focus); box-shadow: 0 0 0 2px var(--accent-soft); }
+.project-filename span { padding: 0 10px; color: var(--muted); font-size: 12px; }
+.project-save-location { gap: 8px; padding: 4px 5px 4px 10px; background: var(--surface); }
+.project-save-location svg { flex: none; color: var(--muted); }
+.project-save-location span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.project-save-location .button, .save-password-row .button { color: var(--accent); flex: none; }
+.save-options-trigger { margin-right: auto; }
+.save-options-trigger[aria-expanded="true"] { background: var(--surface); color: var(--ink); }
+.save-protected-status { color: var(--accent); font-size: 11px; }
+.project-password-fields, .project-password-inputs { display: grid; gap: 9px; }
+.save-password-options { padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+.save-password-options .project-password-inputs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.project-password-inputs input { min-width: 0; }
+.save-password-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; min-height: 27px; }
+.save-password-row .save-password-toggle { display: flex; align-items: center; gap: 8px; cursor: pointer; color: var(--ink); }
+.save-password-toggle input {
+  appearance: none; display: grid; align-items: center; box-sizing: border-box; margin: 0; padding: 2px;
+  width: 30px; height: 17px; border: 0; border-radius: 12px; background: #a2adbf; cursor: pointer;
+}
+.save-password-toggle input:checked { background: var(--accent); }
+.save-password-toggle input::before { content: ''; width: 13px; height: 13px; border-radius: 50%; background: #fff; }
+.save-password-toggle input:checked::before { justify-self: end; }
+.save-password-toggle input:disabled { opacity: .65; }
 .import-source { display: flex; align-items: center; justify-content: space-between; gap: 7px; }
 .dialog-form textarea { width: 100%; min-height: 125px; padding: 8px; resize: vertical; }
 .dialog-heading, .dialog-actions { display: flex; align-items: center; justify-content: space-between; gap: 7px; }

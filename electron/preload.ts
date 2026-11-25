@@ -8,8 +8,10 @@ contextBridge.exposeInMainWorld('redaction', {
   onOpenSettings: (callback: () => void) => ipcRenderer.on('redaction:open-settings', () => callback()),
   initialProject: () => ipcRenderer.invoke('redaction:initial-project'),
   openProject: (password?: string | null) => ipcRenderer.invoke('redaction:open-project', password),
-  saveProject: (saveAs: boolean, password?: string | null) => ipcRenderer.invoke('redaction:save-project', saveAs, password),
+  saveProject: (password?: string | null, destination?: import('./main.js').ProjectDestination) =>
+    ipcRenderer.invoke('redaction:save-project', password, destination),
   projectSaveStatus: () => ipcRenderer.invoke('redaction:project-save-status'),
+  pickProjectDirectory: (directory: string) => ipcRenderer.invoke('redaction:project-save-directory', directory),
   onProjectCommand: (callback: (command: string) => void) => {
     ipcRenderer.on('redaction:project-command', (_event: unknown, command: string) => callback(command));
   },
