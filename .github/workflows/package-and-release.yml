@@ -158,7 +158,7 @@ jobs:
             macos)
               ditto -c -k --sequesterRsrc --keepParent "staging/$name" "release/$name.zip"
               ditto -x -k "release/$name.zip" check
-              node scripts/check-release.cjs "check/$name/LegalRedactor.app/Contents/MacOS/Electron" "$VERSION"
+              node scripts/check-release.cjs "check/$name/LegalRedactor.app/Contents/MacOS/LegalRedactor" "$VERSION"
               ;;
           esac
       - uses: actions/upload-artifact@v7

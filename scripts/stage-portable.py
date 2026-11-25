@@ -36,11 +36,13 @@ def stage_mac_bundle(archive, folder, version):
     subprocess.run(["ditto", "-x", "-k", archive, folder], check=True)
     bundle = folder / "LegalRedactor.app"
     (folder / "Electron.app").rename(bundle)
+    executable = bundle / "Contents" / "MacOS" / "Electron"
+    executable.rename(executable.with_name("LegalRedactor"))
     info_path = bundle / "Contents" / "Info.plist"
     resources = bundle / "Contents" / "Resources"
     with info_path.open("rb") as source:
         info = plistlib.load(source)
-    info.update(CFBundleName="LegalRedactor", CFBundleDisplayName=PRODUCT_NAME,
+    info.update(CFBundleName="LegalRedactor", CFBundleDisplayName=PRODUCT_NAME, CFBundleExecutable="LegalRedactor",
                 CFBundleIdentifier="io.github.zhuziqi97.legalredactor",
                 CFBundleShortVersionString=version, CFBundleVersion=version, CFBundleIconFile="LegalRedactor.icns")
     with info_path.open("wb") as output:
