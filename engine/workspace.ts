@@ -543,6 +543,13 @@ async function scanMaterial(state: Workspace, doc: Material, newId: NewId, scan?
     attachScanRow(row, group, code, literal);
   }
   if (previous) restoreManualReview(state, doc, previous, changes);
+  if (changes) {
+    for (const row of doc.decisions) {
+      if (row.action !== 'replace' || !literal.has(row.replacement)) continue;
+      manual(row, null, '', 'review');
+      row.reason = '此代号已出现在原文中';
+    }
+  }
   state.undo = null;
   settleAliases(state, newId);
   repairGroups(state, {});

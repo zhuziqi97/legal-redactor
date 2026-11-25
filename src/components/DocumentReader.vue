@@ -144,6 +144,29 @@ function moveMatch(direction: number) {
   if (matches.value.length) matchIndex.value = Math.min(matches.value.length - 1, Math.max(0, matchIndex.value + direction));
 }
 
+function revealEditorMatch(area: HTMLTextAreaElement, match: Span) {
+  area.setSelectionRange(match.start, match.end);
+  const mirror = document.createElement('div');
+  mirror.className = 'document-text source-editor editor-measure';
+  mirror.style.width = `${area.clientWidth}px`;
+  const text = document.createTextNode(area.value);
+  mirror.append(text);
+  area.parentElement?.append(mirror);
+  try {
+    const range = document.createRange();
+    range.setStart(text, match.start);
+    range.setEnd(text, match.end);
+    const rect = range.getClientRects()[0];
+    if (!rect) return;
+    const top = rect.top - mirror.getBoundingClientRect().top;
+    if (top < area.scrollTop || top + rect.height > area.scrollTop + area.clientHeight) {
+      area.scrollTop = Math.max(0, top - rect.height);
+    }
+  } finally {
+    mirror.remove();
+  }
+}
+
 function keydown(event: KeyboardEvent) {
   if (!props.active) return;
   if (event.key === 'Escape' && props.showQuick) emit('dismiss');
@@ -162,14 +185,7 @@ watch([matches, matchIndex, () => props.active, editing], async ([results, posit
   if (isEditing) {
     await nextTick();
     const area = editor.value;
-    if (area && matches.value[matchIndex.value] === match) {
-      area.setSelectionRange(match.start, match.end);
-      const line = area.value.slice(0, match.start).split('\n').length - 1;
-      const height = parseFloat(getComputedStyle(area).lineHeight);
-      if (line * height < area.scrollTop || (line + 1) * height > area.scrollTop + area.clientHeight) {
-        area.scrollTop = Math.max(0, line * height - height);
-      }
-    }
+    if (area && matches.value[matchIndex.value] === match) revealEditorMatch(area, match);
     return;
   }
   const range = await revealUnits(match);

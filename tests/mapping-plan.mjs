@@ -132,3 +132,27 @@ test('改动已有人工订正的值需复核，失败或过时的识别保留�
   await assert.rejects(w.run({...request, text:'已过时的修订'}), /材料已更新/);
   assert.equal((await w.run({op:'view'})).view.current.text, request.text);
 });
+
+test('编辑原文引入的字面代号与既有映射冲突时定位待核', async () => {
+  const w = workspace();
+  const {current, groups} = await w.add('姓名：张甲\n另一段材料。');
+  const {code} = groups.find(row => row.primary === '张甲');
+  const {view} = await w.run({op:'reviseMaterial', materialId:current.id, revision:current.revision,
+    text:`姓名：张甲\n原稿中写作${code}，待核对。`});
+  assert.equal(view.current.items.find(row => row.original === '张甲').action, 'review');
+  assert.equal((await w.run({op:'output', materialId:current.id})).issues.length, 1);
+});
+
+test('移除别称依据后，后文已有别称回到待核，机构全称仍沿用原代号', async () => {
+  const w = workspace();
+  const text = '甲方：远山贸易有限公司（以下简称远山公司）。\n交接过程记录。\n远山公司随后提交材料。';
+  const {current} = await w.add(text);
+  const alias = current.items.find(row => row.reason === '全文称呼');
+  const full = current.items.find(row => row.original === '远山贸易有限公司');
+  assert.ok(alias && alias.definitions.length && alias.group === full.group);
+  const {view} = await w.run({op:'reviseMaterial', materialId:current.id, revision:current.revision, text:text.replace('（以下简称远山公司）','')});
+  assert.equal(view.current.items.find(row => row.id === full.id).group, full.group);
+  assert.equal(view.current.items.find(row => row.id === full.id).replacement, full.replacement);
+  assert.equal(view.pending[0].itemId, alias.id);
+  assert.equal(view.pending[0].original, '远山公司');
+});
