@@ -10,6 +10,10 @@ on:
         description: Publish the verified packages from the default branch
         type: boolean
         default: false
+      build_macos:
+        description: Also build the macOS Apple Silicon package
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -32,6 +36,7 @@ jobs:
     timeout-minutes: 35
     outputs:
       version: ${{ steps.version.outputs.value }}
+      targets: ${{ steps.targets.outputs.matrix }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -53,6 +58,20 @@ jobs:
             exit 1
           fi
           echo "value=$version" >> "$GITHUB_OUTPUT"
+      - name: Select package targets
+        id: targets
+        env:
+          BUILD_MACOS: ${{ inputs.build_macos }}
+        run: |
+          set -euo pipefail
+          targets='[
+            {"target":"windows","electron":"win32","arch":"x64","runner":"windows-2022","extension":"zip"},
+            {"target":"linux","electron":"linux","arch":"x64","runner":"ubuntu-24.04","extension":"tar.gz"}
+          ]'
+          if [[ "$BUILD_MACOS" == true ]]; then
+            targets=$(jq -c '. + [{"target":"macos","electron":"darwin","arch":"arm64","runner":"macos-15","extension":"zip"}]' <<< "$targets")
+          fi
+          echo "matrix=$(jq -c . <<< "$targets")" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
@@ -81,10 +100,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - {target: windows, electron: win32, arch: x64, runner: windows-2022, extension: zip}
-          - {target: linux, electron: linux, arch: x64, runner: ubuntu-24.04, extension: tar.gz}
-          - {target: macos, electron: darwin, arch: arm64, runner: macos-15, extension: zip}
+        include: ${{ fromJSON(needs.model.outputs.targets) }}
     env:
       VERSION: ${{ needs.model.outputs.version }}
       TARGET: ${{ matrix.target }}
@@ -184,6 +200,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       VERSION: ${{ needs.model.outputs.version }}
+      PACKAGE_TARGETS: ${{ needs.model.outputs.targets }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -197,11 +214,8 @@ jobs:
         run: |
           set -euo pipefail
           tag="v$VERSION"
-          files=(
-            "release/LegalRedactor-$VERSION-windows-x64.zip"
-            "release/LegalRedactor-$VERSION-linux-x64.tar.gz"
-            "release/LegalRedactor-$VERSION-macos-arm64.zip"
-          )
+          paths=$(jq -er --arg version "$VERSION" '.[] | "release/LegalRedactor-\($version)-\(.target)-\(.arch).\(.extension)"' <<< "$PACKAGE_TARGETS")
+          mapfile -t files <<< "$paths"
           for file in "${files[@]}"; do test -s "$file"; done
           refs=$(git ls-remote origin "refs/tags/$tag" "refs/tags/$tag^{}")
           tag_commit=$(printf '%s\n' "$refs" | tail -n1 | cut -f1)

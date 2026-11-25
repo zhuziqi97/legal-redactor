@@ -26,7 +26,10 @@ async function main(executable, version) {
     await page.getByRole('button', {name:'添加材料', exact:true}).click();
     const input = page.getByRole('dialog', {name:'添加材料', exact:true});
     await input.getByLabel('材料名称').fill('离线测试');
-    await input.getByLabel('材料原文').fill('姓名：张甲\n联系电话：13800138000\n备注：材料已核对。');
+    await input.getByLabel('材料原文').fill(
+      '姓名：\n张甲\n联系电话：13800138000\n业务流水号：2031021800004271\n'
+      + '统一社会信用代码：91000000MA0REDAC1X\n备注：材料已核对。',
+    );
     await input.getByRole('button', {name:'添加并识别', exact:true}).click();
 
     const exportPath = join(profile, '脱敏.txt');
@@ -36,7 +39,9 @@ async function main(executable, version) {
     await page.locator('#output-pane').getByRole('button', {name:'导出 TXT', exact:true}).click();
     await page.locator('#redact-panel').getByRole('status').getByText('已导出 TXT', {exact:true}).waitFor();
     const output = await readFile(exportPath, 'utf8');
-    assert.doesNotMatch(output, /张甲|13800138000/u);
+    assert.doesNotMatch(output, /张甲|13800138000|91000000MA0REDAC1X/u);
+    assert.match(output, /姓名：\n【张某】/u);
+    assert.match(output, /业务流水号：2031021800004271\n统一社会信用代码：【信用代码1】/u);
     assert.match(output, /备注：材料已核对。/u);
     assert.equal(output, await page.locator('#output-text').textContent());
     const diagnostics = (await readFile(join(profile, 'diagnostics.jsonl'), 'utf8')).trim().split('\n').map(JSON.parse);
