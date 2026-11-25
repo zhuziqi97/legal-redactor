@@ -68,11 +68,6 @@ main { display: flex; flex: 1; flex-direction: column; width: 100%; min-height: 
   background: var(--accent-soft); color: var(--accent); font-size: 13px; overflow-wrap: anywhere;
 }
 .notice.error { background: var(--warn-soft); border-color: var(--warn-edge); color: var(--warn); }
-.notice.brief {
-  position: fixed; z-index: 1; bottom: 16px; right: 18px; margin: 0; padding: 8px 12px;
-  background: var(--paper); color: var(--ink); border-color: var(--edge);
-  box-shadow: 0 4px 16px #182b5014;
-}
 
 .workbench {
   display: grid;
@@ -265,7 +260,6 @@ dialog::backdrop { background: #17284a40; }
   box-shadow: 0 6px 22px #19294a30;
 }
 .quick-actions .button { min-height: 26px; }
-.notice.brief { z-index: 4; pointer-events: none; }
 
 /* Mapping list */
 .mapping-filters { display: flex; gap: 6px; padding: 4px 12px 3px; }

@@ -111,7 +111,7 @@ const mergeKey = computed(() => {
 const mergePrompt = computed(() => mergeKey.value === mergeReply.value?.key ? mergeReply.value.issue : null);
 watch(mergeKey, () => { if (draft.value) draft.value.resolution = null; });
 const issues = ref<Issue[]>([]);
-const notice = ref({ text: '', error: false, brief: false });
+const notice = ref({ text: '', error: false });
 const reader = ref<InstanceType<typeof DocumentReader>>();
 const review = ref<InstanceType<typeof ReviewPanel>>();
 const importDialog = ref<HTMLDialogElement>();
@@ -155,7 +155,7 @@ let timer: ReturnType<typeof setTimeout> | undefined;
 
 function announce(text = '', error = false, brief = false) {
   clearTimeout(timer);
-  notice.value = { text, error, brief };
+  notice.value = { text, error };
   if (brief) timer = setTimeout(() => { notice.value.text = ''; }, 2600);
 }
 
@@ -789,7 +789,7 @@ function showEvidence(link: Evidence) {
       @toggle="collapsed = !collapsed" @add="showImport" @open="openMaterial" @manage="manageMaterial" @settings="openSettings" />
     <main class="workspace-main">
       <div v-if="notice.text || (material && (!ready || scanNotices[material.id]))" class="notice"
-        :class="{ error: notice.error || !!scanErrors[material?.id || ''], brief: notice.brief && ready }" role="status">
+        :class="{ error: notice.error || !!scanErrors[material?.id || ''] }" role="status">
         <span>{{ material && (scanPhases[material.id] || scanErrors[material.id] || (queued.includes(material.id) ? '排队中' : '')) ||
           notice.text || (material && scanNotices[material.id]) || '当前材料尚未识别' }}</span>
         <button v-if="scanning === material?.id" class="button small" @click="cancelScan">取消识别</button>
