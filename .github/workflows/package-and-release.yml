@@ -1,0 +1,229 @@
+name: Package and release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish the verified packages from the default branch
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: package-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  ELECTRON_VERSION: '44.11.2'
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  model:
+    name: Export bundled model
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    outputs:
+      version: ${{ steps.version.outputs.value }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Check source version
+        id: version
+        env:
+          PUBLISH: ${{ inputs.publish }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          version=$(python3 -c 'import json; print(json.load(open("package.json"))["version"])')
+          if [[ "$GITHUB_REF_TYPE" == tag && "$GITHUB_REF_NAME" != "v$version" ]]; then
+            echo "The tag must match package.json (v$version)." >&2
+            exit 1
+          fi
+          if [[ "$PUBLISH" == true && "$GITHUB_REF" != "refs/heads/$DEFAULT_BRANCH" && "$GITHUB_REF_TYPE" != tag ]]; then
+            echo "Run publishing from the default branch or a version tag." >&2
+            exit 1
+          fi
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Install model export dependencies
+        run: |
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu torch==2.9.1+cpu
+          python -m pip install transformers==5.24.0 huggingface-hub==2.4.0 onnx==1.23.2
+      - name: Export model
+        env:
+          HF_HUB_DISABLE_XET: '1'
+        run: python scripts/prepare-release-model.py release-model
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-model
+          path: release-model/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 3
+          overwrite: true
+
+  package:
+    name: Package ${{ matrix.target }} ${{ matrix.arch }}
+    needs: model
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {target: windows, electron: win32, arch: x64, runner: windows-2022, extension: zip}
+          - {target: linux, electron: linux, arch: x64, runner: ubuntu-24.04, extension: tar.gz}
+          - {target: macos, electron: darwin, arch: arm64, runner: macos-15, extension: zip}
+    env:
+      VERSION: ${{ needs.model.outputs.version }}
+      TARGET: ${{ matrix.target }}
+      ARCH: ${{ matrix.arch }}
+      ELECTRON_PLATFORM: ${{ matrix.electron }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - run: npm ci --ignore-scripts
+      - run: npm test
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-model
+          path: release-model
+      - name: Download the pinned Electron distribution
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p release-inputs
+          gh release download "v$ELECTRON_VERSION" -R electron/electron \
+            --pattern "electron-v$ELECTRON_VERSION-$ELECTRON_PLATFORM-$ARCH.zip" \
+            --output "release-inputs/electron-$TARGET.zip"
+      - name: Prepare Windows resources
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          $crt = Get-ChildItem -Path (Join-Path $vs 'VC\Redist\MSVC') -Directory -Filter '14.*' |
+            Sort-Object { [version]$_.Name } -Descending |
+            ForEach-Object { Join-Path $_.FullName 'x64\Microsoft.VC143.CRT' } |
+            Where-Object { Test-Path (Join-Path $_ 'vcruntime140_1.dll') } |
+            Select-Object -First 1
+          if (!$crt) { throw 'Visual C++ x64 redistributable files were not found.' }
+          New-Item release-inputs/crt -ItemType Directory | Out-Null
+          foreach ($dll in 'msvcp140.dll','vcruntime140.dll','vcruntime140_1.dll') {
+            Copy-Item (Join-Path $crt $dll) release-inputs/crt -ErrorAction Stop
+          }
+          gh release download v2.0.0 -R electron/rcedit --pattern rcedit-x64.exe --output release-inputs/rcedit-x64.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Assemble and verify the release archive
+        run: |
+          set -euo pipefail
+          args=()
+          if [[ "$TARGET" == windows ]]; then
+            args+=(--windows-crt release-inputs/crt --windows-rcedit release-inputs/rcedit-x64.exe)
+          fi
+          python scripts/stage-portable.py "$TARGET" --inputs release-inputs --staging staging --model release-model "${args[@]}"
+          name="LegalRedactor-$VERSION-$TARGET-$ARCH"
+          mkdir -p release check
+          case "$TARGET" in
+            linux)
+              tar -cf - -C staging "$name" | gzip -1 > "release/$name.tar.gz"
+              tar -xf "release/$name.tar.gz" -C check
+              xvfb-run -a node scripts/check-release.cjs "check/$name/legal-redactor" "$VERSION"
+              ;;
+            windows)
+              python -c 'import shutil, sys; n=sys.argv[1]; p=shutil.make_archive("release/"+n, "zip", "staging", n); shutil.unpack_archive(p, "check")' "$name"
+              node scripts/check-release.cjs "check/$name/LegalRedactor.exe" "$VERSION"
+              ;;
+            macos)
+              ditto -c -k --sequesterRsrc --keepParent "staging/$name" "release/$name.zip"
+              ditto -x -k "release/$name.zip" check
+              node scripts/check-release.cjs "check/$name/LegalRedactor.app/Contents/MacOS/Electron" "$VERSION"
+              ;;
+          esac
+      - uses: actions/upload-artifact@v7
+        with:
+          name: portable-${{ matrix.target }}-${{ matrix.arch }}
+          path: release/LegalRedactor-${{ needs.model.outputs.version }}-${{ matrix.target }}-${{ matrix.arch }}.${{ matrix.extension }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 3
+          overwrite: true
+
+  publish:
+    name: Publish verified packages
+    if: github.ref_type == 'tag' || inputs.publish
+    needs: [model, package]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    concurrency:
+      group: publish-${{ needs.model.outputs.version }}
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ needs.model.outputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: portable-*
+          merge-multiple: true
+          path: release
+      - name: Attach packages and publish
+        run: |
+          set -euo pipefail
+          tag="v$VERSION"
+          files=(
+            "release/LegalRedactor-$VERSION-windows-x64.zip"
+            "release/LegalRedactor-$VERSION-linux-x64.tar.gz"
+            "release/LegalRedactor-$VERSION-macos-arm64.zip"
+          )
+          for file in "${files[@]}"; do test -s "$file"; done
+          refs=$(git ls-remote origin "refs/tags/$tag" "refs/tags/$tag^{}")
+          tag_commit=$(printf '%s\n' "$refs" | tail -n1 | cut -f1)
+          if [[ -n "$tag_commit" && "$tag_commit" != "$GITHUB_SHA" ]]; then
+            echo "$tag points to a different commit." >&2
+            exit 1
+          fi
+          if release=$(gh release view "$tag" --json isDraft,targetCommitish); then
+            if [[ "$(jq -r .isDraft <<< "$release")" != true ]]; then
+              echo "$tag has already been published." >&2
+              exit 1
+            fi
+            if [[ -z "$tag_commit" && "$(jq -r .targetCommitish <<< "$release")" != "$GITHUB_SHA" ]]; then
+              echo "The existing draft targets a different commit." >&2
+              exit 1
+            fi
+          else
+            notes=(--generate-notes)
+            if [[ -f ".github/release-notes/$tag.md" ]]; then
+              notes=(--notes-file ".github/release-notes/$tag.md")
+            fi
+            gh release create "$tag" --draft --target "$GITHUB_SHA" --title "$tag" "${notes[@]}"
+          fi
+          gh release upload "$tag" "${files[@]}" --clobber
+          gh release edit "$tag" --draft=false
