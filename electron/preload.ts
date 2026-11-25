@@ -3,7 +3,6 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('redaction', {
   open: () => ipcRenderer.invoke('redaction:open'),
   decodeImport: () => ipcRenderer.invoke('redaction:decode-gb18030'),
-  onImportReading: (callback: () => void) => ipcRenderer.on('redaction:import-reading', () => callback()),
   inferenceSettings: () => ipcRenderer.invoke('redaction:inference-settings'),
   setProvider: (provider: string) => ipcRenderer.invoke('redaction:set-provider', provider),
   onOpenSettings: (callback: () => void) => ipcRenderer.on('redaction:open-settings', () => callback()),

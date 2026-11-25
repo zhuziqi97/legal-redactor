@@ -59,7 +59,6 @@ declare global {
     redaction: {
       open: () => Promise<ImportSelection | null>;
       decodeImport: () => Promise<SourceFile>;
-      onImportReading: (callback: () => void) => void;
       inferenceSettings: () => Promise<InferenceSettings>;
       setProvider: (provider: string) => Promise<string>;
       onOpenSettings: (callback: () => void) => void;

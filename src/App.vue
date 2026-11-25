@@ -129,7 +129,7 @@ const materialImpact = computed(() => {
 });
 const inputText = ref<HTMLTextAreaElement>();
 const input = reactive({ title: '', text: '', path: null as string | null, encoding: '' });
-const readingImport = ref(false);
+const openingImport = ref(false);
 const importEncodingTitle = ref('');
 const importError = ref('');
 const groupDialog = ref<HTMLDialogElement>();
@@ -244,8 +244,6 @@ function adoptImport(file: SourceFile) {
   importEncodingTitle.value = '';
 }
 
-api.onImportReading(() => { readingImport.value = true; });
-
 async function openSettings() {
   if (settingsBusy.value || settingsDialog.value?.open) return;
   settings.value = undefined;
@@ -283,6 +281,7 @@ async function saveSettings() {
 async function pickFile() {
   if (busy.value) return;
   busy.value = true;
+  openingImport.value = true;
   importError.value = '';
   try {
     const file = await api.open();
@@ -292,7 +291,7 @@ async function pickFile() {
     importEncodingTitle.value = '';
     importError.value = prettyError(error);
   } finally {
-    readingImport.value = false;
+    openingImport.value = false;
     busy.value = false;
   }
 }
@@ -858,7 +857,7 @@ function showEvidence(link: Evidence) {
       <div class="dialog-heading"><h2 id="import-title">添加材料</h2><button type="button" class="button quiet small close-dialog" aria-label="关闭添加材料" :disabled="busy" @click="importDialog?.close()">×</button></div>
       <label>材料名称<input v-model="input.title" :disabled="busy" placeholder="可选"></label>
       <div class="import-source">
-        <span class="count">{{ readingImport ? '正在读取文件…' : input.path ? `已读取 ${input.encoding.toUpperCase()}` : '原文' }}</span>
+        <span class="count">{{ openingImport ? '正在打开文件…' : input.path ? `已读取 ${input.encoding.toUpperCase()}` : '原文' }}</span>
         <button type="button" class="button small" :disabled="busy" @click="pickFile">打开 TXT</button>
       </div>
       <div v-if="importEncodingTitle" class="import-source">

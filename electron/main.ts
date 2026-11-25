@@ -276,7 +276,6 @@ ipcMain.handle('redaction:open', async (event) => {
   const [path] = choice.filePaths;
   const session = windowSession(event.sender);
   session.importInput = undefined;
-  event.sender.send('redaction:import-reading');
   const started = performance.now();
   let bytes, sourcePath;
   try {
