@@ -46,12 +46,17 @@ export function affirmative(text: string) {
 }
 
 const whoQuestion = rule('谁|姓名|名字|叫什么');
+const questionAction = rule('谁([\\u3400-\\u9fff]{1,3}?)(?:了|过|的)');
 export function answerNames(text: string, layout: Layout) {
   const rows: Hit[] = [];
   for (const [question, answer] of layout.answers) {
     const query = slice(text, ...question);
     if (!whoQuestion.test(query) || R.FORMER_NAME.test(query)) continue;
-    const reply = R.SHORT_REPLY.fullmatch(text, ...answer);
+    const action = questionAction.search(query)?.group(1);
+    const actionReply = action
+      ? rule('[ \\t]*(?:是)?([\\u3400-\\u9fff·]{2,4})' + escape(action) + '的[。！! \\t]*').fullmatch(text, ...answer)
+      : undefined;
+    const reply = actionReply ?? R.SHORT_REPLY.fullmatch(text, ...answer);
     const name = reply?.group(1);
     if (reply && name && PERSON_VALUE.fullmatch(name) && hasSurname(name) && !TITLE.fullmatch(name) && !ROLE.fullmatch(name)
         && !R.NON_ASSERTION.test(name) && !R.UNCERTAIN_ASSERTION.test(name)) rows.push(hit(...reply.span(1), 'person', '姓名短答', 65));
@@ -60,7 +65,7 @@ export function answerNames(text: string, layout: Layout) {
 }
 
 const correction = rule('有误|需核实|待核实|说错');
-const actually = rule('其实是|实际是');
+const actually = rule('(?:其实|实际)是[ \\t]*');
 const topicsOf = (text: string) => [...R.TOPIC.finditer(text)].map(match => match.value);
 
 export function disputed(text: string, start: number, end: number, question: string, answerEnd: number) {
@@ -75,7 +80,8 @@ export function disputed(text: string, start: number, end: number, question: str
     const others = topicsOf(rest);
     if (others.length && !others.some(topic => topics.includes(topic)) && !R.PERSON_ALIAS.test(rest)) continue;
     if (qualified(rest) || R.DISPUTED.test(rest) || R.UNCERTAIN_ASSERTION.test(rest) || correction.test(rest)) return true;
-    if (!others.length && R.SHORT_REPLY.fullmatch(trim(rest, '。', 'right')) && actually.match(rest)) return true;
+    const shortCorrection = !others.length && actually.match(rest);
+    if (shortCorrection && R.SHORT_REPLY.fullmatch(rest, shortCorrection.end())) return true;
   }
   return false;
 }

@@ -121,9 +121,10 @@ function addMaterial(state: Workspace, request: Extract<Request, {op: 'add'}>) {
   state.activeId = String(index);
 }
 
-function reuseRegistry(state: Workspace) {
+function reuseRegistry(state: Workspace, excludeMaterial?: string) {
   const matches = new Map<string, {kind: string; value: string; groups: Set<string>}>();
   for (const doc of state.materials) {
+    if (doc.id === excludeMaterial) continue;
     for (const row of doc.decisions ?? []) {
       if (!row.match || row.action !== 'replace' || !row.group) continue;
       const key = keyOf(...row.match);
@@ -426,6 +427,8 @@ function isManual(row: Row) {
   return row.reason === '人工订正' || row.reason === revisedReview;
 }
 
+const documentOccurrenceReasons = new Set(['全文村名', '全文全称', '全文姓名', '全文姓名边界']);
+
 function relationKey(link: Relation) {
   return keyOf(link.type, link.start, link.end, link.subject_start, link.object_start, link.name, link.value);
 }
@@ -433,7 +436,9 @@ function relationKey(link: Relation) {
 async function scanMaterial(state: Workspace, doc: Material, newId: NewId, scan?: Scan,
   edit?: {previous: PreviousReview; changes: ReturnType<typeof collectRevision>}) {
   if (doc.decisions && !edit) throw new Error('这份材料已经识别。');
-  const {known, records, names} = reuseRegistry(state);
+  const registry = reuseRegistry(state);
+  const {known} = registry;
+  const {records, names} = edit ? reuseRegistry(state, doc.id) : registry;
   const used = occupied(state);
   const previous = edit?.previous ?? doc.previousReview;
   if (previous) {
@@ -452,13 +457,14 @@ async function scanMaterial(state: Workspace, doc: Material, newId: NewId, scan?
     }
   }
   const localScan: Scan | undefined = changes && scan ? async (text, free, known) => [
-    ...[...moved.values()].filter(row => row.reason === 'Otter' && !changes.affects(row))
-      .map(row => hit(row.start, row.end, row.type, 'Otter', 60)),
+    ...[...moved.values()].filter(row => ['Otter', '具名机构用作地点'].includes(row.reason) && !changes.affects(row))
+      .map(row => hit(row.start, row.end, row.reason === '具名机构用作地点' ? 'address' : row.type, 'Otter', 60)),
     ...await scan(text, free.filter(changes.affects), known),
   ] : scan;
   const [raw, objects, relations] = await buildPlan(doc.text, records, localScan, doc.id, names, changes?.layout);
   const {rows, links: supported} = reviewDecisions(doc.text, relations, raw);
   const retained: Row[] = [];
+  const documentUpdates = new Set<(typeof rows)[number]>();
   if (edit && changes) {
     const newLinks = new Map(relations.map(link => [relationKey(link), link]));
     const oldStarts = new Map<number, number>();
@@ -473,8 +479,25 @@ async function scanMaterial(state: Workspace, doc: Material, newId: NewId, scan?
       oldStarts.set(link.start, next.start);
     }
     doc.relations = [...newLinks.values()];
+    const byRange = new Map(rows.map(row => [keyOf(row.start, row.end), row]));
+    for (const row of rows) {
+      if (!row.definitions?.length && !documentOccurrenceReasons.has(row.reason)) continue;
+      const old = moved.get(keyOf(row.start, row.end));
+      const oldDefinitions = old?.definitions?.map(at => oldStarts.get(at)) ?? [];
+      const definitions = row.definitions ?? [];
+      if (!old || old.type !== row.type || oldDefinitions.length !== definitions.length
+          || definitions.some(at => !oldDefinitions.includes(at))) documentUpdates.add(row);
+    }
+    const updated = [...documentUpdates];
     for (const row of moved.values()) {
-      if (changes.affects(row) && !isManual(row)) continue;
+      if (!isManual(row)) {
+        if (changes.affects(row) || updated.some(next => overlap(next, row))) continue;
+        const replacement = byRange.get(keyOf(row.start, row.end));
+        if (documentOccurrenceReasons.has(row.reason) && replacement?.type !== row.type) {
+          manual(row, null, '', 'review');
+          row.reason = revisedReview;
+        }
+      }
       if (row.definitions?.length) {
         const definitions = row.definitions.flatMap(start => oldStarts.has(start) ? [oldStarts.get(start)!] : []);
         if (definitions.length === row.definitions.length) row.definitions = definitions;
@@ -487,7 +510,8 @@ async function scanMaterial(state: Workspace, doc: Material, newId: NewId, scan?
     }
   } else doc.relations = relations;
   let nextId = edit?.previous.decisions.reduce((max, row) => Math.max(max, row.id), 0) ?? 0;
-  const fresh = rows.filter(row => !changes || changes.affects(row) && !retained.some(old => overlap(old, row)))
+  const fresh = rows.filter(row => !changes ||
+      (changes.affects(row) || documentUpdates.has(row)) && !retained.some(old => overlap(old, row)))
     .map(row => {
       const old = moved.get(keyOf(row.start, row.end));
       return {...row, id: old?.type === row.type ? old.id : ++nextId, group: null, aliasType: ''} as Row;
@@ -508,7 +532,7 @@ async function scanMaterial(state: Workspace, doc: Material, newId: NewId, scan?
     const record = row.object ? objects[row.object] : undefined;
     let match: Row['match'];
     if (row.type === 'person') {
-      const name = row.original;
+      const name = row.reason === '裁判署名' ? row.original.replace(/\s/gu, '') : row.original;
       if (name === row.name && PERSON_VALUE.fullmatch(name) && typicalName(name) &&
         !TITLE.fullmatch(name) && !shortName.fullmatch(name)) match = ['person', name];
     } else if (record && record.scope === null && record.kind === row.type) {

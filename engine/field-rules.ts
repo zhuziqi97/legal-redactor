@@ -1,6 +1,7 @@
 /** Pattern sources and labels from the Python case_fields reference. */
 import { rule } from './text.js';
 
+export const REFERENCE_IDS = new Set(['设备编号', '设备号', '流水号', '业务流水号', '交易流水号']);
 export const FIELD_TYPES: Record<string, string> = {
   "姓名": "person",
   "被询问人": "person",
@@ -21,6 +22,8 @@ export const FIELD_TYPES: Record<string, string> = {
   "甲方名称": "party",
   "乙方名称": "party",
   "单位名称": "organization",
+  "债权人名称": "party",
+  "房号": "address",
   "户名": "party",
   "账户名称": "party",
   "对方户名": "party",
@@ -78,8 +81,7 @@ export const FIELD_TYPES: Record<string, string> = {
   "余额": "keep",
   "方向": "keep",
   "借贷方向": "keep",
-  "设备编号": "keep",
-  "设备号": "keep",
+  ...Object.fromEntries([...REFERENCE_IDS].map(label => [label, 'keep'])),
 };
 export const NAME = "[\\u3400-\\u9fff]{2,6}(?:[·・][\\u3400-\\u9fff]{1,8})*";
 export const ORG = "公司|集团|事务所|分行|支行|中心|分校|工厂|研究院|协会|店|医院|委员会|合作社";
@@ -96,7 +98,9 @@ export const STRUCTURAL: Record<string, string> = {
   wechat_qq: "social",
   email: "email",
 };
-export const LABEL = rule("(?<![A-Za-z0-9_])(公民身份号码|法定代表人|身份证号码|联系人电话|银行卡尾号|联系人备注|借方发生额|贷方发生额|被询问人|被讯问人|甲方名称|乙方名称|单位名称|账户名称|对方户名|交易对手|身份证号|证件号码|手机号码|联系电话|联系方式|电话号码|开户账号|收款账号|账户账号|对方账号|银行账号|银行卡号|账号尾号|送达地址|户籍地址|居住地址|微信账号|微信昵称|交易日期|交易时间|交易金额|借贷方向|设备编号|询问人|讯问人|记录人|经办人|联系人|签署人|签名人|签字人|开户名|证件号|手机号|现住址|微信号|发言者|通话方|设备号|姓名|签名|签字|甲方|乙方|户名|电话|手机|座机|账号|尾号|案号|住址|地址|住所|昵称|日期|时间|金额|收入|支出|余额|方向)\\s*[：:]");
+export const LABEL = rule(
+  "(?<![A-Za-z0-9_])(" + Object.keys(FIELD_TYPES).sort((a, b) => b.length - a.length).join('|') + ")[ \\t　]*[：:]",
+);
 export const CHAT = rule("^\\s*(?:(?:\\[)?(?:\\d{4}[-/]\\d{1,2}[-/]\\d{1,2}[ T]+)?\\d{1,2}:\\d\\d(?::\\d\\d)?(?:\\])?\\s+)([^：:\\n]{1,32})[：:]");
 export const BARE_CHAT = rule("^\\s*([^：:\\n]{1,24})[：:]");
 export const CHAT_HEADING = rule("^\\s*(?:[【\\[（#]+\\s*)?(?:微信|聊天|通话)(?:记录|节录|摘录|内容)");
@@ -104,11 +108,12 @@ export const HEADING = rule("^\\s*(?:[【\\[（#]+\\s*[^：:\\n]{2,35}[】\\]）
 export const DATE_TIME = "(?:\\d{4}(?:[-/.](?:0?[1-9]|1[0-2])[-/.](?:0?[1-9]|[12]\\d|3[01])(?!\\d)|年(?:0?[1-9]|1[0-2])月(?:0?[1-9]|[12]\\d|3[01])(?!\\d)日?)|\\d{1,2}:\\d\\d(?::\\d\\d)?)";
 export const AMOUNT_FIELD = rule("(?:[￥¥]\\s*)?[+−-]?(?:\\d{1,3}(?:[,，]\\d{3})+|\\d+)(?:\\.\\d+)?(?!\\d|\\.\\d)\\s*(?:(?:亿元|万元|元|%))?");
 export const DATE_AMOUNT = rule("(?<!\\d)(?:(?:\\d{4}(?:[-/.](?:0?[1-9]|1[0-2])[-/.](?:0?[1-9]|[12]\\d|3[01])(?!\\d)|年(?:0?[1-9]|1[0-2])月(?:0?[1-9]|[12]\\d|3[01])(?!\\d)日?)|\\d{1,2}:\\d\\d(?::\\d\\d)?)(?!\\d)|\\d{4}年|[￥¥]\\s*(?:\\d{1,3}(?:[,，]\\d{3})+|\\d+)(?:\\.\\d+)?(?!\\d|\\.\\d)|(?:\\d{1,3}(?:[,，]\\d{3})+|\\d+)(?:\\.\\d+)?\\s*(?:亿元|万元|元|%))");
-export const CSV_CELL = rule("(\"(?:[^\"]|\"\")*\"|[^,\"\\r\\n]*)(?=[,\\r\\n]|$)");
+export const CSV_CELL = rule("(\"(?:[^\"]|\"\")*\"|[^,\"\\r\\n\\f]*)(?=[,\\r\\n\\f]|$)");
 export const RECORD_END = rule("\\r\\n|[\\r\\n\\f]");
 export const FIELD_END = rule("[。；;！!？?\\r\\n|｜\\t]");
 export const NUMBER_GROUP = rule("[0-9xX*×]+(?:[ \\t　－—-]+[0-9xX*×]+)*");
 export const INTERNATIONAL = rule("(?<![0-9A-Za-z])(?:\\+|00)[0-9]{1,3}[ \\t　－—-]*(?:[（(][0-9]{1,5}[）)][ \\t　－—-]*)?[0-9xX*×]+(?:[ \\t　－—-]+[0-9xX*×]+)*");
+const INTERNATIONAL_NUMBER = rule("(?:(?:[+＋]|00)[0-9]{1,3}[ \\t　－—-]*)?(?:[（(][0-9]{1,5}[）)][ \\t　－—-]*)?[0-9xX*×]+(?:[ \\t　－—-]+[0-9xX*×]+)*");
 export const GROUPED_CARD = rule("\\d{4}(?:[ \\t　－—-]+\\d{4}){3}(?:[ \\t　－—-]+\\d{3})?");
 export const ADDRESS_CONTINUATION = rule("\\s*(?:[\\u3400-\\u9fff]{1,8}(?:省|市|县|区|镇|乡|街道|路|街|巷|村)|\\d+[A-Za-z]?(?:号|栋|楼|层|单元|室|房))");
 export const ADDRESS_DETAIL = rule("(?:(?:[0-9A-Za-z]+(?:号楼|号|楼|栋|幢|层|单元|座|室|房)|[零〇一二两三四五六七八九十百]+(?:楼|层|栋|幢|单元|室)|[东西南北中](?:区|楼|栋|座|单元))[ \\t]*)+(?:\\d{1,6})?");
@@ -118,10 +123,10 @@ export const TURN = rule("^\\s*(问话|答话|问|答)\\s*[：:]");
 export const PERSON_VALUE = rule("(?:[\\u3400-\\u9fff]{2,4}|[\\u3400-\\u9fff]{1,8}(?:[·・][\\u3400-\\u9fff]{1,8})+|[A-Za-z]+(?:[ .'-][A-Za-z]+)*)");
 export const PERSON_NOTE = rule("代签|签字|不详|未签|本人|由.+|疑为|已更名");
 export const VALUE_PATTERNS: Record<string, ReturnType<typeof rule>> = {
-  mobile: rule("(?:(?:[+＋]|00)[0-9]{1,3}[ \\t\\r\\n　－—-]*)?(?:[（(][0-9]{1,5}[）)][ \\t\\r\\n　－—-]*)?[0-9xX*×]+(?:[ \\t\\r\\n　－—-]+[0-9xX*×]+)*"),
-  bank_account: rule("[0-9xX*×]+(?:[ \\t\\r\\n　－—-]+[0-9xX*×]+)*"),
-  tail: rule("[0-9xX*×]+(?:[ \\t\\r\\n　－—-]+[0-9xX*×]+)*"),
-  id_card: rule("[0-9xX*×]+(?:[ \\t\\r\\n　－—-]+[0-9xX*×]+)*"),
+  mobile: INTERNATIONAL_NUMBER,
+  bank_account: NUMBER_GROUP,
+  tail: NUMBER_GROUP,
+  id_card: NUMBER_GROUP,
   social: rule("[A-Za-z0-9_][A-Za-z0-9_-]*"),
 };
 export const VALUE_LENGTHS: Record<string, [number, number]> = {
@@ -166,7 +171,7 @@ export const LEVEL = {
 };
 export const ADDRESS_STATUS = rule("(?:(?:住址|地址|现址|去向|住所)(?:尚)?)?(?:不详|不明|未知|未提供|待核实)|无固定(?:住址|住所)|(?:已|已经)搬离");
 export const ROUTED_ADDRESS = rule("(?:(?:另|改|转)(?:邮寄|寄|送达|送)(?:至|往|到)?|(?:邮寄|寄|送达|送)(?:至|往|到))\\s*");
-export const ROAD_VALUE = rule("[\\u3400-\\u9fffA-Za-z0-9]+?(?:大道|街道|路|街|巷|弄)\\s*\\d+(?:号楼|号|弄)(?:(?:[0-9A-Za-z]+(?:号楼|号|楼|栋|幢|层|单元|座|室|房)|[零〇一二两三四五六七八九十百]+(?:楼|层|栋|幢|单元|室)|[东西南北中](?:区|楼|栋|座|单元)))*");
+export const ROAD_VALUE = rule("[\\u3400-\\u9fffA-Za-z0-9]+?(?:大道|街道|路|街|巷|弄)[ \\t]*\\d+(?:[-－]\\d+)?(?:号楼|号|弄)(?:(?:[0-9A-Za-z]+(?:号楼|号|楼|栋|幢|层|单元|座|室|房)|[零〇一二两三四五六七八九十百]+(?:楼|层|栋|幢|单元|室)|[东西南北中](?:区|楼|栋|座|单元)))*");
 export const PREMISE = rule("([\\u3400-\\u9fffA-Za-z0-9]{1,18}?)((?:小区|社区|花园|公寓|大厦|广场|家园|新村|园区|苑))");
 export const BUILDING = rule("(?:[0-9A-Za-z]+(?:号楼|号|楼|栋|幢|层|单元|座|室|房)|[零〇一二两三四五六七八九十百]+(?:楼|层|栋|幢|单元|室)|[东西南北中](?:区|楼|栋|座|单元))(?:[ \\t]*(?:[0-9A-Za-z]+(?:号楼|号|楼|栋|幢|层|单元|座|室|房)|[零〇一二两三四五六七八九十百]+(?:楼|层|栋|幢|单元|室)|[东西南北中](?:区|楼|栋|座|单元)))*");
 export const ROOM_AFTER_BUILDING = rule("\\d{1,5}(?=$|[\\s，,、。；;！？!?（）()])");
@@ -176,5 +181,5 @@ export const HEADER_NAMES = new Set(["乙方", "乙方名称", "交易对手", "
 export const IDENTIFIER_FIELDS = new Set(["bank_account", "case_number", "id_card", "mobile", "social", "tail"]);
 export const INTERVIEWEE = rule("^\\s*(?:被询问人|被讯问人)\\s*[：:]");
 export const STREET_ADDRESS = rule("(?:[\\u3400-\\u9fff]{2,8}(?:省|自治区))?(?:[\\u3400-\\u9fff]{2,8}市|[\\u3400-\\u9fff]{2,8}(?:区|县))(?:[\\u3400-\\u9fff]{1,8}(?:区|县|旗|镇|街道)){0,3}[\\u3400-\\u9fff0-9]{1,16}(?:路|街|巷|大道|弄)\\s*[0-9]+(?:号楼|号|弄)(?:[0-9A-Za-z]+(?:号楼|号|楼|栋|幢|层|单元|座|室|房)){0,5}");
-export const ADDRESS_INTRO = rule("位于|住在|送至|地址为|设在|居住于|[该本](?:区|县|市|镇|村)|在|到|往|从|去");
-export const DELIVERY_INTRO = rule("居住(?:在|于)|住在|住址为|地址为|位于|寄往|寄至|(?:步行|开车|搬|迁|转|走|送)(?:到|至|往)");
+export const ADDRESS_INTRO = rule("位于|住在|送至|地址为|设在|居住[于的]|[该本](?:区|县|市|镇|村)|在|到了?|往|从|去");
+export const DELIVERY_INTRO = rule("居住(?:在|于)|住在|住址为|地址为|位于|寄往|寄至|(?:步行|开车|搬|迁|转|走|送)(?:到了?|至|往)");

@@ -133,6 +133,38 @@ test('改动已有人工订正的值需复核，失败或过时的识别保留�
   assert.equal((await w.run({op:'view'})).view.current.text, request.text);
 });
 
+test('裁判署名保留职务和原文区间，并沿用另一份材料的人员代号', async () => {
+  const w = workspace();
+  const first = await w.add('姓名：王明');
+  const [group] = first.groups;
+  const next = await w.add('本案审理终结。\n审 判 员    王 明\n书 记 员    李 华');
+  const row = next.current.items.find(item => item.original === '王 明');
+  assert.equal(row.group, group.id);
+  assert.equal([...next.current.text].slice(row.start, row.end).join(''), '王 明');
+  assert.match(next.current.output, /审 判 员    【王某】\n书 记 员    【李某】/u);
+});
+
+test('修改文首完整住址会更新文末简称，局部编辑只提交受影响的模型文本', async () => {
+  const w = workspace();
+  const before = await w.add('地址待补。\n交接事项另办。\n他从槐安村出来。');
+  assert.ok(!before.current.items.some(item => item.original === '槐安村'));
+  const text = before.current.text.replace('地址待补。', '住址：平川市柳桥镇槐安村新民路8号。');
+  const windows = [];
+  const {view} = await w.run({op: 'reviseMaterial', materialId: before.current.id, revision: before.current.revision, text},
+    (source, free) => {
+      windows.push(...free.map(row => [...source].slice(row.start, row.end).join('')));
+      return [];
+    });
+  assert.ok(windows.every(value => !value.includes('他从')));
+  assert.equal(view.current.items.find(item => item.original === '槐安村')?.reason, '全文村名');
+  const full = await workspace().add(text);
+  assert.deepEqual(view.current.items.map(row => [row.original, row.type, row.action]),
+    full.current.items.map(row => [row.original, row.type, row.action]));
+  const reverted = await w.run({op: 'reviseMaterial', materialId: view.current.id, revision: view.current.revision,
+    text: before.current.text}, () => []);
+  assert.equal(reverted.view.current.items.find(item => item.original === '槐安村')?.action, 'review');
+});
+
 test('编辑原文引入的字面代号与既有映射冲突时定位待核', async () => {
   const w = workspace();
   const {current, groups} = await w.add('姓名：张甲\n另一段材料。');

@@ -46,3 +46,46 @@ test('别称更正保留引导语，对缺乏语境的模型昵称不建立候�
     async inputs => inputs.map(value => predictions(value, [['是小李', 'chat nickname'], ['小王', 'chat nickname']])));
   assert.deepEqual(hits.map(row => [...text].slice(row.start, row.end).join('')), ['小李']);
 });
+
+test('字段明确时区分流水号、账号和信用代码，按列和完整逻辑记录识别', async () => {
+  const text = '业务流水号：9901010000002022。\n银行账号：9901010000002022。\n统一社会信用代码：91000000MA0REDAC1X。\n\n'
+    + '序号  债权人名称  金额（元）\n1  嘉林市晨星设备有限公司  16800\n合计  16800\n\n'
+    + '姓名,联系电话,备注\n王明,13800138000,"已通知,\n等待回复"';
+  const [rows] = await buildPlan(text);
+  assert.deepEqual(rows.map(row => [row.original, row.type]), [
+    ['9901010000002022', 'bank_account'], ['91000000MA0REDAC1X', 'uscc'],
+    ['嘉林市晨星设备有限公司', 'organization'], ['王明', 'person'], ['13800138000', 'mobile'],
+  ]);
+  const output = render(text, rows).output;
+  assert.match(output, /^业务流水号：9901010000002022。\n银行账号：【账号1】。\n统一社会信用代码：【信用代码1】。/u);
+  assert.match(output, /  16800\n合计  16800[\s\S]+"已通知,\n等待回复"$/u);
+  assert.ok(readFields(text).free.some(row => [...text].slice(row.start, row.end).join('') === '已通知,\n等待回复'));
+});
+
+test('确认完整地点时保留人物、动作、指代和引用标题', async () => {
+  const text = '查看的是钱宁居住的嘉林市青松镇杏桥村安平路25号。\n'
+    + '她把货送到了东原市宝林区万兴街19号。\n先去医院挂号，两天后在嘉林市康复医院复诊。\n'
+    + '依据《中华人民共和国民法典》第三条。';
+  const values = [['钱宁', 'person'], ['医院', 'location'], ['嘉林市康复医院', 'location'],
+    ['中华人民共和国', 'location']];
+  const [rows] = await buildPlan(text, {}, (source, free, known) => scanCandidates(source, free, known,
+    async inputs => inputs.map(value => predictions(value, values))));
+  assert.deepEqual(rows.map(row => [row.original, row.type]), [
+    ['钱宁', 'person'], ['嘉林市青松镇杏桥村安平路25号', 'address'],
+    ['东原市宝林区万兴街19号', 'address'], ['嘉林市康复医院', 'organization'],
+  ]);
+  const output = render(text, rows).output;
+  assert.match(output, /查看的是【钱某】居住的【[^】]+】。/u);
+  assert.match(output, /她把货送到了【[^】]+】。[\s\S]*去医院挂号[\s\S]*《中华人民共和国民法典》第三条。/u);
+});
+
+test('问答更正撤回别称归属，重用问句动词时只替换姓名', async () => {
+  const text = '问：钱宁的网名是什么？\n答：我记得他网名叫阿林。\n实际是阿杨。\n问：谁领了单据？\n答：吴刚领的。';
+  const values = [['钱宁', 'person'], ['阿林', 'chat nickname'], ['是阿杨', 'chat nickname'], ['吴刚', 'person']];
+  const [rows, , relations] = await buildPlan(text, {}, (source, free, known) => scanCandidates(source, free, known,
+    async inputs => inputs.map(value => predictions(value, values))));
+  assert.ok(!relations.some(link => ['阿林', '阿杨'].includes(link.value)));
+  const output = render(text, rows).output;
+  assert.doesNotMatch(output, /阿林|阿杨|吴刚/u);
+  assert.match(output, /实际是【[^】]+】。\n问：谁领了单据？\n答：【吴某】领的。/u);
+});

@@ -3,7 +3,7 @@ export type Action = 'replace' | 'keep' | 'review';
 export const labels = {
   person: '人员', organization: '单位', address: '地址', id_card: '证件', mobile: '电话',
   bank_account: '账号', tail: '尾号', number: '号码', case_number: '案号', social: '社交账号',
-  nickname: '昵称', email: '邮箱',
+  nickname: '昵称', email: '邮箱', uscc: '信用代码',
 };
 export type Kind = keyof typeof labels;
 export type Item = Span & {

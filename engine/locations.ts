@@ -1,11 +1,26 @@
 import { ADDRESS_BREAK, ADDRESS_DETAIL, NOTE } from './field-rules.js';
-import { deliveryEnd, hit, type Hit } from './fields.js';
+import { addressComponentEnd, deliveryEnd, hit, type Hit } from './fields.js';
 import * as R from './location-rules.js';
 import { bisect, indexOf, length, rule, slice, startsAny, trim } from './text.js';
 
 const levelOf = (suffix: string) => R.ADMIN_LEVEL[suffix as keyof typeof R.ADMIN_LEVEL];
 const noteItems = rule('[^，,、；;]+');
 const separatesPlace = (text: string, end: number) => R.PLACE_SEPARATOR.match(slice(text, end, end + 4));
+const locationStart = rule('(?:位于|居住(?:的|于)|住在|到达|从|在|到了?|去)(?:[本该](?:区|县|市|镇|村))?');
+const locationEnd = rule('[，,。；;！？!?、\\r\\n\\f]|$');
+const locatedSite = rule('(?:市场|停车场|车库|\\d号|\\d室|大厦)$');
+const roomInProse = rule('(?<![0-9A-Za-z])\\d{1,6}(?:室|房)(?!间)');
+const roomContext = rule('(?:楼|层|的|在|至|到|进|从|往|是)\\s*$');
+const formalOffice = rule('(?:^|[，,。；;：:\\r\\n])([\\u3400-\\u9fff]{2,8}?(?:市|区|县)'
+  + '(?:(?:人民)?法院|公安局(?:交通警察|刑事侦查)?支队(?:[\\u3400-\\u9fff]{2,5}大队)?))'
+  + '(?=受理|审理|判决|裁定|作出|出具|认定|发出|[，,。；;：:\\r\\n]|$)');
+
+function nearbySite(text: string, start: number, level = -1) {
+  const cap = Math.min(length(text), start + 64);
+  const limit = locationEnd.search(text, start, cap)?.start() ?? cap;
+  const end = addressComponentEnd(text, start, limit, level);
+  return end > start && locatedSite.search(slice(text, start, end)) ? end : start;
+}
 
 function addressEnd(text: string, place: Hit, positions: number[]) {
   const admin = R.ADMIN_END.search(slice(text, place.start, place.end));
@@ -34,6 +49,20 @@ export function locationBoundaries(text: string, predicted: Hit[], language: Hit
   const preceding = new Map([...places.values()].map(item => [item.end, item]));
   const organizations = predicted.filter(item => item.kind === 'organization');
   const result: Hit[] = [];
+  for (const lead of locationStart.finditer(text)) {
+    const start = lead.end();
+    if (!R.ADMIN_PART.match(text, start)) continue;
+    const end = nearbySite(text, start);
+    if (end > start) result.push(hit(start, end, 'address', '定位语境中的完整地点', 87));
+  }
+  for (const room of roomInProse.finditer(text)) {
+    if (roomContext.search(slice(text, Math.max(0, room.start() - 5), room.start()))) {
+      result.push(hit(...room.span(), 'address', '叙述中的房室', 63));
+    }
+  }
+  for (const office of formalOffice.finditer(text)) {
+    result.push(hit(...office.span(1), 'organization', '行政地名与机关全称', 68));
+  }
   for (const field of fields) {
     if (field.kind !== 'address' || field.value_limit === null) continue;
     for (const at of positions.slice(bisect(positions, field.start), bisect(positions, field.end, true))) {
@@ -45,7 +74,13 @@ export function locationBoundaries(text: string, predicted: Hit[], language: Hit
     }
   }
   for (const place of places.values()) {
-    if (R.DELIVERY_SITE_END.search(slice(text, place.start, place.end))) {
+    const value = slice(text, place.start, place.end);
+    const admin = R.ADMIN_END.search(value);
+    if (admin) {
+      const end = nearbySite(text, place.end, levelOf(admin.value));
+      if (end > place.end) result.push(hit(place.start, end, 'address', '地点后的具名场所或门牌', 87));
+    }
+    if (R.DELIVERY_SITE_END.search(value)) {
       const full = deliveryEnd(text, place.end, length(text));
       if (full > place.end) result.push(hit(place.start, full, 'address', '地点后的门牌楼室', 86));
     }
