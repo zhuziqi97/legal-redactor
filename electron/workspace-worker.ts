@@ -13,7 +13,7 @@ let prediction: {id: number; resolve: (result: Prediction[][]) => void; reject: 
 async function dispatch(job: Job) {
   const {id, state, request, provider, rulesOnly} = job;
   const [{runWorkspace}, {scanCandidates}] = await modules;
-  if (request.op !== 'scan') return runWorkspace(state, request);
+  if (request.op !== 'scan' && request.op !== 'reviseMaterial') return runWorkspace(state, request);
   const send = (message: object) => port.postMessage({id, ...message});
   const phase = (text: string) => send({phase: text});
   const live = new Set(state.materials.map(doc => doc.id));

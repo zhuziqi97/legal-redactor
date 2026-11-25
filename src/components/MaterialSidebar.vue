@@ -10,7 +10,7 @@ const props = defineProps<{
   revision: number; findProject: (text: string) => Promise<Occurrence[]>;
 }>();
 const emit = defineEmits<{ toggle: []; add: []; open: [id: string]; settings: []; locate: [row: Occurrence];
-  manage: [action: 'rename' | 'edit' | 'delete', id: string] }>();
+  manage: [action: 'rename' | 'delete', id: string] }>();
 const searching = ref(false);
 const searchInput = ref<HTMLInputElement>();
 const query = ref('');
@@ -118,7 +118,6 @@ watch(() => props.revision, () => { if (submitted.value) void search(); });
       </button>
       <MappingMenu :label="`${doc.title}的材料操作`" :disabled="locked">
         <button @click="emit('manage', 'rename', doc.id)">重命名</button>
-        <button @click="emit('manage', 'edit', doc.id)">编辑原文</button>
         <button class="danger" @click="emit('manage', 'delete', doc.id)">删除材料</button>
       </MappingMenu>
       </div>

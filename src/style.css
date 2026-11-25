@@ -91,6 +91,9 @@ h1, h2, h3, p { margin: 0; }
 .search-bar { display: flex; flex: none; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 9px; border-bottom: 1px solid var(--line); }
 .search-bar input { flex: 1; min-width: 85px; font-size: 12px; }
 .search-bar span { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.document-text.source-editor { flex: 1; min-height: 0; resize: none; width: 100%; padding: 13px 17px; border: 0; border-radius: 0; }
+.source-editor:focus-visible { outline-offset: -2px; }
+.source-edit-error { flex: none; padding: 7px 13px; }
 
 .panes { display: grid; flex: 1; min-height: 0; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 .pane-title {

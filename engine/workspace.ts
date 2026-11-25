@@ -1,10 +1,10 @@
 import { overlap, type Relation } from './context.js';
 import { displayBase } from './display.js';
 import { NUMBER_KINDS, PERSON_VALUE, TITLE } from './field-rules.js';
-import { typicalName } from './fields.js';
+import { hit, readFields, typicalName, type Layout } from './fields.js';
 import { buildPlan, completeNumber, labels, normalized, reviewDecisions, validCode, type Action, type Scan } from './pipeline.js';
 import { amend, checkedOutput, displayCode, requireDecisions, viewMaterial, type MaterialItem } from './review.js';
-import { project, revisionBlocks } from './revision.js';
+import { project, projectRelation, revisionBlocks, revisionRanges } from './revision.js';
 import { bisect, indexOf, keyOf, length, lineNumber, rule, slice, trim, type Span } from './text.js';
 import type {
   Change, CodeOccupant, Group, Issue, Material, MergeOption, MergeReason, Occurrence, Position, PreviousReview, Request, Row, Workspace,
@@ -314,8 +314,8 @@ function manual(row: Row, group: Group | null, code: string, action: Action, ali
   Object.assign(row, {group: group?.id ?? null, action, replacement: code, aliasType, reason: '人工订正'});
 }
 
-function restoreManualReview(state: Workspace, doc: Material, previous: PreviousReview) {
-  const blocks = [...revisionBlocks(previous.text, doc.text)];
+function restoreManualReview(state: Workspace, doc: Material, previous: PreviousReview, changes?: ReturnType<typeof collectRevision>) {
+  const blocks = changes?.blocks ?? [...revisionBlocks(previous.text, doc.text)];
   const oldEvidence = new Map(previous.relations.map(link => [link.start, link]));
   const evidenceKey = (link: Relation, start = link.start) => keyOf(start, link.type, link.name, link.value);
   const newEvidence = new Set(doc.relations.map(link => evidenceKey(link)));
@@ -333,7 +333,7 @@ function restoreManualReview(state: Workspace, doc: Material, previous: Previous
     for (const key of old.sourceDefinitions ?? []) {
       const link = oldEvidence.get(key);
       const mapped = link && project(blocks, link.start, link.end);
-      if (link && mapped && mapped[2] && newEvidence.has(evidenceKey(link, mapped[0]))) keys.push(mapped[0]);
+      if (link && mapped?.[2] && (!changes || projectRelation(blocks, link)) && newEvidence.has(evidenceKey(link, mapped[0]))) keys.push(mapped[0]);
       else unchanged = false;
     }
     let group = old.group ? state.groups[old.group] : undefined;
@@ -415,26 +415,90 @@ function settleAliases(state: Workspace, newId: NewId) {
   }
 }
 
-async function scanMaterial(state: Workspace, doc: Material, newId: NewId, scan?: Scan) {
-  if (doc.decisions) throw new Error('这份材料已经识别。');
+function collectRevision(old: string, text: string, layout: Layout) {
+  const blocks = [...revisionBlocks(old, text)];
+  const ranges = revisionRanges(text, blocks, readFields(old), layout);
+  const affects = ({start, end}: {start: number; end: number}) => ranges.some(([a, b]) => a < end && start < b);
+  return {blocks, affects, layout};
+}
+
+function isManual(row: Row) {
+  return row.reason === '人工订正' || row.reason === revisedReview;
+}
+
+function relationKey(link: Relation) {
+  return keyOf(link.type, link.start, link.end, link.subject_start, link.object_start, link.name, link.value);
+}
+
+async function scanMaterial(state: Workspace, doc: Material, newId: NewId, scan?: Scan,
+  edit?: {previous: PreviousReview; changes: ReturnType<typeof collectRevision>}) {
+  if (doc.decisions && !edit) throw new Error('这份材料已经识别。');
   const {known, records, names} = reuseRegistry(state);
   const used = occupied(state);
-  const previous = doc.previousReview;
+  const previous = edit?.previous ?? doc.previousReview;
   if (previous) {
     for (const row of previous.decisions) {
       if (row.group && row.reason === '人工订正') used.add(previous.groups[row.group].code);
     }
   }
-  const [raw, objects, relations] = await buildPlan(doc.text, records, scan, doc.id, names);
+  const changes = edit?.changes;
+  const moved = new Map<string, Row>();
+  if (edit && changes) {
+    for (const row of edit.previous.decisions) {
+      const range = project(changes.blocks, row.start, row.end);
+      if (range?.[2] && slice(doc.text, range[0], range[1]) === row.original) {
+        moved.set(keyOf(range[0], range[1]), {...row, start: range[0], end: range[1]});
+      }
+    }
+  }
+  const localScan: Scan | undefined = changes && scan ? async (text, free, known) => [
+    ...[...moved.values()].filter(row => row.reason === 'Otter' && !changes.affects(row))
+      .map(row => hit(row.start, row.end, row.type, 'Otter', 60)),
+    ...await scan(text, free.filter(changes.affects), known),
+  ] : scan;
+  const [raw, objects, relations] = await buildPlan(doc.text, records, localScan, doc.id, names, changes?.layout);
   const {rows, links: supported} = reviewDecisions(doc.text, relations, raw);
-  doc.decisions = rows.map((row, index) => ({...row, id: index + 1, group: null, aliasType: ''}));
-  doc.relations = relations;
+  const retained: Row[] = [];
+  if (edit && changes) {
+    const newLinks = new Map(relations.map(link => [relationKey(link), link]));
+    const oldStarts = new Map<number, number>();
+    for (const link of edit.previous.relations) {
+      const next = projectRelation(changes.blocks, link);
+      if (!next) continue;
+      const key = relationKey(next);
+      const evidence = {start: next.question_start ?? next.statement_start ?? next.start, end: next.statement_end ?? next.end};
+      const subject = {start: next.subject_start, end: next.subject_start + length(next.name ?? '') + 1};
+      if ((changes.affects(evidence) || changes.affects(subject) || changes.affects(next)) && !newLinks.has(key)) continue;
+      if (!newLinks.has(key)) newLinks.set(key, next);
+      oldStarts.set(link.start, next.start);
+    }
+    doc.relations = [...newLinks.values()];
+    for (const row of moved.values()) {
+      if (changes.affects(row) && !isManual(row)) continue;
+      if (row.definitions?.length) {
+        const definitions = row.definitions.flatMap(start => oldStarts.has(start) ? [oldStarts.get(start)!] : []);
+        if (definitions.length === row.definitions.length) row.definitions = definitions;
+        else if (!isManual(row)) {
+          manual(row, null, '', 'review');
+          row.reason = revisedReview;
+        }
+      }
+      retained.push(row);
+    }
+  } else doc.relations = relations;
+  let nextId = edit?.previous.decisions.reduce((max, row) => Math.max(max, row.id), 0) ?? 0;
+  const fresh = rows.filter(row => !changes || changes.affects(row) && !retained.some(old => overlap(old, row)))
+    .map(row => {
+      const old = moved.get(keyOf(row.start, row.end));
+      return {...row, id: old?.type === row.type ? old.id : ++nextId, group: null, aliasType: ''} as Row;
+    });
+  doc.decisions = [...retained, ...fresh];
   const local = new Map<string, Group>();
   const waiting: [Row, Relation][] = [];
   const links = new Map(supported.filter(link => link.type !== '证件').map(link => [link.start, link]));
   const at = new Map(doc.decisions.map(row => [row.start, row]));
   const literal = new Set(literalCodes(doc.text));
-  for (const row of doc.decisions) {
+  for (const row of fresh) {
     if (row.action !== 'replace') continue;
     const link = (row.definitions ?? []).map(key => links.get(key)).find(Boolean);
     if (link && link.subject_start !== row.start) {
@@ -453,7 +517,9 @@ async function scanMaterial(state: Workspace, doc: Material, newId: NewId, scan?
     }
     if (match) row.match = match;
     const key = keyOf(...(match ?? [row.type, row.replacement]));
-    const knownId = match && known.get(key);
+    const old = moved.get(keyOf(row.start, row.end));
+    const knownId = (match && known.get(key)) ||
+      (old?.type === row.type && old.action === 'replace' && !old.definitions?.length && !old.aliasType ? old.group : null);
     let group = (knownId && state.groups[knownId]) || local.get(key);
     if (!group) {
       const code = used.has(row.replacement) ? allocateCode(row.type, row.original, used) : row.replacement;
@@ -471,11 +537,12 @@ async function scanMaterial(state: Workspace, doc: Material, newId: NewId, scan?
       continue;
     }
     const label = link.type === '聊天昵称' ? '微信昵称' : link.type === '曾用名' ? '曾用名' : '';
-    const code = aliasCode(state, group, row.original, label, used);
+    const old = moved.get(keyOf(row.start, row.end));
+    const code = old?.group === group.id && old.aliasType === label ? old.replacement : aliasCode(state, group, row.original, label, used);
     row.aliasType = label;
     attachScanRow(row, group, code, literal);
   }
-  if (previous) restoreManualReview(state, doc, previous);
+  if (previous) restoreManualReview(state, doc, previous, changes);
   state.undo = null;
   settleAliases(state, newId);
   repairGroups(state, {});
@@ -893,6 +960,21 @@ export async function runWorkspace(state: Workspace, request: Request, scan?: Sc
       settleAliases(state, newId);
       repairGroups(state, {});
     }
+    state.revision++;
+  } else if (op === 'reviseMaterial') {
+    const doc = lookupMaterial(state, request.materialId);
+    if ((doc.revision ?? 1) !== request.revision) throw new Error('材料已更新，请再打开原文编辑。');
+    const text = normalizedText(request.text);
+    if (text === doc.text) return {view: workspaceView(state)};
+    const edit = doc.decisions ? {
+      previous: {text: doc.text, decisions: doc.decisions, relations: doc.relations, groups: {...state.groups}},
+      changes: collectRevision(doc.text, text, readFields(text)),
+    } : undefined;
+    doc.text = text;
+    await scanMaterial(state, doc, newId, scan, edit);
+    doc.revision = request.revision + 1;
+    delete doc.previousOutput;
+    delete doc.previousReview;
     state.revision++;
   } else if (op === 'open' || op === 'scan' || op === 'markExported') {
     const doc = lookupMaterial(state, request.materialId);

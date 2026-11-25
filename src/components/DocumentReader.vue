@@ -5,13 +5,17 @@ import { indexText, rangePoint, selectedSpan, textPieces } from '../positions';
 
 const props = defineProps<{
   material: Material | null; address: string; selected: number | null; canOutput: boolean; showQuick: boolean;
-  active: boolean;
+  active: boolean; editText?: string; editDisabled: boolean; applyDisabled: boolean; revising: boolean; editError: string;
 }>();
-const emit = defineEmits<{ select: [id: number]; selection: [span: Span | null]; dismiss: []; output: [kind: 'copy' | 'file'] }>();
+const emit = defineEmits<{ select: [id: number]; selection: [span: Span | null]; dismiss: []; output: [kind: 'copy' | 'file'];
+  edit: []; 'update:editText': [text: string]; applyEdit: []; cancelEdit: [] }>();
+const editing = computed(() => props.editText !== undefined);
+const editable = computed({get: () => props.editText ?? '', set: text => emit('update:editText', text)});
 const reader = ref<HTMLElement>();
 const source = ref<HTMLElement>();
 const sourceScroll = ref<HTMLElement>();
 const outputScroll = ref<HTMLElement>();
+const editor = ref<HTMLTextAreaElement>();
 const findInput = ref<HTMLInputElement>();
 const quickAnchor = ref({ left: 0, top: 0 });
 const findOpen = ref(false);
@@ -20,11 +24,12 @@ const matchIndex = ref(0);
 const index = computed(() => indexText(props.material?.text || ''));
 const sourceParts = computed(() => textPieces(props.material?.text || '', props.material?.items || []));
 const previousOutput = computed(() => props.material?.previousOutput);
-const outputParts = computed(() => previousOutput.value ? textPieces(previousOutput.value, [], true)
+const outputParts = computed(() => previousOutput.value !== null && previousOutput.value !== undefined || editing.value
+  ? textPieces(previousOutput.value ?? props.material?.output ?? '', [], true)
   : textPieces(props.material?.output || '', props.material?.items || [], true));
 
 const matches = computed(() => {
-  const text = props.material?.text || '';
+  const text = props.editText ?? props.material?.text ?? '';
   const needle = query.value;
   const result: Span[] = [];
   if (!needle) return result;
@@ -149,12 +154,34 @@ function keydown(event: KeyboardEvent) {
 }
 
 watch(query, () => { matchIndex.value = 0; });
-watch([matches, matchIndex, () => props.active], async ([results, position, active]) => {
+watch(matches, rows => { matchIndex.value = Math.min(matchIndex.value, Math.max(0, rows.length - 1)); });
+watch([matches, matchIndex, () => props.active, editing], async ([results, position, active, isEditing]) => {
   CSS.highlights.delete('document-find');
   const match = results[position];
   if (!active || !findOpen.value || !match) return;
+  if (isEditing) {
+    await nextTick();
+    const area = editor.value;
+    if (area && matches.value[matchIndex.value] === match) {
+      area.setSelectionRange(match.start, match.end);
+      const line = area.value.slice(0, match.start).split('\n').length - 1;
+      const height = parseFloat(getComputedStyle(area).lineHeight);
+      if (line * height < area.scrollTop || (line + 1) * height > area.scrollTop + area.clientHeight) {
+        area.scrollTop = Math.max(0, line * height - height);
+      }
+    }
+    return;
+  }
   const range = await revealUnits(match);
   if (range && matches.value[matchIndex.value] === match && props.active) CSS.highlights.set('document-find', new Highlight(range));
+});
+watch(editing, async isEditing => {
+  const scroll = (isEditing ? sourceScroll.value : editor.value)?.scrollTop ?? 0;
+  await nextTick();
+  if (isEditing && editor.value) {
+    editor.value.focus({preventScroll: true});
+    editor.value.scrollTop = scroll;
+  } else if (sourceScroll.value) sourceScroll.value.scrollTop = scroll;
 });
 watch(() => props.address, async () => {
   closeFind();
@@ -185,7 +212,14 @@ defineExpose({ reveal, selectSpan, anchorItem, highlightSpan, clearHighlight });
       <article id="source-pane" class="pane source-pane">
         <div class="pane-title output-heading">
           <span>原文</span>
-          <button class="button small" :disabled="!material" @click="openFind">查找本文</button>
+          <div class="toolbar pane-output-actions">
+            <button class="button small" :disabled="!material" @click="openFind">查找本文</button>
+            <template v-if="editing">
+              <button class="button small" :disabled="revising" @click="emit('cancelEdit')">取消编辑</button>
+              <button class="button small primary" :disabled="applyDisabled" @click="emit('applyEdit')">应用并识别</button>
+            </template>
+            <button v-else class="button small" :disabled="editDisabled" @click="emit('edit')">编辑原文</button>
+          </div>
         </div>
         <div v-if="findOpen" class="search-bar">
           <input ref="findInput" v-model="query" type="search" aria-label="查找本文" placeholder="输入要找的原文"
@@ -197,7 +231,10 @@ defineExpose({ reveal, selectSpan, anchorItem, highlightSpan, clearHighlight });
             <button type="button" class="button small" aria-label="关闭本文查找" @click="closeFind">×</button>
           </div>
         </div>
-        <div id="source-scroll" ref="sourceScroll" class="pane-scroll">
+        <p v-if="editError" class="source-edit-error form-error" role="alert">{{ editError }}</p>
+        <textarea v-if="editing" ref="editor" v-model="editable" class="document-text source-editor" aria-label="编辑材料原文"
+          :readonly="revising"></textarea>
+        <div v-else id="source-scroll" ref="sourceScroll" class="pane-scroll">
           <div
             id="source-text" ref="source" class="document-text" :class="{ placeholder: !material }"
             tabindex="0" aria-label="原文"
@@ -211,7 +248,7 @@ defineExpose({ reveal, selectSpan, anchorItem, highlightSpan, clearHighlight });
       </article>
       <article id="output-pane" class="pane output-pane">
         <div class="pane-title output-heading">
-          <span>{{ previousOutput ? '脱敏文本 · 上一版' : '脱敏文本' }}</span>
+          <span>{{ editing || previousOutput !== null && previousOutput !== undefined ? '上次识别结果' : '脱敏文本' }}</span>
           <div class="toolbar pane-output-actions" aria-label="输出脱敏文本">
             <button class="button small" :disabled="!canOutput" @click="emit('output', 'copy')">复制文本</button>
             <button class="button small primary" :disabled="!canOutput" @click="emit('output', 'file')">导出 TXT</button>

@@ -109,6 +109,7 @@ type WindowSession = Session & {
   savingTo?: string;
   changeSeq: number;
   savedSeq: number;
+  editingDraft?: boolean;
 };
 
 const sessions = new Map<number, WindowSession>();
@@ -206,7 +207,7 @@ function cancelAnalysis(session: Session) {
   if (session.analysis) stopWorker(session.analysis);
 }
 
-async function analyze(session: WindowSession, input: { materialId: string; revision: number; queueMs?: number },
+async function analyze(session: WindowSession, input: Extract<Request, {op: 'scan' | 'reviseMaterial'}> & {queueMs?: number},
   progress: (phase: string) => void) {
   if (session.scan) throw new Error('当前工作区已有分析任务。');
   if (!nativeEnabled && !rulesOnly) throw new Error('找不到本地 ONNX 模型，请检查发行包资源或开发环境的 REDACTOR_ONNX_DIR。');
@@ -218,7 +219,7 @@ async function analyze(session: WindowSession, input: { materialId: string; revi
   const assertCurrent = () => {
     if (job.cancelled) throw new Error('已取消识别。');
     const doc = session.state.materials.find(row => row.id === input.materialId);
-    if (!doc || doc.revision !== input.revision) throw new Error('材料已更新，请分析最新修订。');
+    if (!doc || (doc.revision ?? 1) !== input.revision) throw new Error('材料已更新，请分析最新修订。');
   };
   let firstFeedbackMs: number | undefined;
   const phase = (message: string) => {
@@ -244,7 +245,7 @@ async function analyze(session: WindowSession, input: { materialId: string; revi
     for (;;) {
       const base = await serialize(session, () => { assertCurrent(); return session.state; });
       analysis.state = base;
-      await runEngine(analysis, { op: 'scan', materialId: input.materialId, revision: input.revision }, showPhase, ep);
+      await runEngine(analysis, input, showPhase, ep);
       const result = await serialize(session, async () => {
         assertCurrent();
         if (session.state.revision !== base.revision) return null;
@@ -255,10 +256,11 @@ async function analyze(session: WindowSession, input: { materialId: string; revi
           else doc.exported = output;
         }
         analysis.state.activeId = session.state.activeId;
-        session.state = analysis.state;
-        projectChanged(session);
         const previewStart = performance.now();
-        const view = await runEngine(session, { op: 'view' }, showPhase) as object;
+        const view = await runEngine(analysis, { op: 'view' }, showPhase) as object;
+        assertCurrent();
+        session.state = analysis.state;
+        if (session.state.revision !== base.revision) projectChanged(session);
         diagnose({stage: 'analysis-view', preferredEP, provider: route?.provider, usedFallback: !!route?.fallbackReason,
           reusedSession: route?.reusedSession, modelLoadMs: route?.loadMs, queueMs: input.queueMs ?? 0, firstFeedbackMs,
           previewMs: performance.now() - previewStart, elapsedMs: performance.now() - started});
@@ -458,7 +460,7 @@ ipcMain.handle('redaction:engine', (event, request) => {
   const progress = (phase: string) => {
     if (!event.sender.isDestroyed()) event.sender.send('redaction:progress', phase);
   };
-  if (request.op === 'scan') return analyze(session, request, progress);
+  if (request.op === 'scan' || request.op === 'reviseMaterial') return analyze(session, request, progress);
   if (['editMaterial', 'deleteMaterial'].includes(request.op) && request.materialId === session.scan?.materialId) cancelAnalysis(session);
   if (request.op === 'findOriginal') return serialize(session, () => findOriginal(session.state.materials, request.text));
   return serialize(session, async () => {
@@ -487,6 +489,7 @@ ipcMain.on('redaction:rendered', (_event, renderMs: number) => {
   if (Number.isFinite(renderMs) && renderMs >= 0) diagnose({stage: 'view-render', renderMs});
 });
 ipcMain.handle('redaction:cancel', (event) => cancelAnalysis(windowSession(event.sender)));
+ipcMain.on('redaction:draft-dirty', (event, dirty: boolean) => { windowSession(event.sender).editingDraft = dirty === true; });
 ipcMain.handle('redaction:close', (event, discard: boolean) => {
   windowSession(event.sender).allowClose = discard === true;
   BrowserWindow.fromWebContents(event.sender)?.close();
@@ -543,7 +546,7 @@ function openWindow(initial?: { state: Workspace; file: ProjectFile; view: unkno
       void session.queue?.then(() => { if (!window.isDestroyed()) window.close(); });
       return;
     }
-    if (!projectDirty(session)) return;
+    if (!projectDirty(session) && !session.editingDraft) return;
     event.preventDefault();
     window.webContents.send('redaction:confirm-close');
   });

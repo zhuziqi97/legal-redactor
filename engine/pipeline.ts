@@ -110,8 +110,7 @@ class Objects {
 }
 
 export async function buildPlan(text: string, registry: Registry = {}, scan?: Scan, doc = '',
-  displays: Record<string, string> = {}): Promise<Plan> {
-  const layout = readFields(text);
+  displays: Record<string, string> = {}, layout = readFields(text)): Promise<Plan> {
   const tentative = scan ? layout.hits.filter(item => item.needs_context) : [];
   const rules = layout.hits.filter(item => item.kind !== 'signature' && (!item.needs_context || !scan));
   rules.push(...streetAddresses(text), ...answerNames(text, layout));

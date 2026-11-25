@@ -4,8 +4,8 @@ import {runWorkspace} from '../build/engine/workspace.js';
 
 function workspace() {
   let state = {materials: [], groups: {}, activeId: null, undo: null, revision: 0};
-  const run = async request => {
-    const response = await runWorkspace(structuredClone(state), request);
+  const run = async (request, scan) => {
+    const response = await runWorkspace(structuredClone(state), request, scan);
     if (response.state) state = response.state;
     return response;
   };
@@ -88,4 +88,47 @@ test('新建映射遇占用只改派勾选位置，已失效的预览保留正�
   assert.equal(scoped[0], to.id);
   assert.ok(scoped.slice(1).every(id => id !== to.id));
   assert.equal(view.groups.find(group => group.id === to.id).occurrences.length, 2);
+});
+
+test('原文修订只推理受影响的记录，保留外部位置、人工订正和共享代号', async () => {
+  const w = workspace();
+  await w.add('姓名：张甲\n另一份正文。', '补充材料');
+  const text = '姓名：张甲\n内容：尚待录入。\n姓名：王强\n末段说明一切正常。';
+  const before = await w.add(text, '书面材料');
+  const group = before.groups.find(row => row.primary === '张甲');
+  const keep = before.groups.find(row => row.primary === '王强').occurrences[0];
+  await w.apply({mode:'keep', positions:[keep]});
+
+  const modified = '😀 开头补充。\n' + text.replace('尚待录入', '联系电话：13900139000');
+  const windows = [];
+  const request = {op:'reviseMaterial', materialId:before.current.id, revision:before.current.revision, text:modified};
+  const {view} = await w.run(request, (source, free) => {
+    windows.push(...free.map(row => Array.from(source).slice(row.start, row.end).join('')));
+    return [];
+  });
+  assert.ok(windows.some(line => line.includes('开头补充')));
+  assert.ok(windows.every(line => !line.includes('张甲') && !line.includes('王强') && !line.includes('末段说明')), windows.join('\n'));
+  assert.equal(view.current.revision, before.current.revision + 1);
+  assert.equal(view.groups.find(row => row.id === group.id).occurrences.length, 2);
+  const kept = view.current.items.find(row => row.original === '王强');
+  assert.equal(kept.id, keep.itemId);
+  assert.equal(kept.action, 'keep');
+  assert.equal(kept.start, Array.from(modified.slice(0, modified.indexOf('王强'))).length);
+  const {output} = await w.run({op:'output', materialId:view.current.id});
+  assert.doesNotMatch(output, /13900139000/, '号码应从导出中移除');
+});
+
+test('改动已有人工订正的值需复核，失败或过时的识别保留原稿', async () => {
+  const w = workspace();
+  const {current, groups} = await w.add('姓名：张甲\n独立内容。');
+  const [row] = groups.find(group => group.primary === '张甲').occurrences;
+  await w.apply({mode:'keep', positions:[row]});
+  const request = {op:'reviseMaterial', materialId:current.id, revision:current.revision, text:'姓名：张乙\n独立内容。'};
+  await assert.rejects(w.run(request, () => {throw new Error('推理失败');}), /推理失败/);
+  assert.equal((await w.run({op:'view'})).view.current.text, current.text);
+  const {view} = await w.run(request);
+  assert.equal(view.current.items.find(item => item.original === '张乙').action, 'review');
+  assert.equal((await w.run({op:'output', materialId:current.id})).issues.length, 1);
+  await assert.rejects(w.run({...request, text:'已过时的修订'}), /材料已更新/);
+  assert.equal((await w.run({op:'view'})).view.current.text, request.text);
 });

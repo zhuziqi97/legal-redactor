@@ -19,6 +19,11 @@ const material = computed(() => workspace.value.current);
 const ready = computed(() => material.value?.status === 'ready');
 const collapsed = ref(false);
 const busy = ref(true);
+const sourceEdit = ref<{ id: string; revision: number; base: string; text: string } | null>(null);
+const sourceDirty = computed(() => !!sourceEdit.value && sourceEdit.value.text !== sourceEdit.value.base);
+const sourceError = ref('');
+const revising = ref(false);
+watch(sourceDirty, dirty => api.setDraftDirty(dirty), {flush: 'sync'});
 const previewing = ref(false);
 const suggesting = ref(false);
 const scanning = ref<string | null>(null);
@@ -128,7 +133,7 @@ const preferredEP = ref('auto');
 const settingsBusy = ref(false);
 const settingsError = ref('');
 const materialDialog = ref<HTMLDialogElement>();
-const materialEdit = reactive({ action: 'rename' as 'rename' | 'edit' | 'delete', id: '', title: '', text: '', error: '' });
+const materialEdit = reactive({ action: 'rename' as 'rename' | 'delete', id: '', title: '', error: '' });
 const materialImpact = computed(() => {
   const affected = workspace.value.groups.filter(item => item.occurrences.some(row => row.materialId === materialEdit.id));
   return { groups: affected.length, removed: affected.filter(item => item.occurrences.every(row => row.materialId === materialEdit.id)).length };
@@ -202,6 +207,13 @@ onMounted(async () => {
 
 async function projectAction(command: 'open' | 'save' | 'saveAs', closeAfter = false) {
   if (projectBusy.value || (!closeAfter && importDialog.value?.open) || (command === 'open' && busy.value)) return;
+  if (command !== 'open' && sourceDirty.value) {
+    const message = '请先应用或取消原文修改，再保存项目。';
+    if (closeAfter) closeError.value = message;
+    else announce(message, true);
+    mode.value = 'redact';
+    return;
+  }
   projectBusy.value = true;
   if (command === 'open') busy.value = true;
   closeError.value = '';
@@ -240,8 +252,10 @@ async function reveal(id: number | null) {
 async function openMaterial(id: string) {
   if (busy.value) return false;
   if (id !== material.value?.id) {
+    if (!confirmSourceSwitch()) return false;
     try {
       const result = await run<{ view: Workspace }>({ op: 'open', materialId: id });
+      endSourceEdit();
       adopt(result.view);
       rangeFor.value = null;
       announce();
@@ -272,6 +286,11 @@ function moveWorkspaceTab(event: KeyboardEvent) {
 }
 
 async function jump(row: Pick<Occurrence, 'materialId' | 'itemId' | 'start' | 'end'>, focusSource = false) {
+  if (sourceEdit.value?.id === row.materialId) {
+    mode.value = 'redact';
+    announce('请先应用或取消原文修改，再定位到原文。', true);
+    return;
+  }
   if (!await openMaterial(row.materialId)) return;
   mode.value = 'redact';
   rangeFor.value = null;
@@ -384,21 +403,21 @@ function pasteInstead() {
 async function manageMaterial(action: typeof materialEdit.action, id: string) {
   const item = workspace.value.documents.find(doc => doc.id === id);
   if (!item || busy.value) return;
-  if (action === 'edit' && !await openMaterial(id)) return;
-  Object.assign(materialEdit, { action, id, title: item.title, text: action === 'edit' ? material.value?.text ?? '' : '', error: '' });
+  Object.assign(materialEdit, { action, id, title: item.title, error: '' });
   materialDialog.value?.showModal();
 }
 
 async function applyMaterial() {
-  const { action, id, title, text } = materialEdit;
+  const { action, id, title } = materialEdit;
   if (busy.value || !id) return;
   materialEdit.error = '';
   try {
-    const op = { rename: 'renameMaterial', edit: 'editMaterial', delete: 'deleteMaterial' }[action];
-    const result = await run<{ view: Workspace }>({ op, materialId: id, title, text });
+    const op = action === 'rename' ? 'renameMaterial' : 'deleteMaterial';
+    const result = await run<{ view: Workspace }>({ op, materialId: id, title });
     adopt(result.view, action !== 'rename');
     if (action !== 'rename') { draft.value = null; rangeFor.value = null; }
     if (action === 'delete') {
+      if (sourceEdit.value?.id === id) endSourceEdit();
       queued.value = queued.value.filter(value => value !== id);
       queuedAt.delete(id);
       delete scanErrors[id];
@@ -406,7 +425,6 @@ async function applyMaterial() {
       delete scanNotices[id];
     }
     materialDialog.value?.close();
-    if (action === 'edit') identify(id, true);
   } catch (error) {
     materialEdit.error = prettyError(error);
   }
@@ -417,8 +435,10 @@ function findProject(text: string) {
 }
 async function addMaterial() {
   if (busy.value || !input.text.trim()) return;
+  if (!confirmSourceSwitch()) return;
   try {
     const result = await run<{ view: Workspace }>({ op: 'add', text: input.text, title: input.title, sourcePath: input.path });
+    endSourceEdit();
     adopt(result.view, true);
     mode.value = 'redact';
     importDialog.value?.close();
@@ -429,10 +449,55 @@ async function addMaterial() {
   }
   identify();
 }
-function identify(id = material.value?.id, rescan = false) {
+
+function confirmSourceSwitch() {
+  return !sourceDirty.value || window.confirm('原文有未应用的修改。要放弃修改并切换材料吗？');
+}
+
+function beginSourceEdit() {
+  const doc = material.value;
+  if (!doc || busy.value || scanning.value === doc.id || queued.value.includes(doc.id) || draft.value || rangeFor.value) return;
+  clearQuick();
+  sourceError.value = '';
+  sourceEdit.value = {id: doc.id, revision: doc.revision, base: doc.text, text: doc.text};
+}
+
+function endSourceEdit() {
+  sourceEdit.value = null;
+  sourceError.value = '';
+}
+
+async function applySourceEdit() {
+  const edit = sourceEdit.value;
+  if (!edit || !sourceDirty.value || !edit.text.trim() || busy.value || scanning.value) return;
+  const {id, revision, text} = edit;
+  revising.value = true;
+  scanning.value = id;
+  scanPhases[id] = '正在识别修改范围';
+  sourceError.value = '';
+  announce();
+  try {
+    const result = await run<{view: Workspace; inferenceNotice?: string}>({op: 'reviseMaterial', materialId: id, revision, text});
+    adopt(result.view, true);
+    delete scanErrors[id];
+    delete scanNotices[id];
+    endSourceEdit();
+    announce(result.inferenceNotice || '已应用原文修改', false, true);
+  } catch (error) {
+    const message = prettyError(error);
+    sourceError.value = message.includes('已取消') ? '已取消识别，可继续编辑或重新提交。' : message;
+  } finally {
+    delete scanPhases[id];
+    scanning.value = null;
+    revising.value = false;
+    void startNextAnalysis();
+  }
+}
+
+function identify(id = material.value?.id) {
   const doc = workspace.value.documents.find(item => item.id === id);
   if (!doc || doc.status === 'ready' || queued.value.includes(doc.id)) return;
-  if (scanning.value === id && !rescan && !scanPhases[doc.id]?.startsWith('正在取消')) return;
+  if (scanning.value === id && !scanPhases[doc.id]?.startsWith('正在取消')) return;
   delete scanErrors[doc.id];
   delete scanNotices[doc.id];
   queuedAt.set(doc.id, performance.now());
@@ -488,7 +553,7 @@ api.onConfirmClose(() => {
 });
 
 function fromDocument(id: number) {
-  if (!ready.value || busy.value) return;
+  if (!ready.value || busy.value || sourceEdit.value) return;
   clicked.value = id;
   const groupId = material.value?.items.find(row => row.id === id)?.group;
   if (groupId) review.value?.selectGroup(groupId);
@@ -818,7 +883,7 @@ async function undo() {
   }
 }
 async function output(kind: 'copy' | 'file') {
-  if (!material.value || !ready.value || busy.value) return;
+  if (!material.value || !ready.value || busy.value || sourceEdit.value) return;
   const id = material.value.id;
   busy.value = true;
   try {
@@ -862,12 +927,12 @@ function showEvidence(link: Evidence) {
           @click="mode = tab.id">{{ tab.label }}</button>
       </div>
       <section v-show="mode === 'redact'" id="redact-panel" class="workspace-main" role="tabpanel" aria-labelledby="redact-tab">
-        <div v-if="notice.text || (material && (!ready || scanNotices[material.id]))" class="notice"
+        <div v-if="notice.text || (material && (!ready || scanning === material.id || scanNotices[material.id]))" class="notice"
           :class="{ error: notice.error || !!scanErrors[material?.id || ''] }" role="status">
           <span>{{ material && (scanPhases[material.id] || scanErrors[material.id] || (queued.includes(material.id) ? '排队中' : '')) ||
             notice.text || (material && scanNotices[material.id]) || '当前材料尚未识别' }}</span>
           <button v-if="scanning === material?.id" class="button small" @click="cancelScan">取消识别</button>
-          <button v-else-if="material && !ready && !queued.includes(material.id)" class="button small" :disabled="busy" @click="identify()">重新识别</button>
+          <button v-else-if="material && !ready && !queued.includes(material.id) && !sourceEdit" class="button small" :disabled="busy" @click="identify()">重新识别</button>
         </div>
         <div v-if="rangeFor" class="notice">
           <span>请在原文中选出要替换的完整文字。</span>
@@ -886,9 +951,14 @@ function showEvidence(link: Evidence) {
         </div>
         <div v-else class="workbench">
           <DocumentReader ref="reader" :address="material.id" :material="material" :selected="selected"
-            :can-output="!busy && ready" :active="mode === 'redact'"
-            :show-quick="!!readySelection && !rangeFor && !busy && draft?.mode !== 'edit'"
-            @select="fromDocument" @selection="trackSelection" @output="output" @dismiss="clearQuick">
+            :can-output="!busy && ready && !sourceEdit" :active="mode === 'redact'"
+            :edit-text="sourceEdit?.text" :revising="revising" :edit-error="sourceError"
+            :edit-disabled="busy || scanning === material.id || queued.includes(material.id) || !!draft || !!rangeFor"
+            :apply-disabled="busy || !!scanning || !sourceDirty || !sourceEdit?.text.trim()"
+            :show-quick="!!readySelection && !rangeFor && !busy && !sourceEdit && draft?.mode !== 'edit'"
+            @select="fromDocument" @selection="trackSelection" @output="output" @dismiss="clearQuick"
+            @edit="beginSourceEdit" @update:edit-text="sourceEdit && (sourceEdit.text = $event)"
+            @cancel-edit="endSourceEdit" @apply-edit="applySourceEdit">
             <template #quick>
               <template v-if="draft && ['create','bind'].includes(draft.mode)">
                 <button class="button small primary" @mousedown.prevent @click="addSelection">加入调整清单</button>
@@ -912,7 +982,7 @@ function showEvidence(link: Evidence) {
             @cancel="draft = null; rangeFor = null; clearQuick()" @search="searchDraft" @jump="jump($event, true)" @reselect="chooseRange"
             @issue="locate" @apply="applyDraft" @add="addToAlias" @remove="removeFromAlias" />
           <ReviewPanel v-show="!draft" ref="review" :material="material" :groups="workspace.groups" :pending="workspace.pending"
-            :issues="issues" :selected="selected" :locked="busy" :can-undo="workspace.canUndo" @jump="jump" @issue="locate"
+            :issues="issues" :selected="selected" :locked="busy || !!sourceEdit" :can-undo="workspace.canUndo" @jump="jump" @issue="locate"
             @create="makeDraft('create'); clearQuick()" @group="openGroupAction" @term="termAction" @undo="undo" />
         </div>
       </section>
@@ -924,13 +994,15 @@ function showEvidence(link: Evidence) {
   <dialog ref="closeDialog" class="close-workspace-dialog" aria-labelledby="close-title" aria-describedby="close-description"
     @cancel.prevent="!projectBusy && closeDialog?.close()">
     <div class="dialog-form">
-      <div class="dialog-heading"><h2 id="close-title">保存项目修改？</h2></div>
-      <p id="close-description">当前项目有未保存的修改。</p>
+      <div class="dialog-heading"><h2 id="close-title">{{ sourceDirty ? '原文有未应用的修改' : '保存项目修改？' }}</h2></div>
+      <p id="close-description">{{ sourceDirty ? '可先返回编辑并应用，或放弃未保存的修改并关闭。' : '当前项目有未保存的修改。' }}</p>
       <p v-if="closeError" class="form-error" role="alert">{{ closeError }}</p>
       <div class="dialog-actions">
-        <button type="button" class="button" autofocus :disabled="projectBusy" @click="closeDialog?.close()">取消</button>
+        <button type="button" class="button" autofocus :disabled="projectBusy" @click="closeDialog?.close(); mode = sourceDirty ? 'redact' : mode">
+          {{ sourceDirty ? '返回编辑' : '取消' }}
+        </button>
         <button type="button" class="button" :disabled="projectBusy" @click="api.closeWorkspace(true)">放弃修改</button>
-        <button type="button" class="button primary" :disabled="projectBusy" @click="projectAction('save', true)">
+        <button v-if="!sourceDirty" type="button" class="button primary" :disabled="projectBusy" @click="projectAction('save', true)">
           {{ projectBusy ? '正在保存…' : '保存并关闭' }}
         </button>
       </div>
@@ -961,18 +1033,17 @@ function showEvidence(link: Evidence) {
 
   <dialog ref="materialDialog" aria-labelledby="material-title" @cancel.prevent="!busy && materialDialog?.close()">
     <form class="dialog-form" @submit.prevent="applyMaterial">
-      <div class="dialog-heading"><h2 id="material-title">{{ { rename: '重命名材料', edit: '编辑原文', delete: '删除材料' }[materialEdit.action] }}</h2></div>
+      <div class="dialog-heading"><h2 id="material-title">{{ materialEdit.action === 'rename' ? '重命名材料' : '删除材料' }}</h2></div>
       <label v-if="materialEdit.action === 'rename'">材料名称<input v-model="materialEdit.title" :disabled="busy" autofocus></label>
-      <template v-else-if="materialEdit.action === 'edit'">
-        <p class="count">{{ materialEdit.title }}</p>
-        <textarea v-model="materialEdit.text" aria-label="编辑材料原文" :disabled="busy" autofocus></textarea>
+      <template v-else>
+        <p>删除「{{ materialEdit.title }}」会影响 {{ materialImpact.groups }} 组映射，其中 {{ materialImpact.removed }} 组在本材料中有全部位置。</p>
+        <p v-if="sourceDirty && sourceEdit?.id === materialEdit.id">该材料未应用的原文修改也会被丢弃。</p>
       </template>
-      <p v-else>删除「{{ materialEdit.title }}」会影响 {{ materialImpact.groups }} 组映射，其中 {{ materialImpact.removed }} 组在本材料中有全部位置。</p>
       <p v-if="materialEdit.error" class="form-error" role="alert">{{ materialEdit.error }}</p>
       <div class="dialog-actions">
         <button type="button" class="button" :disabled="busy" @click="materialDialog?.close()">取消</button>
-        <button class="button primary" :disabled="busy || (materialEdit.action === 'rename' && !materialEdit.title.trim()) || (materialEdit.action === 'edit' && !materialEdit.text.trim())">
-          {{ { rename: '保存名称', edit: '保存并分析', delete: '确认删除' }[materialEdit.action] }}
+        <button class="button primary" :disabled="busy || (materialEdit.action === 'rename' && !materialEdit.title.trim())">
+          {{ materialEdit.action === 'rename' ? '保存名称' : '确认删除' }}
         </button>
       </div>
     </form>

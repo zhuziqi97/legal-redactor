@@ -50,4 +50,5 @@ export type Request =
   | {op: 'renameMaterial'; materialId: string; title: string}
   | {op: 'editMaterial' | 'markExported'; materialId: string; text: string}
   | {op: 'deleteMaterial' | 'open'; materialId: string}
-  | {op: 'scan'; materialId: string; revision?: number};
+  | {op: 'scan'; materialId: string; revision?: number}
+  | {op: 'reviseMaterial'; materialId: string; revision: number; text: string};

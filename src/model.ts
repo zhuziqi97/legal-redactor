@@ -68,6 +68,7 @@ declare global {
       onProjectCommand: (callback: (command: 'open' | 'save' | 'saveAs') => void) => void;
       engine: <T>(request: { op: string } & Record<string, unknown>) => Promise<T>;
       cancel: () => Promise<void>;
+      setDraftDirty: (dirty: boolean) => void;
       recordRender: (milliseconds: number) => void;
       closeWorkspace: (discard: boolean) => Promise<void>;
       copy: (text: string) => Promise<void>;

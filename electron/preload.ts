@@ -14,6 +14,7 @@ contextBridge.exposeInMainWorld('redaction', {
   },
   engine: (request: object) => ipcRenderer.invoke('redaction:engine', request),
   cancel: () => ipcRenderer.invoke('redaction:cancel'),
+  setDraftDirty: (dirty: boolean) => ipcRenderer.send('redaction:draft-dirty', dirty),
   recordRender: (milliseconds: number) => ipcRenderer.send('redaction:rendered', milliseconds),
   closeWorkspace: (discard: boolean) => ipcRenderer.invoke('redaction:close', discard),
   copy: (output: string) => ipcRenderer.invoke('redaction:copy', output),
