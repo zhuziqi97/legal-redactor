@@ -23,6 +23,7 @@ type Pending = {
 };
 
 const project = resolve(__dirname, '..');
+const applicationIcon = join(project, 'dist', process.platform === 'win32' ? 'legal-redactor-icon.ico' : 'legal-redactor-icon.png');
 const bundledModel = join(process.resourcesPath, 'otter');
 const nativeModel = app.isPackaged ? bundledModel : process.env.REDACTOR_ONNX_DIR;
 const userData = process.env.REDACTOR_USER_DATA;
@@ -522,6 +523,7 @@ ipcMain.handle('redaction:save', async (event, { output, sourcePaths, filename, 
 function openWindow(initial?: { state: Workspace; file: ProjectFile; view: unknown }) {
   const window = new BrowserWindow({
     width: 1450, height: 940, minWidth: 780, minHeight: 620,
+    icon: applicationIcon,
     backgroundColor: '#f5f7fb',
     webPreferences: { preload: join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true },
   });
@@ -561,6 +563,7 @@ function projectMenu(label: string, accelerator: string, command: ProjectCommand
 if (app.requestSingleInstanceLock()) {
   app.on('second-instance', () => openWindow());
   app.whenReady().then(() => {
+    app.dock?.setIcon(applicationIcon);
     Menu.setApplicationMenu(Menu.buildFromTemplate([
       { label: '文件', submenu: [
         { label: '新建项目窗口', accelerator: 'CmdOrCtrl+Shift+N', click: () => openWindow() },

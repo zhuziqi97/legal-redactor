@@ -4,6 +4,8 @@ import argparse
 import json
 from pathlib import Path
 import shutil
+import subprocess
+import sys
 from zipfile import ZipFile
 
 PROJECT = Path(__file__).resolve().parents[1]
@@ -18,7 +20,15 @@ def unpack_zip(archive, destination):
                 (destination / member.filename).chmod(mode)
 
 
-def stage(target, inputs, staging, model, windows_crt):
+def set_windows_icon(folder, executable, rcedit):
+    command = [str(rcedit.resolve())]
+    if sys.platform != "win32":
+        command.insert(0, "wine")
+    icon = r"resources\app\dist\legal-redactor-icon.ico"
+    subprocess.run([*command, executable, "--set-icon", icon], cwd=folder, check=True)
+
+
+def stage(target, inputs, staging, model, windows_crt, windows_rcedit):
     metadata = json.loads((PROJECT / "package.json").read_text(encoding="utf-8"))
     folder = staging / f"LegalRedactor-{metadata['version']}-{target}-x64"
     folder.mkdir(parents=True)
@@ -39,6 +49,8 @@ def stage(target, inputs, staging, model, windows_crt):
     (app / "package.json").write_text(json.dumps(manifest, ensure_ascii=False) + "\n", encoding="utf-8")
     for path in ("dist", "build"):
         shutil.copytree(PROJECT / path, app / path)
+    if target == "windows":
+        set_windows_icon(folder, executable, windows_rcedit)
     node_modules = app / "node_modules"
     native = PROJECT / "node_modules"
     shutil.copytree(native / "@zip.js" / "zip.js", node_modules / "@zip.js" / "zip.js")
@@ -84,10 +96,14 @@ def main():
     parser.add_argument("--staging", required=True, type=Path)
     parser.add_argument("--model", required=True, type=Path)
     parser.add_argument("--windows-crt", type=Path)
+    parser.add_argument("--windows-rcedit", type=Path, help="Path to Electron rcedit-x64.exe (uses Wine outside Windows)")
     args = parser.parse_args()
-    if args.target == "windows" and args.windows_crt is None:
-        parser.error("--windows-crt is required for Windows")
-    print(stage(args.target, args.inputs, args.staging, args.model, args.windows_crt))
+    if args.target == "windows":
+        if args.windows_crt is None:
+            parser.error("--windows-crt is required for Windows")
+        if args.windows_rcedit is None or not args.windows_rcedit.is_file():
+            parser.error("--windows-rcedit must point to rcedit-x64.exe for Windows")
+    print(stage(args.target, args.inputs, args.staging, args.model, args.windows_crt, args.windows_rcedit))
 
 
 if __name__ == "__main__":
