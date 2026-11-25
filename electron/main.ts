@@ -138,7 +138,7 @@ function finishWorker(session: Session, child: ReturnType<typeof utilityProcess.
 }
 
 function startWorker(session: Session) {
-  const child = utilityProcess.fork(join(__dirname, 'workspace-worker.cjs'), [], { serviceName: '案卷脱敏引擎' });
+  const child = utilityProcess.fork(join(__dirname, 'workspace-worker.cjs'), [], { serviceName: '脱敏引擎' });
   session.worker = child;
   child.on('message', message => {
     const pending = session.pending;
@@ -506,7 +506,7 @@ ipcMain.handle('redaction:save', async (event, { output, sourcePaths, filename, 
   });
   const projectSources = restoring ? windowSession(event.sender).state.sourcePaths ?? [] : [];
   if ([...sourcePaths, ...projectSources].some((source: string) => comparablePath(target) === comparablePath(source))) {
-    throw new Error(restoring ? '此路径是已导入的原件，请选择另一处保存。' : '此路径是案内材料的原件，请选择另一处保存。');
+    throw new Error(restoring ? '此路径是已导入的原件，请选择另一处保存。' : '此路径是项目材料的原件，请选择另一处保存。');
   }
   const staging = await mkdtemp(join(dirname(path), '.redaction-'));
   try {

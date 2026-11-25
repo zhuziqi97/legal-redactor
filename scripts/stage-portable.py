@@ -33,7 +33,7 @@ def stage(target, inputs, staging, model, windows_crt):
     app = resources / "app"
     app.mkdir()
     manifest = {
-        "name": metadata["name"], "productName": "案卷脱敏",
+        "name": metadata["name"], "productName": "法律文档脱敏工具",
         "version": metadata["version"], "type": metadata["type"], "main": metadata["main"],
     }
     (app / "package.json").write_text(json.dumps(manifest, ensure_ascii=False) + "\n", encoding="utf-8")
@@ -63,7 +63,7 @@ def stage(target, inputs, staging, model, windows_crt):
     shutil.copy2(PROJECT / "engine" / "pinyin-LICENSE.txt", resources / "pypinyin-LICENSE.txt")
 
     instructions = (
-        f"案卷脱敏 {metadata['version']} · {target.capitalize()} x64\n\n"
+        f"法律文档脱敏工具 {metadata['version']} · {target.capitalize()} x64\n\n"
         f"先解压整个目录，然后打开 {executable}。请保留同目录的资源文件。\n"
         "左侧点「添加材料」，可以导入 UTF-8 或带 BOM 的 UTF-16 TXT，也可以粘贴文本。\n"
         "必要时可选择简体中文（GB18030）重读。首次识别需要加载本地模型。\n"

@@ -161,7 +161,7 @@ function aliasCode(state: Workspace, group: Group, raw: string, type: string, re
 
 function attachScanRow(row: Row, group: Group, code: string, literal: Set<string>) {
   updateCode(row, code);
-  if (literal.has(code)) Object.assign(row, {action: 'review', reason: '案内代号与本份原文已有记号相同'});
+  if (literal.has(code)) Object.assign(row, {action: 'review', reason: '此代号已出现在原文中'});
   else row.group = group.id;
 }
 

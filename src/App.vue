@@ -12,7 +12,9 @@ import { indexText } from './positions';
 
 const api = window.redaction;
 const workspace = shallowRef<Workspace>({ documents: [], groups: [], current: null, pending: [], canUndo: false, revision: 0 });
-const mode = ref<'redact' | 'restore'>('redact');
+const workspaceTabs = [{ id: 'redact', label: '脱敏' }, { id: 'restore', label: '恢复' }] as const;
+type WorkspaceMode = (typeof workspaceTabs)[number]['id'];
+const mode = ref<WorkspaceMode>('redact');
 const material = computed(() => workspace.value.current);
 const ready = computed(() => material.value?.status === 'ready');
 const collapsed = ref(false);
@@ -251,6 +253,24 @@ async function openMaterial(id: string) {
   return true;
 }
 
+async function selectMaterial(id: string) {
+  if (await openMaterial(id)) mode.value = 'redact';
+}
+
+function moveWorkspaceTab(event: KeyboardEvent) {
+  let next: WorkspaceMode;
+  switch (event.key) {
+    case 'ArrowLeft':
+    case 'ArrowRight': next = mode.value === 'redact' ? 'restore' : 'redact'; break;
+    case 'Home': next = 'redact'; break;
+    case 'End': next = 'restore'; break;
+    default: return;
+  }
+  event.preventDefault();
+  mode.value = next;
+  document.getElementById(`${next}-tab`)?.focus();
+}
+
 async function jump(row: Pick<Occurrence, 'materialId' | 'itemId' | 'start' | 'end'>, focusSource = false) {
   if (!await openMaterial(row.materialId)) return;
   rangeFor.value = null;
@@ -400,6 +420,7 @@ async function addMaterial() {
   try {
     const result = await run<{ view: Workspace }>({ op: 'add', text: input.text, title: input.title, sourcePath: input.path });
     adopt(result.view, true);
+    mode.value = 'redact';
     importDialog.value?.close();
     Object.assign(input, { title: '', text: '', path: null, encoding: '' });
   } catch (error) {
@@ -831,74 +852,75 @@ function showEvidence(link: Evidence) {
 </script>
 
 <template>
-  <div class="workspace-modes">
-    <div class="segments" role="group" aria-label="工作区">
-      <button :aria-pressed="mode === 'redact'" @click="mode = 'redact'">脱敏</button>
-      <button :aria-pressed="mode === 'restore'" @click="mode = 'restore'">恢复</button>
-    </div>
-  </div>
-  <div v-show="mode === 'redact'" class="desktop-body" :class="{ 'sidebar-collapsed': collapsed }">
+  <div class="desktop-body">
     <MaterialSidebar :documents="workspace.documents" :current="material?.id" :collapsed="collapsed" :locked="busy" :scanning="scanning"
       :queued="queued" :phases="scanPhases" :errors="scanErrors"
-      @toggle="collapsed = !collapsed" @add="showImport" @open="openMaterial" @manage="manageMaterial" @settings="openSettings" />
-    <main class="workspace-main">
-      <div v-if="notice.text || (material && (!ready || scanNotices[material.id]))" class="notice"
-        :class="{ error: notice.error || !!scanErrors[material?.id || ''] }" role="status">
-        <span>{{ material && (scanPhases[material.id] || scanErrors[material.id] || (queued.includes(material.id) ? '排队中' : '')) ||
-          notice.text || (material && scanNotices[material.id]) || '当前材料尚未识别' }}</span>
-        <button v-if="scanning === material?.id" class="button small" @click="cancelScan">取消识别</button>
-        <button v-else-if="material && !ready && !queued.includes(material.id)" class="button small" :disabled="busy" @click="identify()">重新识别</button>
+      @toggle="collapsed = !collapsed" @add="showImport" @open="selectMaterial" @manage="manageMaterial" @settings="openSettings" />
+    <main class="workspace">
+      <div class="workspace-tabs" role="tablist" aria-label="工作区" @keydown="moveWorkspaceTab">
+        <button v-for="tab in workspaceTabs" :id="`${tab.id}-tab`" :key="tab.id" type="button" role="tab"
+          :aria-selected="mode === tab.id" :aria-controls="`${tab.id}-panel`" :tabindex="mode === tab.id ? 0 : -1"
+          @click="mode = tab.id">{{ tab.label }}</button>
       </div>
-      <div v-if="rangeFor" class="notice">
-        <span>请在原文中选出要替换的完整文字。</span>
-        <div class="toolbar">
-          <button class="button small" :disabled="!selection || busy" @mousedown.prevent @click="finishRange()">使用所选文字</button>
-          <button class="button small quiet" @click="rangeFor = null; clearQuick()">取消</button>
+      <section v-show="mode === 'redact'" id="redact-panel" class="workspace-main" role="tabpanel" aria-labelledby="redact-tab">
+        <div v-if="notice.text || (material && (!ready || scanNotices[material.id]))" class="notice"
+          :class="{ error: notice.error || !!scanErrors[material?.id || ''] }" role="status">
+          <span>{{ material && (scanPhases[material.id] || scanErrors[material.id] || (queued.includes(material.id) ? '排队中' : '')) ||
+            notice.text || (material && scanNotices[material.id]) || '当前材料尚未识别' }}</span>
+          <button v-if="scanning === material?.id" class="button small" @click="cancelScan">取消识别</button>
+          <button v-else-if="material && !ready && !queued.includes(material.id)" class="button small" :disabled="busy" @click="identify()">重新识别</button>
         </div>
-      </div>
-      <div v-if="!material" class="empty-workspace">
-        <div class="empty-icon" aria-hidden="true"><svg width="27" height="27" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6M8 13h8M8 17h6"/></svg></div>
-        <h2>添加案卷材料</h2>
-        <div class="toolbar">
-          <button class="button primary" :disabled="busy" @click="showImport">打开 TXT 或粘贴文本</button>
-          <button class="button" :disabled="busy || projectBusy" @click="projectAction('open')">打开项目</button>
+        <div v-if="rangeFor" class="notice">
+          <span>请在原文中选出要替换的完整文字。</span>
+          <div class="toolbar">
+            <button class="button small" :disabled="!selection || busy" @mousedown.prevent @click="finishRange()">使用所选文字</button>
+            <button class="button small quiet" @click="rangeFor = null; clearQuick()">取消</button>
+          </div>
         </div>
-      </div>
-      <div v-else class="workbench">
-        <DocumentReader ref="reader" :address="material.id" :material="material" :selected="selected"
-          :can-output="!busy && ready" :find-case="findCase" :locked="busy" :revision="workspace.revision"
-          :show-quick="!!readySelection && !rangeFor && !busy && draft?.mode !== 'edit'"
-          @select="fromDocument" @selection="trackSelection" @output="output" @dismiss="clearQuick" @locate="jump($event, true)">
-          <template #quick>
-            <template v-if="draft && ['create','bind'].includes(draft.mode)">
-              <button class="button small primary" @mousedown.prevent @click="addSelection">加入调整清单</button>
+        <div v-if="!material" class="empty-workspace">
+          <div class="empty-icon" aria-hidden="true"><svg width="27" height="27" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6M8 13h8M8 17h6"/></svg></div>
+          <h2>添加文本材料</h2>
+          <div class="toolbar">
+            <button class="button primary" :disabled="busy" @click="showImport">打开 TXT 或粘贴文本</button>
+            <button class="button" :disabled="busy || projectBusy" @click="projectAction('open')">打开项目</button>
+          </div>
+        </div>
+        <div v-else class="workbench">
+          <DocumentReader ref="reader" :address="material.id" :material="material" :selected="selected"
+            :can-output="!busy && ready" :find-case="findCase" :locked="busy" :revision="workspace.revision"
+            :show-quick="!!readySelection && !rangeFor && !busy && draft?.mode !== 'edit'"
+            @select="fromDocument" @selection="trackSelection" @output="output" @dismiss="clearQuick" @locate="jump($event, true)">
+            <template #quick>
+              <template v-if="draft && ['create','bind'].includes(draft.mode)">
+                <button class="button small primary" @mousedown.prevent @click="addSelection">加入调整清单</button>
+              </template>
+              <template v-else>
+                <button class="button small" @mousedown.prevent @click="fromSelection('bind')">绑定到现有映射</button>
+                <button class="button small" @mousedown.prevent @click="fromSelection('create')">新建映射</button>
+                <button v-if="selection ? overlap.length === 1 : quickItem" class="button small" @mousedown.prevent @click="startRange">
+                  {{ (selection ? overlap[0]?.group : quickItem?.group) ? '修改映射' : '重选原文' }}
+                </button>
+                <button v-if="quickItem" class="button small quiet" @mousedown.prevent @click="keepSelection">保留原文</button>
+                <button v-if="evidence" class="button small quiet" @mousedown.prevent @click="showEvidence(evidence)">查看关联依据</button>
+              </template>
+              <button class="button small quiet icon-button" aria-label="关闭快捷操作" @mousedown.prevent @click="clearQuick">×</button>
             </template>
-            <template v-else>
-              <button class="button small" @mousedown.prevent @click="fromSelection('bind')">绑定到现有映射</button>
-              <button class="button small" @mousedown.prevent @click="fromSelection('create')">新建映射</button>
-              <button v-if="selection ? overlap.length === 1 : quickItem" class="button small" @mousedown.prevent @click="startRange">
-                {{ (selection ? overlap[0]?.group : quickItem?.group) ? '修改映射' : '重选原文' }}
-              </button>
-              <button v-if="quickItem" class="button small quiet" @mousedown.prevent @click="keepSelection">保留原文</button>
-              <button v-if="evidence" class="button small quiet" @mousedown.prevent @click="showEvidence(evidence)">查看关联依据</button>
-            </template>
-            <button class="button small quiet icon-button" aria-label="关闭快捷操作" @mousedown.prevent @click="clearQuick">×</button>
-          </template>
-        </DocumentReader>
-        <AdjustmentPanel v-if="draft" :key="draftKey" :draft="draft" :groups="workspace.groups" :material-id="material.id"
-          :selected="selected" :locked="busy" :previewing="previewing || suggesting" :impact="visibleImpact" :source-changes="sourceChanges"
-          :merge-prompt="mergePrompt" :range-for="rangeFor"
-          :suggestions="visibleSuggestions" @original="setOriginal"
-          @cancel="draft = null; rangeFor = null; clearQuick()" @search="searchDraft" @jump="jump($event, true)" @reselect="chooseRange"
-          @issue="locate" @apply="applyDraft" @add="addToAlias" @remove="removeFromAlias" />
-        <ReviewPanel v-show="!draft" ref="review" :material="material" :groups="workspace.groups" :pending="workspace.pending"
-          :issues="issues" :selected="selected" :locked="busy" :can-undo="workspace.canUndo" @jump="jump" @issue="locate"
-          @create="makeDraft('create'); clearQuick()" @group="openGroupAction" @term="termAction" @undo="undo" />
-      </div>
+          </DocumentReader>
+          <AdjustmentPanel v-if="draft" :key="draftKey" :draft="draft" :groups="workspace.groups" :material-id="material.id"
+            :selected="selected" :locked="busy" :previewing="previewing || suggesting" :impact="visibleImpact" :source-changes="sourceChanges"
+            :merge-prompt="mergePrompt" :range-for="rangeFor"
+            :suggestions="visibleSuggestions" @original="setOriginal"
+            @cancel="draft = null; rangeFor = null; clearQuick()" @search="searchDraft" @jump="jump($event, true)" @reselect="chooseRange"
+            @issue="locate" @apply="applyDraft" @add="addToAlias" @remove="removeFromAlias" />
+          <ReviewPanel v-show="!draft" ref="review" :material="material" :groups="workspace.groups" :pending="workspace.pending"
+            :issues="issues" :selected="selected" :locked="busy" :can-undo="workspace.canUndo" @jump="jump" @issue="locate"
+            @create="makeDraft('create'); clearQuick()" @group="openGroupAction" @term="termAction" @undo="undo" />
+        </div>
+      </section>
+      <RestoreWorkspace v-show="mode === 'restore'" id="restore-panel" role="tabpanel" aria-labelledby="restore-tab"
+        :groups="workspace.groups" :notice="notice" @notice="announce" />
     </main>
   </div>
-
-  <RestoreWorkspace v-show="mode === 'restore'" :groups="workspace.groups" :notice="notice" @notice="announce" />
 
   <dialog ref="closeDialog" class="close-workspace-dialog" aria-labelledby="close-title" aria-describedby="close-description"
     @cancel.prevent="!projectBusy && closeDialog?.close()">

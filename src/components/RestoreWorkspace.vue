@@ -118,7 +118,7 @@ async function output(kind: 'copy' | 'file') {
 </script>
 
 <template>
-  <main class="workspace-main restore-workspace">
+  <section class="workspace-main restore-workspace">
     <div v-if="notice.text" class="notice" :class="{ error: notice.error }" role="status">{{ notice.text }}</div>
     <div v-if="encodingTitle" class="notice" role="status">
       <span>「{{ encodingTitle }}」需要选择编码</span>
@@ -187,7 +187,7 @@ async function output(kind: 'copy' | 'file') {
         </div>
       </section>
     </div>
-  </main>
+  </section>
 </template>
 
 <style scoped>
