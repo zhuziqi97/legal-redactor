@@ -1,0 +1,35 @@
+/** Pattern sources and labels from the Python patterns reference. */
+import { rule } from './text.js';
+
+export const _ID18 = rule("(?<!\\d)[1-9]\\d{5}(?:19|20)\\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\\d|3[01])\\d{3}[\\dXx](?!\\d)");
+export const _ID15 = rule("(?<!\\d)[1-9]\\d{7}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\\d|3[01])\\d{3}(?!\\d)");
+export const _MOBILE_SPACED = rule("(?<!\\d)1[3-9](?:[\\s\\u3000-]{0,2}\\d){9}(?!\\d)");
+export const _ID18_SPACED = rule("(?<!\\d)[1-9]\\d{5}[\\s-]?(?:19|20)\\d{2}[\\s-]?(?:0[1-9]|1[0-2])[\\s-]?(?:0[1-9]|[12]\\d|3[01])[\\s-]?\\d{3}[\\s-]?[\\dXx](?!\\d)");
+export const _BANK_PREFIX = rule("(?:银行账号|银行卡(?:号)?|收款账户|开户账号|对公账户|账号|帐号|账户|卡号)[ \\t\\u3000]*(?:[：:]|为|是)?[ \\t\\u3000]*");
+export const _LABELED_ACCOUNT = rule("(?:银行账号|银行卡(?:号)?|收款账户|开户账号|对公账户|账号|帐号|账户|卡号)\\s*(?:[：:]|为|是)?\\s*([0-9][0-9 \\u3000-]{6,32}[0-9])");
+export const _LANDLINE = rule("(?<!\\d)0\\d{2,3}(?:[\\s\\u3000-]*\\d){7,8}(?!\\d)");
+export const _HOTLINE = rule("(?<!\\d)[48]00(?:[\\s\\u3000-]*\\d){7}(?!\\d)");
+export const _EMAIL = rule("(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}(?![A-Za-z0-9._%+-])");
+export const _BANK = rule("(?<!\\d)\\d{16,19}(?!\\d)");
+export const _LICENSE_LABEL = rule("(?:执业证号|执业证|律师证号)\\s*[：: ]?\\s*$");
+export const _CASE_NO = rule("(?:[（(〔【]\\d{4}[）)〕】](?:[^（）()〔〕【】\\n]|[（(][一-鿿]{1,4}[）)]){0,20}?(?:民|刑|行|执|知|商|赔|清|破|辖|认|仲)(?:[^（）()〔〕【】\\n]|[（(][一-鿿]{1,4}[）)]){0,14}?\\d+号|[一-鿿]{2,16}仲[一-鿿]{0,6}[（(〔【]\\d{4}[）)〕】]第?\\d+号)");
+export const _NOTARY_NO = rule("[（(〔【]\\d{4}[）)〕】][^（）()〔〕【】\\n]{1,24}?证(?:[A-Za-z\\u4e00-\\u9fff]{0,4})?字\\s*第?\\s*\\d+\\s*号");
+export const _USCC = rule("(?<![A-Z0-9])[0-9A-HJ-NPQRTUWXY]{2}\\d{6}[0-9A-HJ-NPQRTUWXY]{10}(?![A-Z0-9])");
+export const _LABELED_USCC = rule("(?:统一社会信用代码|纳税人识别号|社会信用代码)\\s*[：:]\\s*([0-9A-Za-z](?:[\\s\\u3000]*[0-9A-Za-z]){16,17})");
+export const _LABELED_PASSPORT = rule("(?:护照号?|普通护照号?)\\s*[：: ]\\s*([EGPSD]\\d{7,8}|[A-Z]\\d{7,8})", "i");
+export const _LABELED_HK_MO = rule("(?:港澳通行证|通行证号?|回乡证号?|台胞证号?|台湾居民来往大陆通行证)(?:[（(][^）)\\n]{0,12}[）)])?\\s*号?\\s*[：: ]\\s*([A-Z0-9]{8,11})", "i");
+export const _PLATE = rule("(?<![A-Z0-9])[京津沪渝冀豫云辽黑湘皖鲁新苏浙赣鄂桂甘晋蒙陕吉闽贵粤青藏川宁琼][A-HJ-NP-Z][·\\s]?[A-HJ-NP-Z0-9]{4,6}[挂学警港澳使领]?(?![A-Z0-9])");
+export const _PROPERTY = rule("[京津沪渝冀豫云辽黑湘皖鲁新苏浙赣鄂桂甘晋蒙陕吉闽贵粤青藏川宁琼][（(]\\d{4}[）)][^（）()\\n]{0,20}?不动产权第\\d{4,10}号");
+export const _LABELED_WECHAT_QQ = rule("(?:微信号?|微信|QQ号?|QQ)\\s*[：: ]\\s*([A-Za-z][A-Za-z0-9_-]{4,19}|\\d{5,12})");
+export const _IP = rule("(?<!\\d)(?:(?:25[0-5]|2[0-4]\\d|[01]?\\d\\d?)\\.){3}(?:25[0-5]|2[0-4]\\d|[01]?\\d\\d?)(?!\\d)");
+export const _MAC = rule("(?<![A-Fa-f0-9])(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}(?![A-Fa-f0-9])");
+export const _URL = rule("https?://[^\\s<>\\\"'\\]）)，。；、]+", "i");
+export const _URL_USERINFO = rule("(?<=://)([^/\\s:@]{1,64}:[^/\\s@]{4,64})@");
+export const _URL_QUERY_SECRET = rule("(?i)([?&](?:access_token|refresh_token|id_token|token|password|passwd|pwd|secret|session|sid|api_key|apikey|key|auth|cookie)=)([^&#\\s<>\\\"'\\]）)，。；、]{4,})", "i");
+export const _SHARE_CODE = rule("(?:提取码|访问密码|取件码|网盘密码)\\s*[：:为是]?\\s*([A-Za-z0-9]{4,8})");
+export const _BIRTH_INLINE = rule("\\d{4}年\\d{1,2}月\\d{1,2}日(?=出生)");
+export const _BIRTH_LABELED = rule("(?:出生日期|出生年月)\\s*[：: ]\\s*(\\d{4}年\\d{1,2}月\\d{1,2}日|\\d{4}[-/.]\\d{1,2}[-/.]\\d{1,2})");
+export const _ID_WEIGHTS = [7, 9, 10, 5, 8, 4, 2, 1, 6, 3, 7, 9, 10, 5, 8, 4, 2];
+export const _ID_CHECK = "10X98765432";
+export const _USCC_ALPHABET = "0123456789ABCDEFGHJKLMNPQRTUWXY";
+export const _USCC_WEIGHTS = [1, 3, 9, 27, 19, 26, 16, 17, 20, 29, 25, 13, 8, 24, 10, 30, 28];
