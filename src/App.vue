@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, reactive, ref, shallowRef, watch } from 'vue';
+import { computed, nextTick, onMounted, reactive, ref, shallowRef, watch } from 'vue';
 import AdjustmentPanel from './components/AdjustmentPanel.vue';
 import DocumentReader from './components/DocumentReader.vue';
 import MaterialSidebar from './components/MaterialSidebar.vue';
@@ -14,7 +14,7 @@ const workspace = shallowRef<Workspace>({ documents: [], groups: [], current: nu
 const material = computed(() => workspace.value.current);
 const ready = computed(() => material.value?.status === 'ready');
 const collapsed = ref(false);
-const busy = ref(false);
+const busy = ref(true);
 const previewing = ref(false);
 const suggesting = ref(false);
 const scanning = ref<string | null>(null);
@@ -116,6 +116,8 @@ const reader = ref<InstanceType<typeof DocumentReader>>();
 const review = ref<InstanceType<typeof ReviewPanel>>();
 const importDialog = ref<HTMLDialogElement>();
 const closeDialog = ref<HTMLDialogElement>();
+const projectBusy = ref(false);
+const closeError = ref('');
 const settingsDialog = ref<HTMLDialogElement>();
 const settings = shallowRef<InferenceSettings>();
 const preferredEP = ref('auto');
@@ -182,6 +184,48 @@ function adopt(result: Workspace, reset = false) {
   }
   workspace.value = result;
 }
+
+onMounted(async () => {
+  try {
+    const view = await api.initialProject();
+    if (view) adopt(view, true);
+  } catch (error) {
+    announce(prettyError(error), true);
+  } finally {
+    busy.value = false;
+  }
+});
+
+async function projectAction(command: 'open' | 'save' | 'saveAs', closeAfter = false) {
+  if (projectBusy.value || (!closeAfter && importDialog.value?.open) || (command === 'open' && busy.value)) return;
+  projectBusy.value = true;
+  if (command === 'open') busy.value = true;
+  closeError.value = '';
+  try {
+    if (command === 'open') {
+      const view = await api.openProject();
+      if (view) adopt(view, true);
+      return;
+    }
+    const saved = await api.saveProject(command === 'saveAs');
+    if (!saved) return;
+    if (closeAfter) {
+      if (saved.dirty) closeError.value = '保存期间有新修改。请再次保存后关闭。';
+      else await api.closeWorkspace(false);
+    } else {
+      announce(saved.dirty ? '已保存本次快照，仍有新修改未保存。' : '项目已保存', false, true);
+    }
+  } catch (error) {
+    if (closeAfter) closeError.value = prettyError(error);
+    else announce(prettyError(error), true);
+  } finally {
+    if (command === 'open') busy.value = false;
+    projectBusy.value = false;
+  }
+}
+api.onProjectCommand(command => {
+  if (!closeDialog.value?.open) void projectAction(command);
+});
 async function reveal(id: number | null) {
   selected.value = id;
   await nextTick();
@@ -415,7 +459,9 @@ async function cancelScan() {
 }
 api.onProgress(phase => { if (scanning.value && !scanPhases[scanning.value]?.startsWith('正在取消')) scanPhases[scanning.value] = phase; });
 api.onConfirmClose(() => {
-  if (closeDialog.value && !closeDialog.value.open) closeDialog.value.showModal();
+  if (!closeDialog.value || closeDialog.value.open) return;
+  closeError.value = '';
+  closeDialog.value.showModal();
 });
 
 function fromDocument(id: number) {
@@ -805,7 +851,10 @@ function showEvidence(link: Evidence) {
       <div v-if="!material" class="empty-workspace">
         <div class="empty-icon" aria-hidden="true"><svg width="27" height="27" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6M8 13h8M8 17h6"/></svg></div>
         <h2>添加案卷材料</h2>
-        <button class="button primary" :disabled="busy" @click="showImport">打开 TXT 或粘贴文本</button>
+        <div class="toolbar">
+          <button class="button primary" :disabled="busy" @click="showImport">打开 TXT 或粘贴文本</button>
+          <button class="button" :disabled="busy || projectBusy" @click="projectAction('open')">打开项目</button>
+        </div>
       </div>
       <div v-else class="workbench">
         <DocumentReader ref="reader" :address="material.id" :material="material" :selected="selected"
@@ -841,13 +890,18 @@ function showEvidence(link: Evidence) {
     </main>
   </div>
 
-  <dialog ref="closeDialog" class="close-workspace-dialog" aria-labelledby="close-title" aria-describedby="close-description">
+  <dialog ref="closeDialog" class="close-workspace-dialog" aria-labelledby="close-title" aria-describedby="close-description"
+    @cancel.prevent="!projectBusy && closeDialog?.close()">
     <div class="dialog-form">
-      <div class="dialog-heading"><h2 id="close-title">关闭当前工作区？</h2></div>
-      <p id="close-description">本次导入的材料和映射将在关闭时丢失。</p>
+      <div class="dialog-heading"><h2 id="close-title">保存项目修改？</h2></div>
+      <p id="close-description">当前项目有未保存的修改。</p>
+      <p v-if="closeError" class="form-error" role="alert">{{ closeError }}</p>
       <div class="dialog-actions">
-        <button type="button" class="button" autofocus @click="closeDialog?.close()">继续处理</button>
-        <button type="button" class="button primary" @click="api.closeWorkspace()">关闭工作区</button>
+        <button type="button" class="button" autofocus :disabled="projectBusy" @click="closeDialog?.close()">取消</button>
+        <button type="button" class="button" :disabled="projectBusy" @click="api.closeWorkspace(true)">放弃修改</button>
+        <button type="button" class="button primary" :disabled="projectBusy" @click="projectAction('save', true)">
+          {{ projectBusy ? '正在保存…' : '保存并关闭' }}
+        </button>
       </div>
     </div>
   </dialog>

@@ -41,6 +41,7 @@ def stage(target, inputs, staging, model, windows_crt):
         shutil.copytree(PROJECT / path, app / path)
     node_modules = app / "node_modules"
     native = PROJECT / "node_modules"
+    shutil.copytree(native / "@zip.js" / "zip.js", node_modules / "@zip.js" / "zip.js")
     platform = "win32" if target == "windows" else "linux"
     shutil.copytree(native / "onnxruntime-common", node_modules / "onnxruntime-common")
     bindings = node_modules / "onnxruntime-node"
@@ -68,7 +69,7 @@ def stage(target, inputs, staging, model, windows_crt):
         "必要时可选择简体中文（GB18030）重读。首次识别需要加载本地模型。\n"
         "包内带有脱敏引擎、CPU ONNX Runtime 和 Otter 模型，可离线工作。\n"
         "推理设置显示本发行包的 ONNX Runtime 后端。GPU 后端需要兼容设备和本机驱动。\n"
-        "工作区在当前窗口有效；请在关闭前复制脱敏正文或导出 TXT。\n\n"
+        "通过「文件」菜单保存或打开项目，可继续复核。对外可导出脱敏 TXT。\n\n"
         "Electron 和 Chromium 许可随其分发文件保存。识别模型为 whoisjones/otter-cross-mmbert，"
         "模型卡与 Apache-2.0 许可见 resources/otter/。\n"
     )

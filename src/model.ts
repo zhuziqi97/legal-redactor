@@ -62,10 +62,14 @@ declare global {
       inferenceSettings: () => Promise<InferenceSettings>;
       setProvider: (provider: string) => Promise<string>;
       onOpenSettings: (callback: () => void) => void;
+      initialProject: () => Promise<Workspace | null>;
+      openProject: () => Promise<Workspace | null>;
+      saveProject: (saveAs: boolean) => Promise<{ dirty: boolean } | null>;
+      onProjectCommand: (callback: (command: 'open' | 'save' | 'saveAs') => void) => void;
       engine: <T>(request: { op: string } & Record<string, unknown>) => Promise<T>;
       cancel: () => Promise<void>;
       recordRender: (milliseconds: number) => void;
-      closeWorkspace: () => Promise<void>;
+      closeWorkspace: (discard: boolean) => Promise<void>;
       copy: (text: string) => Promise<void>;
       save: (output: string, sourcePaths: string[], filename: string) => Promise<string | null>;
       onProgress: (callback: (message: string) => void) => void;

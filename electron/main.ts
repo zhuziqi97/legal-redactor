@@ -1,11 +1,14 @@
 const { app, BrowserWindow, Menu, clipboard, dialog, ipcMain, utilityProcess } = require('electron');
 const { existsSync, mkdirSync, readFileSync } = require('node:fs');
-const { appendFile, readFile, writeFile, realpath, mkdtemp, rename, rm } = require('node:fs/promises');
+const { appendFile, readFile, writeFile, realpath, mkdtemp, rename, rm, stat } = require('node:fs/promises');
 const { decodeInput } = require('./text-input.cjs');
 const { findOriginal } = require('./text-engine.cjs');
+const { readProject, writeProject } = require('./project-file.cjs');
 const { basename, dirname, extname, join, resolve } = require('node:path');
 type Workspace = import('../engine/workspace-types.js').Workspace;
 type Request = import('../engine/workspace-types.js').Request;
+type ProjectCommand = 'open' | 'save' | 'saveAs';
+type ProjectFile = { path: string; mtimeMs: number; size: number };
 
 type Pending = {
   id: number;
@@ -91,7 +94,34 @@ type Session = {
   scan?: { materialId: string; cancelled: boolean };
 };
 
-const sessions = new Map<number, Session>();
+type WindowSession = Session & {
+  window: InstanceType<typeof BrowserWindow>;
+  file?: ProjectFile;
+  initialView?: unknown;
+  fileOperation?: boolean;
+  savingTo?: string;
+  changeSeq: number;
+  savedSeq: number;
+};
+
+const sessions = new Map<number, WindowSession>();
+const projectFilter = { name: 'LegalRedactor 项目', extensions: ['lrproj'] };
+const comparablePath = (path: string) => process.platform === 'win32' ? path.toLowerCase() : path;
+
+function projectDirty(session: WindowSession) {
+  return session.file ? session.changeSeq !== session.savedSeq : session.state.materials.length > 0;
+}
+
+function updateProjectTitle(session: WindowSession) {
+  if (session.window.isDestroyed()) return;
+  const name = session.file ? basename(session.file.path, extname(session.file.path)) : '未命名项目';
+  session.window.setTitle(`${name}${projectDirty(session) ? ' *' : ''} · LegalRedactor`);
+}
+
+function projectChanged(session: WindowSession) {
+  session.changeSeq++;
+  updateProjectTitle(session);
+}
 
 function finishWorker(session: Session, child: ReturnType<typeof utilityProcess.fork>, message: string) {
   if (session.worker !== child) return;
@@ -169,7 +199,7 @@ function cancelAnalysis(session: Session) {
   if (session.analysis) stopWorker(session.analysis);
 }
 
-async function analyze(session: Session, input: { materialId: string; revision: number; queueMs?: number },
+async function analyze(session: WindowSession, input: { materialId: string; revision: number; queueMs?: number },
   progress: (phase: string) => void) {
   if (session.scan) throw new Error('当前工作区已有分析任务。');
   if (!nativeEnabled && !rulesOnly) throw new Error('找不到本地 ONNX 模型，请检查发行包资源或开发环境的 REDACTOR_ONNX_DIR。');
@@ -219,6 +249,7 @@ async function analyze(session: Session, input: { materialId: string; revision: 
         }
         analysis.state.activeId = session.state.activeId;
         session.state = analysis.state;
+        projectChanged(session);
         const previewStart = performance.now();
         const view = await runEngine(session, { op: 'view' }, showPhase) as object;
         diagnose({stage: 'analysis-view', preferredEP, provider: route?.provider, usedFallback: !!route?.fallbackReason,
@@ -239,6 +270,111 @@ function windowSession(sender: { id: number }) {
   const session = sessions.get(sender.id);
   if (!session) throw new Error('此工作区已关闭。');
   return session;
+}
+
+function findProjectWindow(path: string) {
+  const key = comparablePath(path);
+  return [...sessions.values()].find(session => session.file && comparablePath(session.file.path) === key);
+}
+
+async function projectPath(path: string) {
+  try {
+    return await realpath(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    return join(await realpath(dirname(path)), basename(path));
+  }
+}
+
+function isSavingTo(path: string) {
+  return [...sessions.values()].some(session => session.savingTo === comparablePath(path));
+}
+
+function focusProject(session: WindowSession) {
+  if (session.window.isMinimized()) session.window.restore();
+  session.window.focus();
+  return null;
+}
+
+async function openProject(session: WindowSession) {
+  const choice = await dialog.showOpenDialog(session.window, {
+    title: '打开项目', properties: ['openFile'], filters: [projectFilter],
+  });
+  if (choice.canceled || !choice.filePaths.length) return null;
+  const path = await realpath(choice.filePaths[0]);
+  const existing = findProjectWindow(path);
+  if (existing) return focusProject(existing);
+  if (isSavingTo(path)) throw new Error('项目正在保存，请稍后再打开。');
+  const { mtimeMs, size } = await stat(path);
+  const state: Workspace = await readProject(path);
+  const { view } = await (await import('./engine/workspace.js')).runWorkspace(state, { op: 'view' }) as { view: unknown };
+  const file = { path, mtimeMs, size };
+  return serialize(session, () => {
+    const other = findProjectWindow(path);
+    if (other) return focusProject(other);
+    if (isSavingTo(path)) throw new Error('项目正在保存，请稍后再打开。');
+    if (session.file || session.state.materials.length || session.scan) {
+      openWindow({ state, file, view });
+      return null;
+    }
+    Object.assign(session, { state, file, changeSeq: 0, savedSeq: 0 });
+    updateProjectTitle(session);
+    return view;
+  });
+}
+
+async function saveProject(session: WindowSession, saveAs: boolean) {
+  let path = session.file?.path;
+  if (!path || saveAs) {
+    const choice = await dialog.showSaveDialog(session.window, {
+      title: saveAs ? '项目另存为' : '保存项目',
+      defaultPath: path ?? join(app.getPath('documents'), '未命名项目.lrproj'),
+      filters: [projectFilter],
+    });
+    if (choice.canceled || !choice.filePath) return null;
+    path = extname(choice.filePath).toLowerCase() === '.lrproj' ? choice.filePath : `${choice.filePath}.lrproj`;
+    if (path !== choice.filePath && existsSync(path) && comparablePath(path) !== comparablePath(session.file?.path ?? '')) {
+      const { response } = await dialog.showMessageBox(session.window, {
+        type: 'question', message: '这个位置已有项目文件。要替换它吗？',
+        buttons: ['取消', '替换'], defaultId: 0, cancelId: 0,
+      });
+      if (response !== 1) return null;
+    }
+    path = await projectPath(path);
+  }
+
+  const owner = findProjectWindow(path);
+  if ((owner && owner !== session) || isSavingTo(path)) throw new Error('这个项目已在另一窗口打开，请选择其他位置。');
+  session.savingTo = comparablePath(path);
+  try {
+    if (owner === session && session.file) {
+      const current = await stat(path).catch(() => null);
+      if (!current || current.mtimeMs !== session.file.mtimeMs || current.size !== session.file.size) {
+        throw new Error('项目文件已在外部移动或更改，请使用「项目另存为」。');
+      }
+    }
+    const { state, changeSeq } = await serialize(session, () => ({ state: session.state, changeSeq: session.changeSeq }));
+    if (state.sourcePaths?.some(source => comparablePath(source) === comparablePath(path))) {
+      throw new Error('此路径是已导入的原件，请选择另一处保存。');
+    }
+    const stamp = await writeProject(path, state);
+    session.file = { path, ...stamp };
+    session.savedSeq = changeSeq;
+    updateProjectTitle(session);
+    return { dirty: projectDirty(session) };
+  } finally {
+    session.savingTo = undefined;
+  }
+}
+
+async function projectOperation<T>(session: WindowSession, task: () => Promise<T>) {
+  if (session.fileOperation) return null;
+  session.fileOperation = true;
+  try {
+    return await task();
+  } finally {
+    session.fileOperation = false;
+  }
 }
 
 function diagnose(record: Record<string, unknown>) {
@@ -315,14 +451,34 @@ ipcMain.handle('redaction:engine', (event, request) => {
   if (request.op === 'scan') return analyze(session, request, progress);
   if (['editMaterial', 'deleteMaterial'].includes(request.op) && request.materialId === session.scan?.materialId) cancelAnalysis(session);
   if (request.op === 'findOriginal') return serialize(session, () => findOriginal(session.state.materials, request.text));
-  return serialize(session, () => runEngine(session, request, progress));
+  return serialize(session, async () => {
+    const revision = session.state.revision;
+    const exported = request.op === 'markExported' && session.state.materials.find(doc => doc.id === request.materialId)?.exported;
+    const payload = await runEngine(session, request, progress);
+    if (session.state.revision !== revision || request.op === 'markExported' && exported !== request.text) projectChanged(session);
+    return payload;
+  });
+});
+ipcMain.handle('redaction:initial-project', event => {
+  const session = windowSession(event.sender);
+  const view = session.initialView;
+  delete session.initialView;
+  return view ?? null;
+});
+ipcMain.handle('redaction:open-project', event => {
+  const session = windowSession(event.sender);
+  return projectOperation(session, () => openProject(session));
+});
+ipcMain.handle('redaction:save-project', (event, saveAs: boolean) => {
+  const session = windowSession(event.sender);
+  return projectOperation(session, () => saveProject(session, saveAs));
 });
 ipcMain.on('redaction:rendered', (_event, renderMs: number) => {
   if (Number.isFinite(renderMs) && renderMs >= 0) diagnose({stage: 'view-render', renderMs});
 });
 ipcMain.handle('redaction:cancel', (event) => cancelAnalysis(windowSession(event.sender)));
-ipcMain.handle('redaction:close', (event) => {
-  windowSession(event.sender).allowClose = true;
+ipcMain.handle('redaction:close', (event, discard: boolean) => {
+  windowSession(event.sender).allowClose = discard === true;
   BrowserWindow.fromWebContents(event.sender)?.close();
 });
 ipcMain.handle('redaction:copy', (_event, output: string) => clipboard.writeText(output));
@@ -353,17 +509,29 @@ ipcMain.handle('redaction:save', async (event, { output, sourcePaths, filename }
   return path;
 });
 
-function openWindow() {
+function openWindow(initial?: { state: Workspace; file: ProjectFile; view: unknown }) {
   const window = new BrowserWindow({
-    title: '案卷脱敏', width: 1450, height: 940, minWidth: 780, minHeight: 620,
-    backgroundColor: '#f5f7fb', autoHideMenuBar: true,
+    width: 1450, height: 940, minWidth: 780, minHeight: 620,
+    backgroundColor: '#f5f7fb',
     webPreferences: { preload: join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true },
   });
   const id = window.webContents.id;
-  const session: Session = { state: { materials: [], groups: {}, activeId: null, undo: null, revision: 0 }, nextId: 0 };
+  const session: WindowSession = {
+    window, state: initial?.state ?? { materials: [], groups: {}, activeId: null, undo: null, revision: 0 },
+    file: initial?.file, initialView: initial?.view, nextId: 0, changeSeq: 0, savedSeq: 0,
+  };
   sessions.set(id, session);
+  updateProjectTitle(session);
+  window.on('page-title-updated', event => event.preventDefault());
   window.on('close', (event: { preventDefault(): void }) => {
-    if (session.allowClose || !session.state.materials.length) return;
+    if (session.fileOperation) { event.preventDefault(); return; }
+    if (session.allowClose) return;
+    if (session.pending) {
+      event.preventDefault();
+      void session.queue?.then(() => { if (!window.isDestroyed()) window.close(); });
+      return;
+    }
+    if (!projectDirty(session)) return;
     event.preventDefault();
     window.webContents.send('redaction:confirm-close');
   });
@@ -376,12 +544,20 @@ function openWindow() {
   window.loadFile(join(project, 'dist', 'index.html'));
 }
 
+function projectMenu(label: string, accelerator: string, command: ProjectCommand) {
+  return { label, accelerator, click: (_item, window) => window?.webContents.send('redaction:project-command', command) };
+}
+
 if (app.requestSingleInstanceLock()) {
   app.on('second-instance', () => openWindow());
   app.whenReady().then(() => {
     Menu.setApplicationMenu(Menu.buildFromTemplate([
       { label: '文件', submenu: [
-        { label: '新建工作区窗口', accelerator: 'CmdOrCtrl+Shift+N', click: () => openWindow() },
+        { label: '新建项目窗口', accelerator: 'CmdOrCtrl+Shift+N', click: () => openWindow() },
+        projectMenu('打开项目…', 'CmdOrCtrl+O', 'open'),
+        projectMenu('保存项目', 'CmdOrCtrl+S', 'save'),
+        projectMenu('项目另存为…', 'CmdOrCtrl+Shift+S', 'saveAs'),
+        { type: 'separator' },
         { role: 'close', label: '关闭窗口' },
       ] },
       { label: '编辑', submenu: [
