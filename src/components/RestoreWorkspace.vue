@@ -129,7 +129,7 @@ async function output(kind: 'copy' | 'file') {
     </div>
     <div ref="workbench" class="workbench">
       <section class="reader" aria-label="恢复对照">
-        <div class="panes" data-view="both">
+        <div class="panes">
           <article v-for="side in sides" :key="side" class="pane" :aria-label="side === 'input' ? '待恢复文本' : '恢复预览'">
             <div class="pane-title output-heading">
               <span v-if="side === 'input'">待恢复文本</span>

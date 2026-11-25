@@ -1,14 +1,13 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
-import { categoryColor, labels, positionKey, prettyError, type Item, type Material, type Occurrence, type Span } from '../model';
+import { categoryColor, labels, type Item, type Material, type Span } from '../model';
 import { indexText, rangePoint, selectedSpan, textPieces } from '../positions';
 
 const props = defineProps<{
   material: Material | null; address: string; selected: number | null; canOutput: boolean; showQuick: boolean;
-  findCase: (text: string) => Promise<Occurrence[]>; locked: boolean; revision: number;
+  active: boolean;
 }>();
-const emit = defineEmits<{ select: [id: number]; selection: [span: Span | null]; dismiss: []; output: [kind: 'copy' | 'file']; locate: [row: Occurrence] }>();
-const view = ref<'source' | 'output' | 'both'>(window.innerWidth >= 1050 ? 'both' : 'source');
+const emit = defineEmits<{ select: [id: number]; selection: [span: Span | null]; dismiss: []; output: [kind: 'copy' | 'file'] }>();
 const reader = ref<HTMLElement>();
 const source = ref<HTMLElement>();
 const sourceScroll = ref<HTMLElement>();
@@ -17,10 +16,6 @@ const findInput = ref<HTMLInputElement>();
 const quickAnchor = ref({ left: 0, top: 0 });
 const findOpen = ref(false);
 const query = ref('');
-const findScope = ref<'current' | 'case'>('current');
-const caseMatches = ref<Occurrence[]>([]);
-const searched = ref(false);
-const findError = ref('');
 const matchIndex = ref(0);
 const index = computed(() => indexText(props.material?.text || ''));
 const sourceParts = computed(() => textPieces(props.material?.text || '', props.material?.items || []));
@@ -89,13 +84,8 @@ async function reveal(id: number | null) {
   }
 }
 
-async function showSource() {
-  if (view.value === 'output') view.value = 'source';
-  await nextTick();
-}
-
 async function revealUnits(span: Span) {
-  await showSource();
+  await nextTick();
   if (!source.value || !sourceScroll.value) return null;
   const range = document.createRange();
   range.setStart(...rangePoint(source.value, span.start));
@@ -142,99 +132,71 @@ async function openFind() {
 function closeFind() {
   findOpen.value = false;
   query.value = '';
-  window.getSelection()?.removeAllRanges();
+  CSS.highlights.delete('document-find');
 }
 
-async function searchCase() {
-  if (!query.value.trim() || props.locked) return;
-  const word = query.value;
-  const revision = props.revision;
-  findError.value = '';
-  try {
-    const rows = await props.findCase(word);
-    if (word === query.value && revision === props.revision && findScope.value === 'case') {
-      caseMatches.value = rows;
-      searched.value = true;
-    }
-  } catch (error) {
-    findError.value = prettyError(error);
-  }
+function moveMatch(direction: number) {
+  if (matches.value.length) matchIndex.value = Math.min(matches.value.length - 1, Math.max(0, matchIndex.value + direction));
 }
 
 function keydown(event: KeyboardEvent) {
+  if (!props.active) return;
   if (event.key === 'Escape' && props.showQuick) emit('dismiss');
-  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f' && !document.querySelector('dialog[open]')) {
+  if ((event.ctrlKey || event.metaKey) && !event.shiftKey && event.key.toLowerCase() === 'f' && !document.querySelector('dialog[open]')) {
     event.preventDefault();
     void openFind();
   }
 }
 
-watch([query, findScope, () => props.revision], () => {
-  matchIndex.value = 0;
-  caseMatches.value = [];
-  searched.value = false;
-  findError.value = '';
-});
-watch([matches, matchIndex, findScope], ([results, position, scope]) => {
-  if (scope === 'current' && results[position]) void selectUnits(results[position]);
+watch(query, () => { matchIndex.value = 0; });
+watch([matches, matchIndex, () => props.active], async ([results, position, active]) => {
+  CSS.highlights.delete('document-find');
+  const match = results[position];
+  if (!active || !findOpen.value || !match) return;
+  const range = await revealUnits(match);
+  if (range && matches.value[matchIndex.value] === match && props.active) CSS.highlights.set('document-find', new Highlight(range));
 });
 watch(() => props.address, async () => {
-  if (findScope.value === 'current') closeFind();
+  closeFind();
   await nextTick();
   if (sourceScroll.value) sourceScroll.value.scrollTop = 0;
   if (outputScroll.value) outputScroll.value.scrollTop = 0;
 });
-watch(view, () => void reveal(props.selected));
 onMounted(() => {
   document.addEventListener('selectionchange', track);
   window.addEventListener('keydown', keydown);
 });
 onUnmounted(() => {
+  closeFind();
   clearHighlight();
   document.removeEventListener('selectionchange', track);
   window.removeEventListener('keydown', keydown);
 });
-defineExpose({ reveal, selectSpan, showSource, anchorItem, highlightSpan, clearHighlight });
+defineExpose({ reveal, selectSpan, anchorItem, highlightSpan, clearHighlight });
 </script>
 
 <template>
   <section ref="reader" class="reader" aria-label="材料正文">
-    <div class="reader-toolbar">
-      <div class="segments" aria-label="阅读方式">
-        <button :aria-pressed="view === 'source'" @click="view = 'source'">原文</button>
-        <button :aria-pressed="view === 'output'" @click="view = 'output'">脱敏预览</button>
-        <button :aria-pressed="view === 'both'" @click="view = 'both'">并排对照</button>
-      </div>
-      <div class="toolbar">
-        <button class="button small quiet" :disabled="!material" @click="openFind">查找原文</button>
-      </div>
-    </div>
-    <form v-if="findOpen" class="search-bar" @submit.prevent="findScope === 'case' && searchCase()">
-      <input id="search-input" ref="findInput" v-model="query" type="search" placeholder="输入要找的原文" aria-label="查找原文" @keydown.escape.stop="closeFind">
-      <select v-model="findScope" aria-label="原文查找范围"><option value="current">本份材料</option><option value="case">全案</option></select>
-      <template v-if="findScope === 'current'">
-        <span aria-live="polite">{{ matches.length ? `${matchIndex + 1} / ${matches.length}` : query ? '没有匹配' : '' }}</span>
-        <button type="button" class="button small" aria-label="上一条搜索结果" :disabled="matchIndex <= 0" @click="matchIndex--">↑</button>
-        <button type="button" class="button small" aria-label="下一条搜索结果" :disabled="matchIndex + 1 >= matches.length" @click="matchIndex++">↓</button>
-      </template>
-      <button v-else class="button small" :disabled="locked || !query.trim()">查找</button>
-      <button type="button" class="button small" @click="closeFind">关闭</button>
-    </form>
-    <div v-if="findOpen && findScope === 'case' && (searched || findError)" class="card case-find" aria-label="全案查找结果">
-      <p v-if="findError" class="form-error">{{ findError }}</p>
-      <p v-else-if="!caseMatches.length" class="muted-empty">全案没有匹配</p>
-      <button v-for="row in caseMatches" :key="positionKey(row)" class="occurrence" :disabled="locked" @click="emit('locate', row)">
-        <span class="occurrence-meta">{{ row.title }} · 第 {{ row.line }} 行</span>
-        <span class="snippet">{{ row.before }}<b>{{ row.original }}</b>{{ row.after }}</span>
-      </button>
-    </div>
     <div v-if="showQuick" class="quick-actions" role="group" aria-label="原文快捷操作"
       :style="{ '--quick-left': quickAnchor.left + 'px', '--quick-top': quickAnchor.top + 'px' }">
       <slot name="quick" />
     </div>
-    <div class="panes" :data-view="view">
+    <div class="panes">
       <article id="source-pane" class="pane source-pane">
-        <div class="pane-title">原文</div>
+        <div class="pane-title output-heading">
+          <span>原文</span>
+          <button class="button small" :disabled="!material" @click="openFind">查找本文</button>
+        </div>
+        <div v-if="findOpen" class="search-bar">
+          <input ref="findInput" v-model="query" type="search" aria-label="查找本文" placeholder="输入要找的原文"
+            @keydown.escape.stop="closeFind" @keydown.enter.prevent="moveMatch($event.shiftKey ? -1 : 1)">
+          <span aria-live="polite">{{ matches.length ? `${matchIndex + 1} / ${matches.length}` : query ? '没有匹配' : '' }}</span>
+          <div class="toolbar pane-output-actions">
+            <button type="button" class="button small" aria-label="上一处搜索结果" :disabled="matchIndex <= 0" @click="moveMatch(-1)">↑</button>
+            <button type="button" class="button small" aria-label="下一处搜索结果" :disabled="matchIndex + 1 >= matches.length" @click="moveMatch(1)">↓</button>
+            <button type="button" class="button small" aria-label="关闭本文查找" @click="closeFind">×</button>
+          </div>
+        </div>
         <div id="source-scroll" ref="sourceScroll" class="pane-scroll">
           <div
             id="source-text" ref="source" class="document-text" :class="{ placeholder: !material }"

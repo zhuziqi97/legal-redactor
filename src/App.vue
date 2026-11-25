@@ -273,9 +273,9 @@ function moveWorkspaceTab(event: KeyboardEvent) {
 
 async function jump(row: Pick<Occurrence, 'materialId' | 'itemId' | 'start' | 'end'>, focusSource = false) {
   if (!await openMaterial(row.materialId)) return;
+  mode.value = 'redact';
   rangeFor.value = null;
   clearQuick();
-  if (focusSource) await reader.value?.showSource();
   if (row.itemId !== null) await reveal(row.itemId);
   else {
     await reveal(null);
@@ -412,8 +412,8 @@ async function applyMaterial() {
   }
 }
 
-async function findCase(text: string) {
-  return run<Occurrence[]>({ op: 'findOriginal', text });
+function findProject(text: string) {
+  return api.engine<Occurrence[]>({ op: 'findOriginal', text });
 }
 async function addMaterial() {
   if (busy.value || !input.text.trim()) return;
@@ -591,7 +591,6 @@ async function startRange() {
   if (!selection.value) {
     rangeFor.value = { materialId: material.value.id, id };
     clicked.value = null;
-    await reader.value?.showSource();
     return;
   }
   await finishRange(id);
@@ -600,7 +599,6 @@ async function chooseRange(row: Occurrence) {
   if (row.itemId === null || !await openMaterial(row.materialId)) return;
   clearQuick();
   rangeFor.value = { materialId: row.materialId, id: row.itemId };
-  await reader.value?.showSource();
   await reveal(row.itemId);
 }
 async function finishRange(id = rangeFor.value?.id) {
@@ -854,8 +852,9 @@ function showEvidence(link: Evidence) {
 <template>
   <div class="desktop-body">
     <MaterialSidebar :documents="workspace.documents" :current="material?.id" :collapsed="collapsed" :locked="busy" :scanning="scanning"
-      :queued="queued" :phases="scanPhases" :errors="scanErrors"
-      @toggle="collapsed = !collapsed" @add="showImport" @open="selectMaterial" @manage="manageMaterial" @settings="openSettings" />
+      :queued="queued" :phases="scanPhases" :errors="scanErrors" :revision="workspace.revision" :find-project="findProject"
+      @toggle="collapsed = !collapsed" @add="showImport" @open="selectMaterial" @locate="jump($event, true)"
+      @manage="manageMaterial" @settings="openSettings" />
     <main class="workspace">
       <div class="workspace-tabs" role="tablist" aria-label="工作区" @keydown="moveWorkspaceTab">
         <button v-for="tab in workspaceTabs" :id="`${tab.id}-tab`" :key="tab.id" type="button" role="tab"
@@ -887,9 +886,9 @@ function showEvidence(link: Evidence) {
         </div>
         <div v-else class="workbench">
           <DocumentReader ref="reader" :address="material.id" :material="material" :selected="selected"
-            :can-output="!busy && ready" :find-case="findCase" :locked="busy" :revision="workspace.revision"
+            :can-output="!busy && ready" :active="mode === 'redact'"
             :show-quick="!!readySelection && !rangeFor && !busy && draft?.mode !== 'edit'"
-            @select="fromDocument" @selection="trackSelection" @output="output" @dismiss="clearQuick" @locate="jump($event, true)">
+            @select="fromDocument" @selection="trackSelection" @output="output" @dismiss="clearQuick">
             <template #quick>
               <template v-if="draft && ['create','bind'].includes(draft.mode)">
                 <button class="button small primary" @mousedown.prevent @click="addSelection">加入调整清单</button>
