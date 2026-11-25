@@ -129,14 +129,20 @@ const projectBusy = ref(false);
 const closeError = ref('');
 const passwordDialog = ref<HTMLDialogElement>();
 const passwordInput = ref<HTMLInputElement>();
-const passwordPrompt = ref<{kind: 'unlock'; title: string} | {kind: 'set'; protected: boolean} | {kind: 'remove'} | null>(null);
+type PasswordPrompt = {kind: 'unlock'; title: string} | {kind: 'set'; protected: boolean} | {kind: 'remove'}
+  | {kind: 'save'; saveAs: boolean; closeAfter: boolean; protected: boolean};
+const passwordPrompt = ref<PasswordPrompt | null>(null);
+const saveProtection = ref<'none' | 'keep' | 'new'>('none');
 const projectPassword = ref('');
 const passwordConfirmation = ref('');
 const passwordError = ref('');
+const settingPassword = computed(() => passwordPrompt.value?.kind === 'set'
+  || passwordPrompt.value?.kind === 'save' && saveProtection.value === 'new');
 const passwordTitle = computed(() => {
   const prompt = passwordPrompt.value;
   if (prompt?.kind === 'unlock') return '解锁项目';
   if (prompt?.kind === 'remove') return '移除项目密码';
+  if (prompt?.kind === 'save') return prompt.saveAs ? '项目另存为' : '保存项目';
   return prompt?.protected ? '修改项目密码' : '设置项目密码';
 });
 const settingsDialog = ref<HTMLDialogElement>();
@@ -236,26 +242,51 @@ async function projectAction(command: 'open' | 'save' | 'saveAs', closeAfter = f
       else if (result) adopt(result.view, true);
       return;
     }
-    const saved = await api.saveProject(command === 'saveAs');
-    if (!saved) return;
-    if (closeAfter) {
-      if (saved.dirty) closeError.value = '保存期间有新修改。请再次保存后关闭。';
-      else await api.closeWorkspace(false);
-    } else {
-      announce(saved.dirty ? '已保存本次快照，仍有新修改未保存。' : '项目已保存', false, true);
+    const {hasFile, protected: protectedProject} = await api.projectSaveStatus();
+    const saveAs = command === 'saveAs';
+    if (!hasFile || saveAs) {
+      if (closeAfter) closeDialog.value?.close();
+      await showPasswordPrompt({kind:'save', saveAs, closeAfter, protected: protectedProject});
+      return;
     }
+    const saved = await api.saveProject(false);
+    if (saved) await completeProjectSave(saved, closeAfter);
   } catch (error) {
-    if (closeAfter) closeError.value = prettyError(error);
+    if (closeAfter) showCloseError(prettyError(error));
     else announce(prettyError(error), true);
   } finally {
     if (command === 'open') busy.value = false;
     projectBusy.value = false;
   }
 }
-async function showPasswordPrompt(prompt: NonNullable<typeof passwordPrompt.value>) {
+
+function showCloseError(message: string) {
+  closeError.value = message;
+  if (!closeDialog.value?.open) closeDialog.value?.showModal();
+}
+
+async function completeProjectSave(saved: {dirty: boolean}, closeAfter: boolean) {
+  if (!closeAfter) {
+    announce(saved.dirty ? '已保存本次快照，仍有新修改未保存。' : '项目已保存', false, true);
+  } else if (saved.dirty) {
+    showCloseError('保存期间有新修改。请再次保存后关闭。');
+  } else {
+    await api.closeWorkspace(false);
+  }
+}
+
+watch(saveProtection, () => {
+  if (passwordPrompt.value?.kind !== 'save') return;
   projectPassword.value = '';
   passwordConfirmation.value = '';
   passwordError.value = '';
+});
+
+async function showPasswordPrompt(prompt: PasswordPrompt) {
+  projectPassword.value = '';
+  passwordConfirmation.value = '';
+  passwordError.value = '';
+  if (prompt.kind === 'save') saveProtection.value = prompt.protected ? 'keep' : 'none';
   passwordPrompt.value = prompt;
   await nextTick();
   if (!passwordDialog.value?.open) passwordDialog.value?.showModal();
@@ -263,12 +294,14 @@ async function showPasswordPrompt(prompt: NonNullable<typeof passwordPrompt.valu
 }
 
 function closePasswordPrompt(cancel = false) {
-  if (cancel && passwordPrompt.value?.kind === 'unlock') void api.openProject(null).catch(() => {});
+  const prompt = passwordPrompt.value;
+  if (cancel && prompt?.kind === 'unlock') void api.openProject(null).catch(() => {});
   passwordDialog.value?.close();
   passwordPrompt.value = null;
   projectPassword.value = '';
   passwordConfirmation.value = '';
   passwordError.value = '';
+  if (cancel && prompt?.kind === 'save' && prompt.closeAfter) closeDialog.value?.showModal();
 }
 
 async function manageProjectPassword() {
@@ -280,7 +313,8 @@ async function manageProjectPassword() {
   }
   projectBusy.value = true;
   try {
-    await showPasswordPrompt({kind:'set', protected: await api.projectPasswordStatus()});
+    const status = await api.projectSaveStatus();
+    await showPasswordPrompt({kind:'set', protected: status.protected});
   } catch (error) {
     announce(prettyError(error), true);
   } finally {
@@ -292,25 +326,32 @@ async function submitProjectPassword() {
   const prompt = passwordPrompt.value;
   if (!prompt || projectBusy.value) return;
   const entered = projectPassword.value;
-  if (prompt.kind !== 'remove' && !entered.trim()) {
+  if ((prompt.kind === 'unlock' || settingPassword.value) && !entered.trim()) {
     passwordError.value = '请输入项目密码。';
     return;
   }
-  if (prompt.kind === 'set' && entered !== passwordConfirmation.value) {
+  if (settingPassword.value && entered !== passwordConfirmation.value) {
     passwordError.value = '两次输入的密码不一致。';
     return;
   }
   projectBusy.value = true;
   passwordError.value = '';
-  projectPassword.value = '';
-  passwordConfirmation.value = '';
   try {
     if (prompt.kind === 'unlock') {
+      projectPassword.value = '';
       const result = await api.openProject(entered);
       if (result && 'view' in result) adopt(result.view, true);
       closePasswordPrompt();
+    } else if (prompt.kind === 'save') {
+      const password = saveProtection.value === 'new' ? entered
+        : saveProtection.value === 'none' && prompt.protected ? null : undefined;
+      const saved = await api.saveProject(prompt.saveAs, password);
+      if (saved) {
+        closePasswordPrompt();
+        await completeProjectSave(saved, prompt.closeAfter);
+      }
     } else {
-      const saved = await api.changeProjectPassword(prompt.kind === 'remove' ? null : entered);
+      const saved = await api.saveProject(false, prompt.kind === 'remove' ? null : entered);
       if (saved) {
         closePasswordPrompt();
         announce(saved.dirty ? '项目密码已更新，仍有新修改未保存。'
@@ -318,7 +359,8 @@ async function submitProjectPassword() {
       }
     }
   } catch (error) {
-    passwordError.value = prettyError(error);
+    if (!passwordDialog.value?.open && prompt.kind === 'save' && prompt.closeAfter) showCloseError(prettyError(error));
+    else passwordError.value = prettyError(error);
   } finally {
     projectBusy.value = false;
     passwordInput.value?.focus();
@@ -637,6 +679,7 @@ api.onProgress(phase => { if (scanning.value && !scanPhases[scanning.value]?.sta
 api.onConfirmClose(() => {
   if (!closeDialog.value || closeDialog.value.open) return;
   if (passwordDialog.value?.open) closePasswordPrompt(true);
+  if (closeDialog.value.open) return;
   closeError.value = '';
   closeDialog.value.showModal();
 });
@@ -1080,7 +1123,7 @@ function showEvidence(link: Evidence) {
     </main>
   </div>
 
-  <dialog ref="passwordDialog" aria-labelledby="project-password-title"
+  <dialog ref="passwordDialog" class="project-password-dialog" aria-labelledby="project-password-title"
     @cancel.prevent="!projectBusy && closePasswordPrompt(true)">
     <form v-if="passwordPrompt" class="dialog-form" @submit.prevent="submitProjectPassword">
       <div class="dialog-heading"><h2 id="project-password-title">{{ passwordTitle }}</h2></div>
@@ -1088,19 +1131,29 @@ function showEvidence(link: Evidence) {
         <p>请输入「{{ passwordPrompt.title }}」的密码。</p>
         <label>项目密码<input ref="passwordInput" v-model="projectPassword" type="password" :readonly="projectBusy" autocomplete="off"></label>
       </template>
-      <template v-else-if="passwordPrompt.kind === 'set'">
+      <p v-else-if="passwordPrompt.kind === 'remove'">移除密码后，项目文件将以明文保存。</p>
+      <fieldset v-if="passwordPrompt.kind === 'save'" class="project-save-choices" :disabled="projectBusy">
+        <legend>密码保护</legend>
+        <label v-if="passwordPrompt.protected"><input v-model="saveProtection" type="radio" name="protection" value="keep">沿用当前密码</label>
+        <label><input v-model="saveProtection" type="radio" name="protection" value="none">不使用密码</label>
+        <label><input v-model="saveProtection" type="radio" name="protection" value="new">{{ passwordPrompt.protected ? '为副本设置新密码' : '设置密码' }}</label>
+      </fieldset>
+      <template v-if="settingPassword">
         <label>新密码<input ref="passwordInput" v-model="projectPassword" type="password" :readonly="projectBusy" autocomplete="new-password"></label>
         <label>确认密码<input v-model="passwordConfirmation" type="password" :readonly="projectBusy" autocomplete="new-password"></label>
         <p class="count">忘记密码后将无法打开加密的项目文件。</p>
       </template>
-      <p v-else>移除密码后，项目文件将以明文保存。</p>
+      <p v-else-if="passwordPrompt.kind === 'save' && passwordPrompt.protected && saveProtection === 'none'" class="count">
+        副本中的原文和映射将以明文保存。
+      </p>
       <p v-if="passwordError" class="form-error" role="alert">{{ passwordError }}</p>
       <div class="dialog-actions">
         <button v-if="passwordPrompt.kind === 'set' && passwordPrompt.protected" type="button" class="button quiet"
           :disabled="projectBusy" @click="showPasswordPrompt({kind:'remove'})">移除密码</button>
         <button type="button" class="button" :disabled="projectBusy" @click="closePasswordPrompt(true)">取消</button>
         <button type="submit" class="button primary" :disabled="projectBusy">
-          {{ passwordPrompt.kind === 'unlock' ? '解锁' : passwordPrompt.kind === 'remove' ? '移除并保存' : '保存加密项目' }}
+          {{ passwordPrompt.kind === 'unlock' ? '解锁' : passwordPrompt.kind === 'save' ? '选择保存位置…'
+            : passwordPrompt.kind === 'remove' ? '移除并保存' : '保存加密项目' }}
         </button>
       </div>
     </form>

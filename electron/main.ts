@@ -354,6 +354,7 @@ async function openProject(session: WindowSession, password?: string | null) {
 }
 
 async function saveProject(session: WindowSession, saveAs: boolean, password?: string | null) {
+  if (session.editingDraft) throw new Error('请先应用或取消原文修改，再保存项目。');
   let path = session.file?.path;
   if (!path || saveAs) {
     const choice = await dialog.showSaveDialog(session.window, {
@@ -373,6 +374,9 @@ async function saveProject(session: WindowSession, saveAs: boolean, password?: s
     path = await projectPath(path);
   }
 
+  if (saveAs && password !== undefined && session.file && comparablePath(path) === comparablePath(session.file.path)) {
+    throw new Error('请为副本选择不同的保存位置。更改当前项目的密码请使用「项目密码」。');
+  }
   const owner = findProjectWindow(path);
   if ((owner && owner !== session) || isSavingTo(path)) throw new Error('这个项目已在另一窗口打开，请选择其他位置。');
   session.savingTo = comparablePath(path);
@@ -504,15 +508,13 @@ ipcMain.handle('redaction:open-project', (event, password?: string | null) => {
   const session = windowSession(event.sender);
   return projectOperation(session, () => openProject(session, password));
 });
-ipcMain.handle('redaction:save-project', (event, saveAs: boolean) => {
+ipcMain.handle('redaction:save-project', (event, saveAs: boolean, password?: string | null) => {
   const session = windowSession(event.sender);
-  return projectOperation(session, () => saveProject(session, saveAs));
+  return projectOperation(session, () => saveProject(session, saveAs, password));
 });
-ipcMain.handle('redaction:project-password-status', event => !!windowSession(event.sender).protection);
-ipcMain.handle('redaction:change-project-password', (event, password: string | null) => {
+ipcMain.handle('redaction:project-save-status', event => {
   const session = windowSession(event.sender);
-  if (session.editingDraft) throw new Error('请先应用或取消原文修改，再保存项目。');
-  return projectOperation(session, () => saveProject(session, false, password));
+  return {hasFile: !!session.file, protected: !!session.protection};
 });
 ipcMain.on('redaction:rendered', (_event, renderMs: number) => {
   if (Number.isFinite(renderMs) && renderMs >= 0) diagnose({stage: 'view-render', renderMs});
