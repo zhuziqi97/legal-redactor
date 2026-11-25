@@ -138,11 +138,11 @@ jobs:
       - name: Assemble and verify the release archive
         run: |
           set -euo pipefail
-          args=()
+          args=("$TARGET" --inputs release-inputs --staging staging --model release-model)
           if [[ "$TARGET" == windows ]]; then
             args+=(--windows-crt release-inputs/crt --windows-rcedit release-inputs/rcedit-x64.exe)
           fi
-          python scripts/stage-portable.py "$TARGET" --inputs release-inputs --staging staging --model release-model "${args[@]}"
+          python scripts/stage-portable.py "${args[@]}"
           name="LegalRedactor-$VERSION-$TARGET-$ARCH"
           mkdir -p release check
           case "$TARGET" in
