@@ -1,4 +1,4 @@
-import { PERSON_VALUE, ROLE, TITLE } from './field-rules.js';
+import { PERSON_VALUE, RECORD_END, ROLE, TITLE } from './field-rules.js';
 import { hit, type Hit, type Passage } from './fields.js';
 import { COMPOUND_SURNAMES } from './suspect-rules.js';
 import { hasSurname } from './suspects.js';
@@ -15,7 +15,12 @@ const types: Record<string, string> = {
   'chat nickname': 'nickname', 'social media account': 'social',
 };
 const punctuation = rule('[。！？；，]');
-const socialContext = rule('微信|昵称|网名|绰号|联系人备注');
+const socialField = '(?:微信(?:号|账号|昵称)|社交账号|昵称|显示名|备注名|网名|绰号|联系人备注)';
+const socialContext = rule(socialField);
+const socialValueLead = rule(socialField + '(?:叫|为|是|改为)?[：:\\s“"「]*$|(?:用|加)(?:微信|QQ)[：:\\s“"「]+$');
+const correction = rule('(?:其实|实际)是[ \\t]*');
+const shortAnswerLead = rule('(?:答[：:]\\s*)?(?:是|叫)?[“"「\\s]*');
+const lineBreak = /[\r\n\f]/u;
 const weakTitle = rule('[\\u3400-\\u9fff](?:总|经理|主任|老师|师傅|老板|律师)(?:是|说|称|的|吗|呢)?');
 const party = rule('(?:原告|被告人?|上诉人|申请人|第三人|证人)[：:\\s]*$');
 
@@ -24,9 +29,6 @@ export function modelWindows(text: string, free: Passage[], known: Hit[]) {
   const groups = new Map<string[], Window[]>();
   for (const {start, end, context} of free) {
     if (!trim(slice(text, start, end)) || definite.some(item => item.start <= start && end <= item.end)) continue;
-    const kinds = socialContext.search(context) || socialContext.search(text, start, end) ? socialLabels : labels;
-    if (!groups.has(kinds)) groups.set(kinds, []);
-    const windows = groups.get(kinds)!;
     let cursor = start;
     while (cursor < end) {
       let stop = Math.min(end, cursor + 192);
@@ -35,8 +37,11 @@ export function modelWindows(text: string, free: Passage[], known: Hit[]) {
         if (split) stop = split.end();
       }
       const from = Math.max(start, cursor - 24);
-      windows.push({start: from, end: Math.min(end, stop + 24), lower: cursor, upper: stop,
-        prefix: context && from === start ? context + '\n' : ''});
+      const to = Math.min(end, stop + 24);
+      const prefix = context && from === start ? context + '\n' : '';
+      const kinds = socialContext.search(prefix) || socialContext.search(text, from, to) ? socialLabels : labels;
+      if (!groups.has(kinds)) groups.set(kinds, []);
+      groups.get(kinds)!.push({start: from, end: to, lower: cursor, upper: stop, prefix});
       cursor = stop;
     }
   }
@@ -59,11 +64,23 @@ export async function scanCandidates(text: string, free: Passage[], known: Hit[]
       for (const [index, {start, end, lower, upper, prefix}] of batch.entries()) {
         const offset = start - length(prefix);
         for (const item of results[index]) {
-          const a = offset + item.start;
+          let a = offset + item.start;
           let b = offset + item.end;
           const center = Math.floor((a + b) / 2);
-          if (!(start <= a && a < b && b <= end && lower <= center && center < upper)) continue;
+          if (!(start <= a && a < b && b <= end && lower <= center && center < upper)
+              || lineBreak.test(slice(text, a, b))) continue;
           let kind = types[item.label];
+          if (kind === 'nickname' || kind === 'social') {
+            const answering = socialContext.test(prefix) && /[？?]\s*$/u.test(prefix);
+            const lineStart = [...RECORD_END.finditer(text, start, a)].at(-1)?.end() ?? start;
+            const answerStart = answering && kind === 'nickname'
+              ? (correction.match(text, lineStart, end)?.end() ?? lineStart) : lineStart;
+            a = Math.max(a, answerStart);
+            if (a >= b) continue;
+            const lead = (a - start < 24 ? prefix : '') + slice(text, Math.max(start, a - 24), a);
+            if (!socialValueLead.search(lead) &&
+                !(answering && shortAnswerLead.fullmatch(text, answerStart, a))) continue;
+          }
           if ((kind === 'person' || kind === 'organization') && char(text, b - 1) === '系') {
             const name = slice(text, a, b - 1);
             if (PERSON_VALUE.fullmatch(name) && hasSurname(name) &&

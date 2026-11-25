@@ -319,6 +319,14 @@ const keepDelimiter = rule('[，。；;|｜\\t]');
 const generalDelimiter = rule('[，,。；;|｜\\t]');
 const internationalCode = rule('00\\d{1,3}[ (（-]');
 const measureSuffix = rule('(?:元|万|%)');
+const sentenceEnd = rule('[。！？.!?；;]$');
+
+function fieldEnd(line: string, start: number, limit: number, label: string) {
+  const kind = R.FIELD_TYPES[label];
+  const delimiter = R.IDENTIFIER_FIELDS.has(kind) || R.SIGNATURE_LABELS.has(label) ? R.CONTACT_END
+    : kind === 'address' ? R.FIELD_END : kind === 'keep' ? keepDelimiter : generalDelimiter;
+  return delimiter.search(line, start, limit)?.start() ?? limit;
+}
 
 export function readFields(source: string): Layout {
   const text = translateWidth(source);
@@ -335,11 +343,22 @@ export function readFields(source: string): Layout {
   let tableSeparator: string | null = null;
   let afterBlank = false;
   let chat = false;
+  let proseContinues = false;
   let offset = 0;
   while (offset < total) {
+    const previousProse = proseContinues;
+    proseContinues = false;
+    if (char(text, offset) === '\f') {
+      if (question && answer) layout.answers.push([question, answer]);
+      question = answer = undefined;
+      pendingLabel = undefined;
+      columns = [];
+      layout.sections.push(offset++);
+      continue;
+    }
     let newline = R.RECORD_END.search(text, offset);
     let end = newline?.start() ?? total;
-    let following = newline?.end() ?? end;
+    let following = newline?.value === '\f' ? end : (newline?.end() ?? end);
     let line = slice(text, offset, end);
     let delim: string | null = columns.length ? tableSeparator : separator(line);
     const csv = columns.length && delim === ',' ? csvRecord(text, offset) : undefined;
@@ -347,7 +366,7 @@ export function readFields(source: string): Layout {
     if (csv && csv[0].length === columns.length) {
       [cells, end] = csv;
       newline = R.RECORD_END.match(text, end);
-      following = newline?.end() ?? end;
+      following = newline?.value === '\f' ? end : (newline?.end() ?? end);
       line = slice(text, offset, end);
     } else cells = cellsOf(line, offset, delim);
     let values = cells.map(([a, b]) => trim(slice(text, a, b)));
@@ -428,12 +447,16 @@ export function readFields(source: string): Layout {
       const bodyStart = messageStart - offset;
       const fields = [...R.LABEL.finditer(line, bodyStart), ...R.INLINE_IDENTIFIER.finditer(line, bodyStart)]
         .sort((a, b) => a.start() - b.start());
+      let context = question && answer ? slice(text, ...question) : '';
       if (continuation && !speaker && !turn && !heading) {
         const first = length(line) - length(trim(line, undefined, 'left'));
         const kind = R.FIELD_TYPES[continuation];
         const pattern = kind === 'case_number' ? R.CASE_VALUE : R.VALUE_PATTERNS[kind];
-        const limit = fields[0]?.start() ?? length(line);
-        if (pattern.match(line, first, limit)) hits.push(...fieldValues(text, offset + first, offset + limit, continuation, protectedRows));
+        const limit = fieldEnd(line, first, fields[0]?.start() ?? length(line), continuation);
+        if (first < limit && (!pattern || pattern.match(line, first, limit))) {
+          hits.push(...fieldValues(text, offset + first, offset + limit, continuation, protectedRows));
+          context ||= `${continuation}：`;
+        }
       }
       const party = speaker ? undefined : R.PARTY_DEFINITION.match(line);
       if (party) {
@@ -447,21 +470,19 @@ export function readFields(source: string): Layout {
       for (let index = 0; index < fields.length; index++) {
         const field = fields[index];
         const limit = fields[index + 1]?.start() ?? length(line);
-        const value = slice(line, field.end(), limit);
         const label = field.group(1)!;
-        const kind = R.FIELD_TYPES[label];
-        let delimiters;
-        if (R.IDENTIFIER_FIELDS.has(kind)) {
-          if (!trim(value) && index === fields.length - 1) pendingLabel = label;
-          delimiters = R.CONTACT_END;
-        } else if (R.SIGNATURE_LABELS.has(label)) delimiters = R.CONTACT_END;
-        else if (kind === 'address') delimiters = R.FIELD_END;
-        else delimiters = kind === 'keep' ? keepDelimiter : generalDelimiter;
-        const endValue = delimiters.search(value)?.start() ?? length(value);
-        hits.push(...fieldValues(text, offset + field.end(), offset + field.end() + endValue, label, protectedRows));
+        if (index === fields.length - 1 && !trim(slice(line, field.end(), limit))) pendingLabel = label;
+        hits.push(...fieldValues(text, offset + field.end(), offset + fieldEnd(line, field.end(), limit, label), label, protectedRows));
       }
-      const context = question && answer ? slice(text, ...question) : '';
-      free.push({start: messageStart, end, context: slice(context, -96)});
+      const prose = !(speaker || turn || fields.length || heading || continuation);
+      const previous = free.at(-1);
+      if (previous && ((answer && !turn && previous.start <= answer[0] && answer[0] < previous.end)
+          || (prose && previousProse))) {
+        previous.end = end;
+      } else {
+        free.push({start: messageStart, end, context: slice(context, -96)});
+      }
+      proseContinues = prose && !sentenceEnd.search(trim(line, undefined, 'right'));
     }
     offset = following;
   }
