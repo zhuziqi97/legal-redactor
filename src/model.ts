@@ -59,6 +59,7 @@ export type Adjustment = {
   searchKeys: Set<string>;
   chosen: Set<string>;
   primaries: Record<string, string>;
+  targetCodes: Record<string, string>;
   edits: Record<string, Occurrence>;
   originalEdit?: OriginalEdit;
   primary: string;

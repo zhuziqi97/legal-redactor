@@ -32,6 +32,7 @@ test('给已有别称补绑位置时，预览和确认都复用别称代号', as
   const positions = (await w.search('小宁')).filter(row => row.materialId === '2');
   const change = {mode:'bind', groupId:group.id, alias:{original:alias.original, code:alias.replacement}, positions};
   const result = await w.preview(change);
+  assert.deepEqual(await w.preview({...change, alias:undefined}), result);
   assert.equal(result.preview.code, alias.replacement);
   assert.deepEqual(result.preview.materials[0].changes[0].after, [{text:alias.replacement}]);
   const wrong = await w.preview({...change, positions:await w.search('回执')});
@@ -139,8 +140,11 @@ test('跨类别订正后新增材料按各自的识别结果匹配，局部修�
 test('迁入检查使用实际派生代号，并阻止绑定到原文里已有的代号', async () => {
   const state = fixture.crossCategoryProject();
   const doc = state.materials[0];
-  doc.decisions.at(-1).aliasType = '曾用名';
-  doc.decisions.at(-1).replacement = '【L机构-曾用名1】';
+  const alias = doc.decisions.at(-1);
+  alias.original = '柳小川';
+  alias.aliasType = '曾用名';
+  alias.replacement = '【L机构-曾用名1】';
+  doc.text = doc.text.slice(0, alias.start) + alias.original + doc.text.slice(alias.end);
   doc.text += '曾记录【柳某甲-曾用名1】。';
   const w = workspace(state);
   const change = {mode:'merge', groupId:'organization', targetId:'person'};
@@ -153,6 +157,24 @@ test('迁入检查使用实际派生代号，并阻止绑定到原文里已有�
   const row = existing.groups.find(group => group.primary === '程明').occurrences[0];
   const {issue} = await w.preview({mode:'bind', groupId:'person', positions:[row]});
   assert.equal(issue.positions[0].original, '【柳某甲】');
+});
+
+test('同一原词已有多个实际代号时，只给迁入位置明确选码', async () => {
+  const state = fixture.crossCategoryProject();
+  const first = state.materials[0].decisions[0];
+  first.aliasType = '曾用名';
+  first.replacement = '【柳某甲-曾用名1】';
+  const w = workspace(state);
+  const change = {mode:'merge', groupId:'organization', targetId:'person'};
+  const {issue} = await w.preview(change);
+  assert.deepEqual(issue.targetCodeChoices, [{original:fixture.original, codes:[
+    {code:first.replacement, count:1}, {code:'【柳某甲】', count:98},
+  ]}]);
+  const confirmed = {...change, targetCodes:{[fixture.original]:'【柳某甲】'}};
+  const {view} = await w.apply(confirmed, await w.preview(confirmed));
+  assert.equal(view.groups[0].occurrences.length, 102);
+  assert.equal(view.groups[0].occurrences[0].replacement, first.replacement);
+  assert.ok(view.groups[0].occurrences.slice(-3).every(row => row.replacement === '【柳某甲】'));
 });
 
 test('新建撞码、修改撞码和从原文选中绑定使用同一跨类别规则', async () => {

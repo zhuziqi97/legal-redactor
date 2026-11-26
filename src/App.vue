@@ -15,7 +15,7 @@ import { positionKey, prettyError, type Adjustment, type AdjustmentPreviewResult
   type SourceFile, type ViewOptions, type Workspace } from './model';
 import { indexText } from './positions';
 import type { EngineRequest } from '../electron/contract';
-import type { AliasTarget, Change as EngineChange } from '../engine/workspace-types';
+import type { AliasTarget, Change as EngineChange, TargetCodeChoice } from '../engine/workspace-types';
 
 const api = window.redaction;
 const workspace = shallowRef<Workspace>({ documents: [], groups: [], current: null, pending: [], canUndo: false, revision: 0 });
@@ -94,8 +94,9 @@ const sourceChanges = computed<SourceChange[]>(() => {
 const draftChange = computed<Change | null>(() => {
   const active = draft.value;
   if (!active) return null;
+  const targetCodes = active.targetCodes;
   if (active.mode === 'merge') {
-    return active.resolution?.targetId ? {mode: 'merge', groupId: active.groupId, targetId: active.resolution.targetId} : null;
+    return active.resolution?.targetId ? {mode: 'merge', groupId: active.groupId, targetId: active.resolution.targetId, targetCodes} : null;
   }
   const primaries: Record<string, Term> = {};
   for (const [id, original] of Object.entries(active.primaries)) if (original) primaries[id] = {original};
@@ -107,14 +108,14 @@ const draftChange = computed<Change | null>(() => {
     const codeChanged = item?.code !== inputCode && item?.code !== `【${inputCode}】`;
     if (!item || !inputCode || (wordChanged && !positions.length) || (!positions.length && !active.primary && !codeChanged)) return null;
     const rebindPositions = !positions.length && codeChanged ? picked.value : [];
-    return { mode: 'editMapping', groupId: active.groupId, positions, code: active.code, primary: active.primary, primaries,
+    return { mode: 'editMapping', groupId: active.groupId, positions, code: active.code, primary: active.primary, primaries, targetCodes,
       ...(rebindPositions.length ? { rebindPositions } : {}),
       ...(active.resolution ? { resolution: { ...active.resolution } } : {}) };
   }
   if (!picked.value.length || (active.mode === 'bind' && !active.groupId)) return null;
   const mode = active.mode === 'remove' ? active.keep ? 'keep' : 'review' : active.mode;
   return {
-    mode, positions: picked.value, primaries,
+    mode, positions: picked.value, primaries, targetCodes,
     ...(mode === 'create' ? { type: active.type, code: active.code,
       ...(active.resolution ? { resolution: { ...active.resolution } } : {}) } : {}),
     ...(mode === 'bind' ? { groupId: active.groupId, ...(active.alias ? {alias: active.alias} : {}) } : {}),
@@ -126,20 +127,37 @@ const visibleImpact = computed(() => previewKey.value && previewKey.value === pr
   ? previewReply.value.result : null);
 const mergeKey = computed(() => {
   if (!draft.value || !['edit', 'create'].includes(draft.value.mode) || !draftChange.value) return '';
-  const { resolution: _resolution, rebindPositions: _rebind, primaries: _primaries, ...selection } = changePayload(draftChange.value);
+  const { resolution: _resolution, rebindPositions: _rebind, primaries: _primaries, targetCodes: _codes, ...selection } = changePayload(draftChange.value);
   return JSON.stringify([draftKey.value, workspace.value.revision, selection]);
 });
 const mergePrompt = computed(() => mergeKey.value === mergeReply.value?.key ? mergeReply.value.issue : null);
 watch(mergeKey, () => { if (draft.value) draft.value.resolution = null; });
 const transferScope = computed(() => {
   if (!draftChange.value) return '';
-  const {primaries: _primaries, ...choice} = changePayload(draftChange.value);
+  const {primaries: _primaries, targetCodes: _codes, ...choice} = changePayload(draftChange.value);
   return JSON.stringify([draftKey.value, workspace.value.revision, choice]);
 });
 const previewSources = computed(() => {
   const reply = previewReply.value;
   return reply?.scope === transferScope.value && 'preview' in reply.result ? reply.result.preview.sources : [];
 });
+const codeChoiceReply = shallowRef<{ scope: string; choices: TargetCodeChoice[] }>();
+const targetCodeChoices = computed(() => codeChoiceReply.value?.scope === transferScope.value ? codeChoiceReply.value.choices : []);
+watch(() => [draftKey.value, draft.value?.groupId, draft.value?.resolution?.targetId], (next, previous) => {
+  if (draft.value && next.some((value, index) => value !== previous[index])) draft.value.targetCodes = {};
+});
+const pendingOutput = computed(() => {
+  const active = draft.value;
+  const id = material.value?.id;
+  if (!active || !id) return false;
+  const impact = visibleImpact.value;
+  if (impact && 'preview' in impact) return impact.preview.materials.some(doc => doc.materialId === id && doc.affectsOutput);
+  if (picked.value.some(row => row.materialId === id)) return true;
+  const change = draftChange.value;
+  if (!change || active.mode !== 'edit' && active.mode !== 'merge') return false;
+  return active.rows.some(row => row.materialId === id);
+});
+const canOutput = computed(() => !busy.value && ready.value && !sourceEdit.value && !pendingOutput.value);
 watch(transferScope, () => {
   if (draft.value && Object.keys(draft.value.primaries).length) draft.value.primaries = {};
 });
@@ -493,7 +511,7 @@ function makeDraft(mode: Adjustment['mode'], options: Partial<Adjustment> = {}) 
   draftKey.value++;
   draft.value = {
     mode, title: '新建映射', groupId: '', fixedTarget: false, type: quickItem.value?.type || 'person',
-    code: '', query: '', scope: 'all', rows: [], searchKeys: new Set(), chosen: new Set(), primaries: {}, keep: false,
+    code: '', query: '', scope: 'all', rows: [], searchKeys: new Set(), chosen: new Set(), primaries: {}, targetCodes: {}, keep: false,
     edits: {}, primary: '', resolution: null,
     error: '', issue: null, searched: false, ...options,
   };
@@ -651,13 +669,14 @@ function positionPayload({ materialId, itemId, start, end }: Occurrence) {
 }
 
 function changePayload(change: Change): EngineChange {
-  const { positions, rebindPositions, term, alias, ...details } = change;
+  const { positions, rebindPositions, term, alias, targetCodes, ...details } = change;
   return {
     ...details,
     ...(positions ? { positions: positions.map(positionPayload) } : {}),
     ...(rebindPositions ? { rebindPositions: rebindPositions.map(positionPayload) } : {}),
     ...(term ? { term: { original: term.original } } : {}),
     ...(alias ? { alias: { original: alias.original, code: alias.code } } : {}),
+    ...(targetCodes ? {targetCodes: {...targetCodes}} : {}),
   };
 }
 
@@ -700,6 +719,11 @@ watch([previewKey, busy], ([key, locked], _, onCleanup) => {
       const result = await api.engine({ op: 'previewAdjustment', change: changePayload(change) });
       previewReply.value = { key, scope, result };
       if ('issue' in result && result.issue.merge) mergeReply.value = { key: conflictKey, issue: result.issue };
+      if ('issue' in result && result.issue.targetCodeChoices) {
+        const choices = new Map(targetCodeChoices.value.map(choice => [choice.original, choice]));
+        for (const choice of result.issue.targetCodeChoices) choices.set(choice.original, choice);
+        codeChoiceReply.value = {scope, choices: [...choices.values()]};
+      }
     } catch (error) {
       previewReply.value = { key, scope, result: { error: prettyError(error) } };
     } finally {
@@ -833,7 +857,7 @@ async function undo() {
   }
 }
 async function output(kind: 'copy' | 'file') {
-  if (!material.value || !ready.value || busy.value || sourceEdit.value) return;
+  if (!material.value || !canOutput.value) return;
   const id = material.value.id;
   busy.value = true;
   try {
@@ -910,7 +934,7 @@ function showEvidence(link: Evidence) {
         <div v-else class="workbench">
           <DocumentReader ref="reader" :address="material.id" :material="material" :selected="selected"
             :view-options="viewOptions"
-            :can-output="!busy && ready && !sourceEdit" :active="mode === 'redact'"
+            :can-output="canOutput" :active="mode === 'redact'"
             :edit-text="sourceEdit?.text" :revising="revising" :edit-error="sourceError"
             :edit-disabled="busy || scanning === material.id || queued.includes(material.id) || !!draft || !!rangeFor"
             :apply-disabled="busy || !!scanning || !sourceDirty || !sourceEdit?.text.trim()"
@@ -937,7 +961,7 @@ function showEvidence(link: Evidence) {
           </DocumentReader>
           <AdjustmentPanel v-if="draft" :key="draftKey" :draft="draft" :groups="workspace.groups" :material-id="material.id"
             :selected="selected" :locked="busy" :previewing="previewing || suggesting" :impact="visibleImpact"
-            :preview-sources="previewSources" :source-changes="sourceChanges"
+            :preview-sources="previewSources" :source-changes="sourceChanges" :target-code-choices="targetCodeChoices"
             :merge-prompt="mergePrompt" :range-for="rangeFor"
             :suggestions="visibleSuggestions" @original="setOriginal"
             @cancel="draft = null; rangeFor = null; clearQuick()" @search="searchDraft" @jump="jump($event, true)" @reselect="chooseRange"

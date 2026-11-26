@@ -26,9 +26,11 @@ export type MergeOption = {groupId: string; whole: boolean; selected: boolean};
 export type MergeReason = 'code' | 'range' | 'value';
 export type CodeOccupant = {groupId: string; code: string; kind: 'primary' | 'alias'};
 export type AliasTarget = {original: string; code: string};
+export type TargetCodeChoice = {original: string; codes: {code: string; count: number}[]};
 export type Issue = {
   message: string; materialId?: string; itemId?: number; start?: number; end?: number;
   positions?: Occurrence[]; stalePreview?: boolean;
+  targetCodeChoices?: TargetCodeChoice[];
   merge?: {reason: MergeReason; groups: string[]; options: MergeOption[]; canRetain: boolean; codeChoices: boolean;
     occupants?: CodeOccupant[]};
 };
@@ -37,6 +39,7 @@ export type Change = {
   groupId?: string; type?: string; code?: string; positions?: Position[]; rebindPositions?: Position[];
   resolution?: {mode: MergeMode; targetId?: string}; targetId?: string; term?: {original: string};
   alias?: AliasTarget;
+  targetCodes?: Record<string, string>;
   primaries?: Record<string, {original: string}>; primary?: string; keep?: boolean;
 };
 export type Request =

@@ -7,7 +7,8 @@ import { amend, checkedOutput, displayCode, requireDecisions, viewMaterial, type
 import { project, projectRelation, revisionBlocks, revisionRanges } from './revision.js';
 import { bisect, indexOf, keyOf, length, lineNumber, rule, slice, trim, type Span } from './text.js';
 import type {
-  Change, CodeOccupant, Group, Issue, Material, MergeOption, MergeReason, Occurrence, Position, PreviousReview, Request, Row, Workspace,
+  Change, CodeOccupant, Group, Issue, Material, MergeOption, MergeReason, Occurrence, Position, PreviousReview, Request, Row,
+  TargetCodeChoice, Workspace,
 } from './workspace-types.js';
 
 const identifiers = new Set([...NUMBER_KINDS, 'case_number', 'social', 'email', 'uscc']);
@@ -15,7 +16,7 @@ const shortName = rule('(?:小|老|阿)[\\u3400-\\u9fff]');
 const revisedReview = '原文或关联依据有改动，请复核';
 type Member = [material: Material, row: Row];
 type Primaries = Record<string, {original: string}>;
-type Adjustment = {changed?: boolean; focus?: Occurrence | null; groupId?: string; primaries?: Primaries};
+type Adjustment = {changed?: boolean; focus?: Occurrence | null; groupId?: string; primaries?: Primaries; code?: string};
 type AdjustmentResult = Adjustment | {issue: Issue};
 
 function* members(state: Workspace, id: string): Generator<Member> {
@@ -579,12 +580,36 @@ async function scanMaterial(state: Workspace, doc: Material, newId: NewId, scan?
   repairGroups(state, {});
 }
 
-function moveMembers(state: Workspace, rows: Iterable<Member>, target: Group, used: Set<string>, keepEvidence = false,
-    alias?: Pick<Row, 'aliasType' | 'replacement'>) {
+function moveMembers(state: Workspace, rows: Member[], target: Group, used: Set<string>, {
+  keepEvidence = false, targetCodes, alias,
+}: {keepEvidence?: boolean; targetCodes?: Record<string, string>; alias?: Row} = {}) {
+  const selected = new Map<string, Pick<Row, 'aliasType' | 'replacement'>>();
+  if (targetCodes) {
+    const originals = new Set(rows.map(([, row]) => row.original));
+    const existing = new Map<string, Map<string, {row: Row; count: number}>>();
+    for (const [, row] of members(state, target.id)) {
+      if (!originals.has(row.original)) continue;
+      if (!existing.has(row.original)) existing.set(row.original, new Map());
+      const codes = existing.get(row.original)!;
+      const entry = codes.get(row.replacement);
+      if (entry) entry.count++;
+      else codes.set(row.replacement, {row, count: 1});
+    }
+    const choices: TargetCodeChoice[] = [];
+    for (const [original, codes] of existing) {
+      if (alias?.original === original) continue;
+      const choice = codes.size === 1 ? codes.values().next().value : codes.get(targetCodes[original]);
+      if (choice) selected.set(original, choice.row);
+      else choices.push({original, codes: [...codes].map(([code, entry]) => ({code, count: entry.count}))});
+    }
+    if (choices.length) return {issue: {message: '请选择要沿用的代号。', targetCodeChoices: choices}};
+  }
+  if (alias) selected.set(alias.original, alias);
   const codes = new Set<string>();
   for (const [, row] of rows) {
-    const label = (alias ? alias.aliasType : row.aliasType) ?? '';
-    const code = alias?.replacement ?? aliasCode(state, target, row.original, label, used);
+    const existing = selected.get(row.original);
+    const label = (existing ? existing.aliasType : row.aliasType) ?? '';
+    const code = existing?.replacement ?? aliasCode(state, target, row.original, label, used);
     if (row.match && !compatible(row.match[0], target.type)) delete row.match;
     manual(row, target, code, 'replace', label, keepEvidence);
     codes.add(code);
@@ -752,7 +777,8 @@ function editMapping(state: Workspace, group: Group, change: Change, used: Set<s
     for (const [index, [, row]] of resolved.entries()) {
       if (originals[index]!.original === group.primary && editedPrimary == null) editedPrimary = row.original;
     }
-    const issue = moveMembers(state, resolved, destination, used);
+    const issue = moveMembers(state, resolved, destination, used,
+      destination !== group ? {targetCodes:change.targetCodes ?? {}} : {});
     if (issue) return issue;
     const [doc, row] = resolved.at(-1)!;
     focus = occurrence(doc, row);
@@ -761,7 +787,7 @@ function editMapping(state: Workspace, group: Group, change: Change, used: Set<s
     const checked = new Set(rebind.map(positionKey));
     const remaining = choice === 'whole' ? [...members(state, group.id)]
       : positions.length ? [] : sourceRows.filter(([doc, row]) => checked.has(keyOf(doc.id, row.id)));
-    const issue = moveMembers(state, remaining, destination, used, true);
+    const issue = moveMembers(state, remaining, destination, used, {keepEvidence:true, targetCodes:change.targetCodes ?? {}});
     if (issue) return issue;
   }
   let primary = destination === group ? change.primary : undefined;
@@ -799,7 +825,8 @@ function apply(state: Workspace, change: Change, newId: NewId, cover: boolean): 
     const target = findGroup(state, change.targetId);
     if (target === group) throw new Error('请选择其他映射。');
     const affected = [...members(state, group!.id)];
-    const issue = checkMove(target, affected) ?? moveMembers(state, affected, target, used, true);
+    const issue = checkMove(target, affected) ?? moveMembers(state, affected, target, used,
+      {keepEvidence:true, targetCodes:change.targetCodes ?? {}});
     return issue ?? {changed: true, groupId: target.id};
   }
   if (op === 'delete') {
@@ -816,7 +843,7 @@ function apply(state: Workspace, change: Change, newId: NewId, cover: boolean): 
   if (op === 'bind' && change.alias) {
     const {original, code} = change.alias;
     alias = [...members(state, group!.id)].find(([, row]) => row.original === original && row.replacement === code)?.[1];
-    if (!alias || original === group!.primary) throw new Error('别称已变更，请重新选择。');
+    if (!alias) throw new Error('原词或代号已变更，请重新选择。');
   }
   const targetKind = kind || group?.type;
   let resolved: Member[];
@@ -867,13 +894,15 @@ function apply(state: Workspace, change: Change, newId: NewId, cover: boolean): 
       if (op === 'create') row.aliasType = '';
       if (kind) row.type = kind;
     }
-    const issue = moveMembers(state, resolved, group!, used, false, alias);
+    const reuse = op === 'bind' || op === 'create' && change.resolution?.targetId === group!.id;
+    const issue = moveMembers(state, resolved, group!, used, {targetCodes:reuse ? change.targetCodes ?? {} : undefined, alias});
     if (issue) return issue;
   } else {
     for (const [, row] of resolved) manual(row, null, '', op === 'keep' ? 'keep' : 'review');
   }
   const [doc, last] = resolved.at(-1)!;
-  return {changed: true, focus: occurrence(doc, last), primaries: change.primaries ?? {}};
+  const code = op === 'bind' && resolved.every(([, row]) => row.replacement === last.replacement) ? last.replacement : undefined;
+  return {changed: true, focus: occurrence(doc, last), primaries: change.primaries ?? {}, code};
 }
 
 function applyReview(state: Workspace, change: Change, newId: NewId, cover: boolean) {
@@ -945,7 +974,10 @@ function adjustmentImpact(doc: Material, before: ReturnType<typeof viewMaterial>
     if (cursor < newEnd) parts.push({text: slice(after.output, cursor, newEnd)});
     return {start, end, line: lineNumber(doc.text, start), before: slice(before.output, oldStart, oldEnd), after: parts};
   });
-  return {materialId: doc.id, title: doc.title, changes, removedCount: [...old.keys()].filter(key => !next.has(key)).length,
+  const affectsOutput = before.output !== after.output || ranges.length > 0
+    && JSON.stringify(before.items.map(row => [row.start, row.end, row.action, row.type])) !==
+      JSON.stringify(after.items.map(row => [row.start, row.end, row.action, row.type]));
+  return {materialId: doc.id, title: doc.title, changes, affectsOutput, removedCount: [...old.keys()].filter(key => !next.has(key)).length,
     restoredCount: restored.length};
 }
 
@@ -987,7 +1019,7 @@ function previewAdjustment(state: Workspace, change: Change, newId: NewId) {
     return impact.changes.length ? [impact] : [];
   });
   const group = findGroup(trial, result.groupId || result.focus?.group || undefined);
-  return {preview: {revision: state.revision, code: change.mode === 'bind' && change.alias ? change.alias.code : group.code, materials, primary: group.primary,
+  return {preview: {revision: state.revision, code: result.code ?? group.code, materials, primary: group.primary,
     sources: sourceImpacts(state, trial, group.id)}};
 }
 

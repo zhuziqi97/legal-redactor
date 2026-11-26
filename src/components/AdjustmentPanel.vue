@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
+import type { TargetCodeChoice } from '../../engine/workspace-types';
 import MappingTargetPicker from './MappingTargetPicker.vue';
 import { kindLabel, labels, positionKey, type Adjustment, type AdjustmentPreview, type AdjustmentPreviewResult, type Group, type Issue, type Occurrence,
   type RangeCandidate, type RangeSuggestion, type SourceChange } from '../model';
@@ -7,6 +8,7 @@ import { kindLabel, labels, positionKey, type Adjustment, type AdjustmentPreview
 const props = defineProps<{
   draft: Adjustment; groups: Group[]; materialId?: string; selected: number | null; locked: boolean;
   previewing: boolean; impact: AdjustmentPreviewResult | null; previewSources: AdjustmentPreview['sources']; sourceChanges: SourceChange[];
+  targetCodeChoices: TargetCodeChoice[];
   mergePrompt: Issue | null; rangeFor: { materialId: string; id: number } | null;
   suggestions: { rows: RangeSuggestion[]; error?: string } | null;
 }>();
@@ -19,7 +21,7 @@ const target = computed(() => props.groups.find(group => group.id === props.draf
 const preview = computed(() => props.impact && 'preview' in props.impact ? props.impact.preview : null);
 const previewIssue = computed(() => props.impact && 'issue' in props.impact ? props.impact.issue : null);
 const error = computed(() => (props.impact && 'error' in props.impact ? props.impact.error
-  : previewIssue.value?.merge ? '' : previewIssue.value?.message) || props.draft.error);
+  : previewIssue.value?.merge || previewIssue.value?.targetCodeChoices ? '' : previewIssue.value?.message) || props.draft.error);
 const editingLocked = computed(() => props.locked && !props.previewing);
 const selectedRows = computed(() => props.draft.rows.filter(row => props.draft.chosen.has(positionKey(row))));
 const selecting = computed(() => ['create', 'bind'].includes(props.draft.mode));
@@ -287,6 +289,13 @@ function resolve(mode: 'whole' | 'selected' | 'retain', targetId?: string) {
             </select>
           </label>
         </div>
+        <label v-for="choice in targetCodeChoices" :key="choice.original" class="edit-field">
+          <span>{{ choice.original }}的代号</span>
+          <select v-model="draft.targetCodes[choice.original]" :aria-label="`${choice.original}的代号`" :disabled="editingLocked">
+            <option value="" disabled>选择代号</option>
+            <option v-for="{code, count} in choice.codes" :key="code" :value="code">{{ code }} · {{ count }} 处</option>
+          </select>
+        </label>
         <p v-if="error" class="form-error" role="alert">{{ error }}</p>
         <section v-if="conflict" class="edit-conflicts" aria-label="映射冲突">
           <h3>映射冲突</h3>
@@ -338,7 +347,7 @@ function resolve(mode: 'whole' | 'selected' | 'retain', targetId?: string) {
             </article>
           </section>
         </template>
-        <p v-else-if="!preview && !error && (editing || merging ? previewing : needsPreview && selectedRows.length && (draft.mode !== 'bind' || draft.groupId))"
+        <p v-else-if="!preview && !error && !previewIssue && (editing || merging ? previewing : needsPreview && selectedRows.length && (draft.mode !== 'bind' || draft.groupId))"
           class="impact-wait" role="status">正在更新影响预览…</p>
       </div>
       <div class="apply-bar" :class="{ 'edit-apply': editing }">

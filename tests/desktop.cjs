@@ -287,6 +287,7 @@ test('搜索派生代号找到跨类别目标，预览三处后合并并撤销',
   assert.equal(await target.getAttribute('aria-pressed'), 'true');
   await channel(dialog, '查看合并').click();
   const preview = page.getByRole('region', {name:'调整清单'});
+  await preview.getByLabel('柳明川的代号').selectOption('【柳某甲】');
   await preview.getByText('迁入 3 处 → 【柳某甲】', {exact:true}).waitFor();
   assert.equal(await preview.locator('.impact-entry').count(), 3);
   assert.equal(await output(page).getByText('【L机构】', {exact:true}).count(), 1);
@@ -295,6 +296,7 @@ test('搜索派生代号找到跨类别目标，预览三处后合并并撤销',
   assert.equal(await output(page).getByText('【L机构】', {exact:true}).count(), 2);
   await channel(preview, '更换目标').click();
   await channel(dialog, '查看合并').click();
+  await preview.getByLabel('柳明川的代号').selectOption('【柳某甲】');
   await channel(preview, '确认合并').click();
   const merged = mappings.locator('.mapping').filter({has:channel(page, '柳明川 → 【柳某甲】')});
   await merged.getByText('102 处', {exact:true}).waitFor();
@@ -310,6 +312,7 @@ test('搜索派生代号找到跨类别目标，预览三处后合并并撤销',
   const picker = preview.getByRole('searchbox', {name:'搜索目标映射'});
   await picker.fill('柳某甲-曾用名1');
   await channel(preview, '柳明川 → 【柳某甲】 99 处').click();
+  await preview.getByLabel('柳明川的代号').selectOption('【柳某甲】');
   await channel(preview, '应用到所选 1 处').click();
   await merged.getByText('100 处', {exact:true}).waitFor();
   await source.getByText('2 处', {exact:true}).waitFor();
@@ -357,9 +360,12 @@ test('通过映射菜单管理别称，跨材料补位置沿用实际代号', as
   assert.deepEqual(await adjust.locator('.impact-entry dd').allTextContents(), ['小宁', '【张某-曾用名1】']);
   await locate.click();
   await page.locator('#source-text').getByText(/已提交回执/u).waitFor();
+  assert.equal(await channel(page, '导出 TXT').isDisabled(), true);
+  assert.equal(await channel(page, '复制文本').isDisabled(), true);
   await channel(adjust, '应用到所选 1 处').click();
   await term.getByText('2 处', {exact:true}).waitFor();
   await output(page).getByText('【张某-曾用名1】', {exact:true}).waitFor();
+  assert.equal(await channel(page, '导出 TXT').isEnabled(), true);
 
   await channel(term, '小宁的别称操作').click();
   await channel(term, '改绑位置').click();
