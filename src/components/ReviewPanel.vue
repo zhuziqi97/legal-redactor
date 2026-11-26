@@ -70,6 +70,13 @@ async function reveal() {
   list.value?.querySelector('.mapping-selected')?.scrollIntoView({ block: 'nearest' });
   positionList.value?.querySelector('.occurrence.current')?.scrollIntoView({ block: 'nearest' });
 }
+async function showGroup(id: string) {
+  selectGroup(id);
+  await nextTick();
+  if (hidden.value) query.value = '';
+  if (hidden.value && props.scope === 'current') emit('scope', 'all', false);
+  await reveal();
+}
 function showCurrent() {
   emit('scope', 'all', false);
   query.value = '';
@@ -81,7 +88,7 @@ function chooseScope(event: Event) {
   input.value = props.scope;
   emit('scope', scope, true);
 }
-defineExpose({ selectGroup, reveal });
+defineExpose({ selectGroup, reveal, showGroup });
 </script>
 
 <template>

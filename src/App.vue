@@ -719,7 +719,7 @@ async function applyDraft() {
   if (result) {
     const destination = active.resolution?.targetId || active.groupId;
     draft.value = null;
-    if (destination) review.value?.selectGroup(destination);
+    if (destination) await review.value?.showGroup(destination);
   }
   else if (draft.value?.issue?.stalePreview) {
     const current = await run({ op: 'view' }).catch(() => null);

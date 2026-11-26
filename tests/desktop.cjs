@@ -246,6 +246,8 @@ test('搜索派生代号找到跨类别目标，预览三处后合并并撤销',
   }, path);
   await channel(page.getByRole('tabpanel', {name:'脱敏'}), '打开项目').click();
   const mappings = page.getByRole('region', {name:'映射清单'});
+  const filter = mappings.getByRole('searchbox', {name:'搜索映射'});
+  await filter.fill('L机构');
   const source = mappings.locator('.mapping').filter({has: channel(page, '柳明川 → 【L机构】')});
   await channel(source, '柳明川的映射操作').click();
   await channel(source, '合并到其他映射').click();
@@ -274,6 +276,8 @@ test('搜索派生代号找到跨类别目标，预览三处后合并并撤销',
   await channel(preview, '确认合并').click();
   const merged = mappings.locator('.mapping').filter({has:channel(page, '柳明川 → 【柳某甲】')});
   await merged.getByText('102 处', {exact:true}).waitFor();
+  assert.equal(await filter.inputValue(), '');
+  assert.equal(await channel(merged, '柳明川 → 【柳某甲】').getAttribute('aria-pressed'), 'true');
   assert.equal(await source.count(), 0);
   assert.equal(await output(page).getByText('【L机构】', {exact:true}).count(), 0);
   await channel(mappings, '撤销上次订正').click();
