@@ -381,6 +381,10 @@ test('通过映射菜单管理别称，跨材料补位置沿用实际代号', as
   await page.locator('#source-text').getByText(/已提交回执/u).waitFor();
   assert.equal(await channel(page, '导出 TXT').isDisabled(), true);
   assert.equal(await channel(page, '复制文本').isDisabled(), true);
+  await page.locator('.material-row').filter({hasText:'合成笔录'}).click();
+  assert.equal(await channel(page, '导出 TXT').isEnabled(), true);
+  await page.locator('.material-row').filter({hasText:'合成补录'}).click();
+  assert.equal(await channel(page, '导出 TXT').isDisabled(), true);
   await channel(adjust, '应用到所选 1 处').click();
   await term.getByText('2 处', {exact:true}).waitFor();
   await output(page).getByText('【张某-曾用名1】', {exact:true}).waitFor();
@@ -399,4 +403,64 @@ test('通过映射菜单管理别称，跨材料补位置沿用实际代号', as
   await channel(adjust, '移出所选 1 处').click();
   await primary.waitFor();
   assert.equal(await term.count(), 0);
+});
+
+test('删材料要求选择恢复原词，未匹配筛选保留完整恢复稿与 TXT 输出', async t => {
+  const {writeProject} = require('../build/project-file.cjs');
+  const {runWorkspace} = await import('../build/engine/workspace.js');
+  const {app, page, directory} = await open(t, {provider:'cpu', model:false});
+  let state = {materials:[], groups:{}, activeId:null, undo:null, revision:0};
+  async function run(request) {
+    const result = await runWorkspace(state, request);
+    if (result.state) state = result.state;
+    return result;
+  }
+  await run({op:'add', title:'初次笔录', text:'被询问人：张甲\n问：你以前叫什么？\n答：我以前叫小宁。'});
+  const {view} = await run({op:'scan', materialId:'1'});
+  await run({op:'add', title:'补充笔录', text:'备注：小宁与小东到场。'});
+  await run({op:'scan', materialId:'2'});
+  const positions = (await run({op:'search', text:'小宁', materialId:'2'})).concat(await run({op:'search', text:'小东'}));
+  await run({op:'apply', change:{mode:'bind', groupId:view.groups[0].id, positions}});
+  const path = join(directory, '恢复原词.lrproj');
+  const txt = join(directory, '恢复文本.txt');
+  await writeProject(path, state);
+  await app.evaluate(({dialog}, {path, txt}) => {
+    dialog.showOpenDialog = async () => ({canceled:false, filePaths:[path]});
+    dialog.showSaveDialog = async () => ({canceled:false, filePath:txt});
+  }, {path, txt});
+  await channel(page.getByRole('tabpanel', {name:'脱敏'}), '打开项目').click();
+  await channel(page, '初次笔录的材料操作').click();
+  await channel(page, '删除材料').click();
+  const deletion = role(page, '删除材料');
+  const choice = deletion.getByLabel('为张甲选择恢复原词');
+  await choice.waitFor();
+  assert.equal(await channel(deletion, '确认删除').isDisabled(), true);
+  await choice.selectOption('小东');
+  await channel(deletion, '确认删除').click();
+  const review = page.getByRole('region', {name:'映射清单'});
+  const group = review.locator('.mapping').filter({has:channel(page, '小东 → 【张某】')});
+  await channel(group, '小东的映射操作').click();
+  await channel(group, '管理原词与别称').click();
+  const aliases = page.getByRole('region', {name:'管理原词与别称'});
+  await channel(aliases, '小宁的位置操作').click();
+  await channel(aliases, '设为恢复原词').click();
+  const adjust = page.getByRole('region', {name:'调整清单'});
+  await adjust.getByText('恢复原词 小东 → 小宁', {exact:true}).waitFor();
+  await channel(adjust, '确认设置').click();
+  await aliases.getByText(/曾用名1.*恢复原词/u).waitFor();
+
+  await page.getByRole('tab', {name:'恢复'}).click();
+  const restore = page.getByRole('tabpanel', {name:'恢复'});
+  await restore.getByRole('textbox', {name:'待恢复文本'}).fill('【张某-曾用名1】与【旧代号】\n这里再见【旧代号】');
+  await channel(restore, '完成').click();
+  const mappings = restore.getByRole('region', {name:'恢复映射清单'});
+  assert.equal(await mappings.locator('.restore-mapping').count(), 2);
+  await channel(mappings, '未匹配 2').click();
+  assert.equal(await mappings.locator('.restore-mapping').count(), 1);
+  await mappings.locator('.restore-mapping').click();
+  await channel(mappings, '第 2 行 · 第 2 处').click();
+  assert.equal(await restore.locator('[data-restore-text="output"] mark.selected').textContent(), '【旧代号】');
+  await channel(restore, '导出 TXT').click();
+  await restore.getByText('已导出 TXT', {exact:true}).waitFor();
+  assert.equal(await readFile(txt, 'utf8'), '小宁与【旧代号】\n这里再见【旧代号】');
 });

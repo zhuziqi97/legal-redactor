@@ -23,6 +23,7 @@ const sides = ['input', 'output'] as const;
 const selected = ref<number | null>(null);
 const result = computed(() => restoreText(text.value, props.groups));
 const unmatched = computed(() => result.value.occurrences.filter(row => row.value === null).length);
+const unmatchedOnly = ref(false);
 const selectedCode = computed(() => selected.value === null ? null : result.value.occurrences[selected.value]?.code);
 
 const inputParts = computed(() => {
@@ -51,6 +52,7 @@ const mappings = computed(() => {
   }
   return [...rows.values()];
 });
+const visibleMappings = computed(() => unmatchedOnly.value ? mappings.value.filter(rows => rows[0].value === null) : mappings.value);
 watch(result, () => { selected.value = null; });
 
 async function select(occurrence: RestoreOccurrence, event?: MouseEvent) {
@@ -219,12 +221,15 @@ async function output(kind: 'copy' | 'file') {
       <section class="card review" aria-label="恢复映射清单">
         <header class="review-heading">
           <h2>映射清单</h2>
-          <span v-if="result.occurrences.length" class="count">恢复 {{ result.occurrences.length - unmatched }} 处</span>
+          <div v-if="result.occurrences.length" class="toolbar" aria-label="筛选恢复映射">
+            <button class="button small quiet" :aria-pressed="!unmatchedOnly" @click="unmatchedOnly = false">全部</button>
+            <button class="button small quiet" :aria-pressed="unmatchedOnly" @click="unmatchedOnly = true">未匹配 {{ unmatched }}</button>
+          </div>
         </header>
         <div class="review-list">
           <p v-if="text.trim() && !mappings.length" class="muted-empty">没有可匹配的代号</p>
-          <div v-for="rows in mappings" :key="rows[0].code" class="mapping"
-            :class="{ 'mapping-selected': selectedCode === rows[0].code }">
+          <p v-else-if="unmatchedOnly && !visibleMappings.length" class="muted-empty">没有未匹配的代号</p>
+          <div v-for="rows in visibleMappings" :key="rows[0].code" class="mapping">
             <button class="mapping-toggle restore-mapping" :data-restore-group="rows[0].id"
               :aria-expanded="selectedCode === rows[0].code" @click="select(rows[0])">
               <span class="mapping-title">
@@ -250,6 +255,9 @@ async function output(kind: 'copy' | 'file') {
 <style scoped>
 .restore-editor { flex: 1; min-height: 0; width: 100%; border: 0; border-radius: 0; resize: none; padding: 13px 17px; }
 .restore-editor:focus-visible { outline-offset: -2px; }
+.restore-mapping:hover { background: var(--surface); }
+.restore-mapping[aria-expanded="true"] { background: var(--accent-soft); }
+.restore-mapping:focus-visible { outline-offset: -2px; }
 .restore-mapping { width: 100%; justify-content: space-between; }
 .restore-mapping .count { flex: none; }
 .restore-mapping .group-review { margin-inline-start: 6px; }

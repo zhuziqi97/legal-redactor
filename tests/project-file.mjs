@@ -95,6 +95,23 @@ test('加密 v1 项目重开后仍使用跨类别订正的结果导出与恢复'
   assert.deepEqual(restored.occurrences.map(row => row.value), [fixture.original,null]);
 });
 
+test('快捷绑定补录沿用的派生代号随项目保存和重开', async t => {
+  const path = await localProject(t);
+  const project = workspace();
+  const first = await project.add('被询问人：张甲\n问：你以前叫什么？\n答：我以前叫小宁。', '笔录');
+  const group = first.view.groups.find(item => item.primary === '张甲');
+  const alias = group.occurrences.find(row => row.original === '小宁');
+  await project.add('备注：小宁提交回执。', '补充笔录');
+  const positions = await project.run({op:'search', materialId:'2', text:'小宁'});
+  const change = {mode:'bind', groupId:group.id, positions};
+  const {preview} = await project.run({op:'previewAdjustment', change});
+  await project.run({op:'apply', change, expectedRevision:preview.revision});
+  await writeProject(path, project.state);
+  const {state} = await readProject(path);
+  const {output} = await runWorkspace(state, {op:'output', materialId:'2'});
+  assert.equal(output, `备注：${alias.replacement}提交回执。`);
+});
+
 test('修改原文后、重新识别前保存的项目仍可接续人工订正', async t => {
   const path = await localProject(t);
   const project = workspace();
