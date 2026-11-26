@@ -35,3 +35,9 @@ jobs:
           node-version: '24'
       - run: npm ci
       - run: npm test
+      - name: Desktop regression (Linux)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a npm run test:desktop
+      - name: Desktop regression
+        if: runner.os != 'Linux'
+        run: npm run test:desktop
