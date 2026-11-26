@@ -1,6 +1,4 @@
-<img src="public/legal-redactor-icon.png" width="72" alt="" align="right">
-
-# LegalRedactor
+# <img src="public/legal-redactor-icon.png" width="36" height="36" alt=""> LegalRedactor
 
 **法律文档脱敏工具**
 
