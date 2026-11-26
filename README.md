@@ -18,7 +18,7 @@ LegalRedactor 用于在共享或进一步处理法律文档前，识别和替换
 在仓库根目录构建并启动应用。
 
 ```sh
-npm ci --ignore-scripts
+npm ci
 npm run build
 npm exec --yes --package=electron@44.11.2 -- electron .
 ```

@@ -7,6 +7,10 @@
   "engines": {
     "node": ">=24"
   },
+  "allowScripts": {
+    "esbuild@0.28.2": true,
+    "onnxruntime-node@1.31.1": true
+  },
   "scripts": {
     "typecheck": "vue-tsc --noEmit",
     "build": "npm run typecheck && vite build --base=./ && tsc -p tsconfig.engine.json && node scripts/build-electron.mjs",
