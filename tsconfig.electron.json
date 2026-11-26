@@ -4,6 +4,8 @@
     "module": "Preserve",
     "moduleResolution": "Bundler",
     "moduleDetection": "force",
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
     "types": ["node"]
   },
   "include": ["electron/**/*.ts"]
