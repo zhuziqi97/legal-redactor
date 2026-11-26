@@ -6,7 +6,6 @@ import DocumentReader from './components/DocumentReader.vue';
 import MaterialSidebar from './components/MaterialSidebar.vue';
 import ReviewPanel from './components/ReviewPanel.vue';
 import ProjectDialogs from './components/ProjectDialogs.vue';
-import RecoveryChoice from './components/RecoveryChoice.vue';
 import MappingTargetPicker from './components/MappingTargetPicker.vue';
 import type { MappingCategory } from './mapping-search';
 import { useAnalysisQueue } from './analysis-queue';
@@ -33,6 +32,7 @@ function applyUpdate(status: UpdateStatus) {
 api.onUpdateStatus(applyUpdate);
 void api.settingsInfo().then(({ update }) => applyUpdate(update)).catch(() => {});
 const material = computed(() => workspace.value.current);
+const showReview = computed(() => !!material.value || workspace.value.groups.length > 0 || workspace.value.canUndo);
 const ready = computed(() => material.value?.status === 'ready');
 const collapsed = ref(false);
 const mappingScope = ref<MappingScope>('all');
@@ -164,26 +164,7 @@ const importDialog = ref<HTMLDialogElement>();
 const projectDialogs = ref<InstanceType<typeof ProjectDialogs>>();
 const projectBusy = computed(() => projectDialogs.value?.projectBusy ?? false);
 const materialDialog = ref<HTMLDialogElement>();
-const materialEdit = reactive({action:'rename' as 'rename' | 'delete', id:'', title:'', error:'', open:false,
-  primaries:{} as Record<string,string>});
-const materialDelete = computed<Change | null>(() => materialEdit.open && materialEdit.action === 'delete'
-  ? {mode:'deleteMaterial', materialId:materialEdit.id, primaries:recoveryTerms(materialEdit.primaries)} : null);
-const materialScope = computed(() => materialDelete.value ? JSON.stringify([workspace.value.revision, materialEdit.id]) : '');
-const materialKey = computed(() => materialDelete.value ? JSON.stringify([materialScope.value, materialDelete.value.primaries]) : '');
-const materialReply = shallowRef<{key:string; scope:string; result:AdjustmentPreviewResult}>();
-const materialPreview = computed(() => {
-  const reply = materialReply.value;
-  return reply?.key === materialKey.value && 'preview' in reply.result ? reply.result.preview : null;
-});
-const materialSources = computed(() => {
-  const reply = materialReply.value;
-  return reply?.scope === materialScope.value && 'preview' in reply.result ? reply.result.preview.sources.filter(source => source.nextPrimary) : [];
-});
-const canDeleteMaterial = computed(() => !!materialPreview.value && recoveryChoicesComplete(materialSources.value, materialEdit.primaries));
-const materialImpact = computed(() => {
-  const affected = workspace.value.groups.filter(item => item.occurrences.some(row => row.materialId === materialEdit.id));
-  return { groups: affected.length, removed: affected.filter(item => item.occurrences.every(row => row.materialId === materialEdit.id)).length };
-});
+const materialEdit = reactive({action:'rename' as 'rename' | 'delete', id:'', title:'', error:''});
 const inputText = ref<HTMLTextAreaElement>();
 const input = reactive({ title: '', text: '', path: null as string | null });
 const importFilename = computed(() => input.path?.split(/[\\/]/).at(-1));
@@ -422,42 +403,17 @@ function pasteInstead() {
 async function manageMaterial(action: typeof materialEdit.action, id: string) {
   const item = workspace.value.documents.find(doc => doc.id === id);
   if (!item || busy.value) return;
-  Object.assign(materialEdit, {action, id, title:item.title, error:'', open:true, primaries:{}});
+  Object.assign(materialEdit, {action, id, title:item.title, error:''});
   materialDialog.value?.showModal();
 }
 
-watch(materialKey, async key => {
-  const change = materialDelete.value;
-  if (!key || !change || materialReply.value?.key === key) return;
-  const scope = materialScope.value;
-  materialEdit.error = '';
-  try {
-    const result = await api.engine({op:'previewAdjustment', change:changePayload(change)});
-    if (materialKey.value !== key) return;
-    materialReply.value = {key, scope, result};
-    if ('issue' in result) materialEdit.error = result.issue.message;
-  } catch (error) {
-    if (materialKey.value === key) materialEdit.error = prettyError(error);
-  }
-});
-
 async function applyMaterial() {
   const { action, id, title } = materialEdit;
-  const change = materialDelete.value;
-  const preview = materialPreview.value;
-  if (busy.value || !id || (action === 'delete' && (!preview || !change || !canDeleteMaterial.value))) return;
+  if (busy.value || !id) return;
   materialEdit.error = '';
   try {
     const result = action === 'rename' ? await run({op:'renameMaterial', materialId:id, title})
-      : await run({op:'apply', change:changePayload(change!), expectedRevision:preview!.revision});
-    if ('issue' in result) {
-      materialEdit.error = result.issue.message;
-      if (result.issue.stalePreview) {
-        const current = await run({op:'view'});
-        adopt(current.view);
-      }
-      return;
-    }
+      : await run({op:'deleteMaterial', materialId:id});
     adopt(result.view, action !== 'rename');
     if (action !== 'rename') { draft.value = null; rangeFor.value = null; }
     if (action === 'delete') {
@@ -958,19 +914,19 @@ function showEvidence(link: Evidence) {
             <button class="button small quiet" @click="rangeFor = null; clearQuick()">取消</button>
           </div>
         </div>
-        <div v-if="!material" class="empty-workspace">
-          <img src="/legal-redactor-icon.png" width="58" height="58" alt="">
-          <div class="empty-workspace-copy">
-            <h2>法律文档脱敏</h2>
-            <p>导入 Word（.docx）、TXT 文件，或粘贴文本。</p>
+        <div class="workbench" :class="{ 'workbench-empty': !showReview }">
+          <div v-if="!material" class="empty-workspace">
+            <img src="/legal-redactor-icon.png" width="58" height="58" alt="">
+            <div class="empty-workspace-copy">
+              <h2>法律文档脱敏</h2>
+              <p>导入 Word（.docx）、TXT 文件，或粘贴文本。</p>
+            </div>
+            <div class="toolbar">
+              <button class="button primary" :disabled="busy" @click="showImport">添加文本材料</button>
+              <button class="button" :disabled="busy || projectBusy" @click="projectDialogs?.projectAction('open')">打开项目</button>
+            </div>
           </div>
-          <div class="toolbar">
-            <button class="button primary" :disabled="busy" @click="showImport">添加文本材料</button>
-            <button class="button" :disabled="busy || projectBusy" @click="projectDialogs?.projectAction('open')">打开项目</button>
-          </div>
-        </div>
-        <div v-else class="workbench">
-          <DocumentReader ref="reader" :address="material.id" :material="material" :selected="selected"
+          <DocumentReader v-else ref="reader" :address="material.id" :material="material" :selected="selected"
             :view-options="viewOptions"
             :can-output="canOutput" :active="mode === 'redact'"
             :edit-text="sourceEdit?.text" :revising="revising" :edit-error="sourceError"
@@ -997,17 +953,17 @@ function showEvidence(link: Evidence) {
               <button class="button small quiet icon-button" aria-label="关闭快捷操作" @mousedown.prevent @click="clearQuick">×</button>
             </template>
           </DocumentReader>
-          <AdjustmentPanel v-if="draft" :key="draftKey" :draft="draft" :groups="workspace.groups" :material-id="material.id"
+          <AdjustmentPanel v-if="draft" :key="draftKey" :draft="draft" :groups="workspace.groups" :material-id="material?.id"
             :selected="selected" :locked="busy" :previewing="previewing || suggesting" :impact="visibleImpact"
             :preview-sources="previewSources" :target-code-choices="targetCodeChoices"
             :merge-prompt="mergePrompt" :range-for="rangeFor"
             :suggestions="visibleSuggestions" @original="setOriginal"
             @cancel="draft = null; rangeFor = null; clearQuick()" @search="searchDraft" @jump="jump($event, true)" @reselect="chooseRange"
             @issue="locate" @apply="applyDraft" @choose-target="chooseMergeTarget" />
-          <AliasPanel v-if="aliasGroup" v-show="!draft" :key="aliasGroup.id" :group="aliasGroup" :material-id="material.id"
+          <AliasPanel v-if="aliasGroup" v-show="!draft" :key="aliasGroup.id" :group="aliasGroup" :material-id="material?.id" :can-add="!!material"
             :selected="selected" :locked="busy || !!sourceEdit" @back="aliasGroupId = ''" @jump="jump"
             @add="addAlias()" @add-positions="addAlias" @term="termAction" />
-          <ReviewPanel v-show="!draft && !aliasGroup" ref="review" :material="material" :groups="workspace.groups" :pending="workspace.pending"
+          <ReviewPanel v-if="showReview" v-show="!draft && !aliasGroup" ref="review" :material="material" :groups="workspace.groups" :pending="workspace.pending"
             :issues="issues" :selected="selected" :locked="busy || !!sourceEdit" :can-undo="workspace.canUndo"
             v-model:category="reviewCategory" :scope="mappingScope" @scope="changeMappingScope" @jump="jump" @issue="locate"
             @create="makeDraft('create'); clearQuick()" @group="openGroupAction" @undo="undo" />
@@ -1064,21 +1020,19 @@ function showEvidence(link: Evidence) {
     </form>
   </dialog>
 
-  <dialog ref="materialDialog" aria-labelledby="material-title" @cancel.prevent="!busy && materialDialog?.close()" @close="materialEdit.open = false">
+  <dialog ref="materialDialog" aria-labelledby="material-title" @cancel.prevent="!busy && materialDialog?.close()">
     <form class="dialog-form" @submit.prevent="applyMaterial">
-      <div class="dialog-heading"><h2 id="material-title">{{ materialEdit.action === 'rename' ? '重命名材料' : '删除材料' }}</h2></div>
+      <div class="dialog-heading"><h2 id="material-title">{{ materialEdit.action === 'rename' ? '重命名材料' : '移除材料' }}</h2></div>
       <label v-if="materialEdit.action === 'rename'">材料名称<input v-model="materialEdit.title" :disabled="busy" autofocus></label>
       <template v-else>
-        <p>删除「{{ materialEdit.title }}」会影响 {{ materialImpact.groups }} 组映射，其中 {{ materialImpact.removed }} 组在本材料中有全部位置。</p>
-        <RecoveryChoice v-for="source in materialSources" :key="source.id" :source="source" :value="materialEdit.primaries[source.id]"
-          :locked="busy" show-code @choose="materialEdit.primaries[source.id] = $event" />
-        <p v-if="sourceDirty && sourceEdit?.id === materialEdit.id">该材料未应用的原文修改也会被丢弃。</p>
+        <p v-if="sourceDirty && sourceEdit?.id === materialEdit.id">放弃未应用的修改并移除「{{ materialEdit.title }}」？</p>
+        <p v-else>从项目中移除「{{ materialEdit.title }}」？</p>
       </template>
       <p v-if="materialEdit.error" class="form-error" role="alert">{{ materialEdit.error }}</p>
       <div class="dialog-actions">
         <button type="button" class="button" :disabled="busy" @click="materialDialog?.close()">取消</button>
-        <button class="button primary" :disabled="busy || (materialEdit.action === 'rename' ? !materialEdit.title.trim() : !canDeleteMaterial)">
-          {{ materialEdit.action === 'rename' ? '保存名称' : '确认删除' }}
+        <button class="button primary" :disabled="busy || (materialEdit.action === 'rename' && !materialEdit.title.trim())">
+          {{ materialEdit.action === 'rename' ? '保存名称' : '确认移除' }}
         </button>
       </div>
     </form>
@@ -1090,15 +1044,15 @@ function showEvidence(link: Evidence) {
         <h2 id="group-dialog-title">{{ groupAction === 'merge' ? '合并映射' : '删除映射' }}</h2>
         <button type="button" class="button quiet small close-dialog" aria-label="关闭映射操作" :disabled="busy" @click="groupDialog?.close()">×</button>
       </div>
-      <div class="group-preview"><strong>{{ group.primary }}</strong> → {{ group.code }}<span>{{ groupImpact }}</span></div>
+      <div class="group-preview"><strong>{{ group.primary }}</strong> → {{ group.code }}<span v-if="groupRows.length">{{ groupImpact }}</span></div>
       <MappingTargetPicker v-if="groupAction === 'merge'" :key="groupDialogKey" v-model="targetId" :groups="mergeTargets"
         :references="mergeReferences" :disabled="busy" autofocus />
       <p v-if="groupError" class="form-error" role="alert">{{ groupError }}</p>
       <div class="dialog-actions">
         <button type="button" class="button" :disabled="busy" @click="groupDialog?.close()">取消</button>
-        <button v-if="groupAction === 'delete'" type="button" class="button" :disabled="busy" @click="applyGroup(true)">{{ groupRows.length }} 处保留原文</button>
+        <button v-if="groupAction === 'delete' && groupRows.length" type="button" class="button" :disabled="busy" @click="applyGroup(true)">{{ groupRows.length }} 处保留原文</button>
         <button class="button primary" :disabled="busy || (groupAction === 'merge' && !mergeTarget)">
-          {{ groupAction === 'merge' ? '查看合并' : `${groupRows.length} 处转待核` }}
+          {{ groupAction === 'merge' ? '查看合并' : groupRows.length ? `${groupRows.length} 处转待核` : '确认删除' }}
         </button>
       </div>
     </form>

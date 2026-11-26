@@ -44,32 +44,38 @@ test('给已有别称补绑位置时，预览和确认都复用别称代号', as
   assert.equal((await w.run({op:'undo'})).view.groups[0].occurrences.filter(row => row.original === alias.original).length, 1);
 });
 
-test('删材料预览提示恢复原词变化，确认后主代号与派生代号都沿用选择', async () => {
+test('移除材料保留恢复原词和主代号，派生代号随最后一处移除', async () => {
   const w = workspace();
   const first = await w.add('被询问人：张甲\n问：你以前叫什么？\n答：我以前叫小宁。', '初次笔录');
   const group = first.groups.find(item => item.primary === '张甲');
   const alias = group.occurrences.find(row => row.original === '小宁');
-  await w.add('备注：小宁与小东到场。', '补充笔录');
-  const positions = (await w.search('小宁')).filter(row => row.materialId === '2').concat(await w.search('小东'));
-  await w.apply({mode:'bind', groupId:group.id, positions});
-  const change = {mode:'deleteMaterial', materialId:'1'};
-  const result = await w.preview(change);
-  assert.deepEqual(result.preview.sources[0].terms, ['小宁', '小东']);
-  assert.equal(result.preview.sources[0].primary, '张甲');
-  assert.equal((await w.run({op:'view'})).view.documents.length, 2);
-  const selected = {...change, primaries:{[group.id]:{original:'小东'}}};
-  const updated = await w.preview(selected);
-  assert.equal(updated.preview.sources[0].nextPrimary, '小东');
-  const {view} = await w.apply(selected, updated);
+  await w.add('备注：小东到场。', '补充笔录');
+  await w.apply({mode:'bind', groupId:group.id, positions:await w.search('小东')});
+  const {view} = await w.run({op:'deleteMaterial', materialId:'1'});
   assert.equal(view.documents.length, 1);
-  assert.equal(restoreText(`${group.code}/${alias.replacement}`, view.groups).output, '小东/小东');
-  const promote = {mode:'primary', groupId:group.id, term:{original:'小宁'}};
+  const shared = view.groups.find(item => item.id === group.id);
+  assert.equal(shared.primary, '张甲');
+  assert.deepEqual(shared.occurrences.map(row => row.original), ['小东']);
+  assert.equal(restoreText(`${group.code}/${alias.replacement}`, view.groups).output, `张甲/${alias.replacement}`);
+  const promote = {mode:'primary', groupId:group.id, term:{original:'小东'}};
   const choice = await w.preview(promote);
-  assert.deepEqual(choice.preview.sources.map(source => [source.primary, source.nextPrimary]), [['小东','小宁']]);
+  assert.deepEqual(choice.preview.sources.map(source => [source.primary, source.nextPrimary]), [['张甲','小东']]);
   assert.deepEqual(choice.preview.materials, []);
   const applied = await w.apply(promote, choice);
-  assert.equal(restoreText(`${group.code}/${alias.replacement}`, applied.view.groups).output, '小宁/小宁');
-  assert.equal((await w.run({op:'undo'})).view.groups[0].primary, '小东');
+  assert.equal(restoreText(group.code, applied.view.groups).output, '小东');
+  assert.equal((await w.run({op:'undo'})).view.groups[0].primary, '张甲');
+
+  const empty = await w.run({op:'deleteMaterial', materialId:'2'});
+  assert.deepEqual(empty.view.groups.map(({id, code, primary, occurrences}) => [id, code, primary, occurrences]),
+    [[group.id, group.code, '张甲', []]]);
+  const added = await w.add('姓名：张雪\n备注：张甲已到场。', '追加材料');
+  assert.equal(added.groups.find(item => item.id === group.id).code, group.code);
+  assert.notEqual(added.groups.find(item => item.primary === '张雪').code, group.code);
+
+  const start = (await w.search('张甲'))[0];
+  await w.apply({mode:'bind', groupId:group.id, alias:{original:'张甲', code:group.code}, positions:[start]});
+  const rebound = (await w.run({op:'view'})).view.groups.find(item => item.id === group.id);
+  assert.deepEqual(rebound.occurrences.map(row => row.replacement), [group.code]);
 });
 
 test('单处范围修正保留实际代号，改代号单独预览主码和派生码', async () => {

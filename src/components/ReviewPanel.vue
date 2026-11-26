@@ -24,13 +24,14 @@ const termFilter = ref('');
 const list = ref<HTMLElement>();
 const positionList = ref<HTMLElement>();
 const search = computed(() => query.value.trim().toLocaleLowerCase());
-const belongs = (row: Occurrence) => props.scope === 'all' || row.materialId === props.material?.id;
+const scope = computed(() => props.material ? props.scope : 'all');
+const belongs = (row: Occurrence) => scope.value === 'all' || row.materialId === props.material?.id;
 const isCurrent = (row: Occurrence) => row.materialId === props.material?.id && row.itemId === props.selected;
 
 const filtered = computed(() => props.groups.flatMap(group => {
   if (category.value !== 'all' && mappingCategory(group.type) !== category.value) return [];
   const scoped = group.occurrences.filter(belongs);
-  if (!scoped.length) return [];
+  if (!scoped.length && (scope.value === 'current' || group.occurrences.length)) return [];
   const {found, terms} = matchMapping(group, search.value, scoped);
   return found ? [{ group, matched: terms, count: scoped.length }] : [];
 }));
@@ -68,7 +69,7 @@ async function showGroup(id: string) {
   selectGroup(id);
   if (category.value !== 'all') category.value = mappingCategory(group.type);
   const scoped = group.occurrences.filter(belongs);
-  if (!scoped.length && props.scope === 'current') emit('scope', 'all', false);
+  if (!scoped.length && scope.value === 'current') emit('scope', 'all', false);
   if (!matchMapping(group, search.value, scoped.length ? scoped : group.occurrences).found) query.value = '';
   await reveal();
 }
@@ -101,7 +102,7 @@ defineExpose({ selectGroup, reveal, showGroup });
     </div>
     <div class="mapping-filters">
       <input v-model="query" type="search" aria-label="搜索映射" placeholder="搜索原词、别称或代号">
-      <select :value="scope" aria-label="映射材料范围" @change="chooseScope">
+      <select :value="scope" aria-label="映射材料范围" :disabled="!material" @change="chooseScope">
         <option value="all">全部材料</option><option value="current">本份材料</option>
       </select>
       <select :value="category" aria-label="映射类别" @change="chooseCategory">
@@ -130,7 +131,7 @@ defineExpose({ selectGroup, reveal, showGroup });
             <button class="button small quiet rename-button" :disabled="locked" @click="emit('group', 'edit', group)">修改代号</button>
             <MappingMenu :label="`${group.primary}的映射操作`" :disabled="locked">
               <button @click="emit('group', 'aliases', group)">管理原词与别称</button>
-              <button v-if="groups.length > 1" @click="emit('group', 'merge', group)">合并到其他映射</button>
+              <button v-if="group.occurrences.length && groups.length > 1" @click="emit('group', 'merge', group)">合并到其他映射</button>
               <button class="danger" @click="emit('group', 'delete', group)">删除映射</button>
             </MappingMenu>
           </div>
@@ -141,7 +142,7 @@ defineExpose({ selectGroup, reveal, showGroup });
         </div>
       </div>
     </div>
-    <section v-if="showPending || (mapping && !hidden)" class="mapping-positions" :aria-label="showPending ? '待核位置' : '出现位置'">
+    <section v-if="showPending || (mapping?.occurrences.length && !hidden)" class="mapping-positions" :aria-label="showPending ? '待核位置' : '出现位置'">
       <div class="position-heading">
         <h3>{{ showPending ? '待核位置' : '出现位置' }}</h3>
         <div v-if="mapping && options.length > 1" class="position-filter">

@@ -420,6 +420,7 @@ dialog::backdrop { background: #17284a40; }
 .material-attention { color: var(--warn); }
 .workspace-main { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; padding: 13px 14px 14px; }
 .workbench { grid-template-columns: minmax(0, 1fr) clamp(292px, 26vw, 365px); gap: 11px; min-height: 0; }
+.workbench.workbench-empty { grid-template-columns: minmax(0, 1fr); }
 .empty-workspace {
   margin: auto; display: grid; justify-items: center; gap: 16px; padding: 30px; text-align: center;
 }

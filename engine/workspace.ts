@@ -360,7 +360,17 @@ function restoreManualReview(state: Workspace, doc: Material, previous: Previous
   }
 }
 
-function repairGroups(state: Workspace, primaries: Primaries, explicit?: string) {
+function detachedOriginals(state: Workspace) {
+  const groups = new Set(Object.keys(state.groups));
+  for (const doc of state.materials) {
+    for (const row of doc.decisions ?? []) {
+      if (row.action === 'replace' && row.group && row.original === state.groups[row.group]?.primary) groups.delete(row.group);
+    }
+  }
+  return groups;
+}
+
+function repairGroups(state: Workspace, detached: ReadonlySet<string>, primaries: Primaries = {}, explicit?: string) {
   const live = new Map<string, string[]>();
   for (const doc of state.materials) {
     for (const row of doc.decisions ?? []) {
@@ -372,12 +382,12 @@ function repairGroups(state: Workspace, primaries: Primaries, explicit?: string)
   for (const [id, group] of Object.entries(state.groups)) {
     const terms = live.get(id);
     if (!terms) {
-      delete state.groups[id];
+      if (!detached.has(id)) delete state.groups[id];
       continue;
     }
     const chosen = primaries[id];
     if (id === explicit && chosen && !terms.includes(chosen.original)) throw new Error('请选择映射中仍有位置的原词。');
-    if (id === explicit || !terms.includes(group.primary)) {
+    if (id === explicit || !detached.has(id) && !terms.includes(group.primary)) {
       group.primary = chosen && terms.includes(chosen.original) ? chosen.original : terms[0];
     }
   }
@@ -437,6 +447,7 @@ function relationKey(link: Relation) {
 async function scanMaterial(state: Workspace, doc: Material, newId: NewId, scan?: Scan,
   edit?: {previous: PreviousReview; changes: ReturnType<typeof collectRevision>}) {
   if (doc.decisions && !edit) throw new Error('这份材料已经识别。');
+  const detached = detachedOriginals(state);
   const registry = reuseRegistry(state);
   const {known} = registry;
   const {records, names} = edit ? reuseRegistry(state, doc.id) : registry;
@@ -577,12 +588,14 @@ async function scanMaterial(state: Workspace, doc: Material, newId: NewId, scan?
   }
   state.undo = null;
   settleAliases(state, newId);
-  repairGroups(state, {});
+  repairGroups(state, detached);
 }
+
+type MemberCode = Pick<Row, 'original' | 'replacement' | 'aliasType'>;
 
 function moveMembers(state: Workspace, rows: Member[], target: Group, used: Set<string>, {
   keepEvidence = false, targetCodes, alias,
-}: {keepEvidence?: boolean; targetCodes?: Record<string, string>; alias?: Row} = {}) {
+}: {keepEvidence?: boolean; targetCodes?: Record<string, string>; alias?: MemberCode} = {}) {
   const selected = new Map<string, Pick<Row, 'aliasType' | 'replacement'>>();
   if (targetCodes) {
     const originals = new Set(rows.map(([, row]) => row.original));
@@ -830,10 +843,6 @@ function renameMapping(state: Workspace, group: Group, code: string, used: Set<s
 
 function apply(state: Workspace, change: Change, newId: NewId, cover: boolean): AdjustmentResult {
   const op = change.mode;
-  if (op === 'deleteMaterial') {
-    removeMaterial(state, lookupMaterial(state, change.materialId!));
-    return {changed:true, primaries:change.primaries};
-  }
   let group = change.groupId ? findGroup(state, change.groupId) : undefined;
   const used = occupied(state);
   const checkMove = transferCheck(state);
@@ -858,10 +867,11 @@ function apply(state: Workspace, change: Change, newId: NewId, cover: boolean): 
   let kind = change.type;
   if (kind != null && !Object.hasOwn(labels, kind)) throw new Error('请选择有效的脱敏类别。');
   if (op === 'create' && !kind) throw new Error('请选择脱敏类别。');
-  let alias: Row | undefined;
+  let alias: MemberCode | undefined;
   if (op === 'bind' && change.alias) {
     const {original, code} = change.alias;
     alias = [...members(state, group!.id)].find(([, row]) => row.original === original && row.replacement === code)?.[1];
+    if (!alias && original === group!.primary && code === group!.code) alias = {original, replacement: code};
     if (!alias) throw new Error('原词或代号已变更，请重新选择。');
   }
   const targetKind = kind || group?.type;
@@ -925,11 +935,14 @@ function apply(state: Workspace, change: Change, newId: NewId, cover: boolean): 
 }
 
 function applyReview(state: Workspace, change: Change, newId: NewId, cover: boolean) {
+  const detached = detachedOriginals(state);
   const result = apply(state, change, newId, cover);
   if (!('issue' in result) && result.changed) {
     settleAliases(state, newId);
+    if (change.groupId && (change.mode === 'delete' || change.mode === 'merge' ||
+      change.mode === 'editMapping' && change.resolution?.mode === 'whole')) detached.delete(change.groupId);
     const explicit = change.mode === 'primary' || change.mode === 'editMapping' && change.primary ? change.groupId : undefined;
-    repairGroups(state, {...change.primaries, ...result.primaries}, explicit);
+    repairGroups(state, detached, {...change.primaries, ...result.primaries}, explicit);
     delete result.primaries;
   }
   return result;
@@ -1098,7 +1111,7 @@ export async function runWorkspace(state: Workspace, request: Request, scan?: Sc
     if (revision != null && revision !== state.revision) {
       return {issue: {message: '材料已更新，请查看最新的影响预览。', stalePreview: true}};
     }
-    const before = request.change.mode === 'deleteMaterial' ? null : {groups: structuredClone(state.groups),
+    const before = {groups: structuredClone(state.groups),
       rows: Object.fromEntries(state.materials.map(doc => [doc.id, structuredClone(doc.decisions)]))};
     const change = applyReview(state, request.change, newId, revision != null);
     if ('issue' in change) return change;
@@ -1126,6 +1139,7 @@ export async function runWorkspace(state: Workspace, request: Request, scan?: Sc
     } else if (op === 'editMaterial') {
       const text = normalizedText(request.text);
       if (text !== doc.text) {
+        const detached = detachedOriginals(state);
         if (doc.decisions) {
           doc.previousOutput = viewMaterial(doc).output;
           doc.previousReview = {text: doc.text, decisions: doc.decisions, relations: doc.relations,
@@ -1133,13 +1147,11 @@ export async function runWorkspace(state: Workspace, request: Request, scan?: Sc
         }
         Object.assign(doc, {text, decisions: null, relations: [], revision: (doc.revision ?? 1) + 1});
         state.undo = null;
-        repairGroups(state, {});
+        repairGroups(state, detached);
       }
     } else {
       removeMaterial(state, doc);
       state.undo = null;
-      settleAliases(state, newId);
-      repairGroups(state, {});
     }
     state.revision++;
   } else if (op === 'reviseMaterial') {

@@ -500,53 +500,63 @@ test('通过映射菜单管理别称，跨材料补位置沿用实际代号', as
   assert.equal(await term.count(), 0);
 });
 
-test('删材料要求选择恢复原词，未匹配筛选保留完整恢复稿与 TXT 输出', async t => {
-  const {writeProject} = require('../build/project-file.cjs');
-  const {runWorkspace} = await import('../build/engine/workspace.js');
-  const {app, page, directory} = await open(t, {provider:'cpu', model:false});
-  let state = {materials:[], groups:{}, activeId:null, undo:null, revision:0};
-  async function run(request) {
-    const result = await runWorkspace(state, request);
-    if (result.state) state = result.state;
-    return result;
-  }
-  await run({op:'add', title:'初次笔录', text:'被询问人：张甲\n问：你以前叫什么？\n答：我以前叫小宁。'});
-  const {view} = await run({op:'scan', materialId:'1'});
-  await run({op:'add', title:'补充笔录', text:'备注：小宁与小东到场。'});
-  await run({op:'scan', materialId:'2'});
-  const positions = (await run({op:'search', text:'小宁', materialId:'2'})).concat(await run({op:'search', text:'小东'}));
-  await run({op:'apply', change:{mode:'bind', groupId:view.groups[0].id, positions}});
-  const path = join(directory, '恢复原词.lrproj');
+test('移除最后一份材料后可以搜索、修改、保存、恢复和删除零位置映射', async t => {
+  const project = await open(t, {provider:'cpu'});
+  const {app, page, directory} = project;
+  await add(page, '初次笔录', '被询问人：张甲\n问：你以前叫什么？\n答：我以前叫小宁。');
+  await output(page).getByText('【张某-曾用名1】', {exact:true}).waitFor();
+  const review = page.getByRole('region', {name:'映射清单'});
+  const scope = review.getByLabel('映射材料范围');
+  await scope.selectOption('current');
+  await channel(page, '初次笔录的材料操作').click();
+  await channel(page, '移除材料').click();
+  const removal = role(page, '移除材料');
+  assert.deepEqual(await removal.locator('p').allTextContents(), ['从项目中移除「初次笔录」？']);
+  assert.equal(await removal.getByRole('combobox').count(), 0);
+  await channel(removal, '确认移除').click();
+  const group = review.locator('.mapping').filter({has:channel(page, '张甲 → 【张某】')});
+  await group.getByText('0 处', {exact:true}).waitFor();
+  assert.equal(await scope.inputValue(), 'all');
+  assert.match(await (await app.browserWindow(page)).evaluate(window => window.getTitle()), /\*/u);
+  await review.getByRole('searchbox', {name:'搜索映射'}).fill('张甲');
+  await channel(group, '张甲的映射操作').click();
+  await channel(group, '管理原词与别称').click();
+  const aliases = page.getByRole('region', {name:'管理原词与别称'});
+  await aliases.getByRole('button', {name:/张甲.*恢复原词.*0 处/u}).waitFor();
+  assert.equal(await aliases.getByText('小宁', {exact:true}).count(), 0);
+  await channel(aliases, '返回映射清单').click();
+  await channel(group, '修改代号').click();
+  const adjust = page.getByRole('region', {name:'调整清单'});
+  await adjust.getByLabel('代号', {exact:true}).fill('当事人甲');
+  await channel(adjust, '确认改代号').click();
+  await channel(review, '张甲 → 【当事人甲】').waitFor();
+  await app.evaluate(({dialog}, path) => {
+    dialog.showOpenDialog = async () => ({canceled:false, filePaths:[path]});
+  }, directory);
+  await viaMenu(app, '保存项目');
+  const save = role(page, '保存项目');
+  await save.getByLabel('文件名').fill('合成恢复项目');
+  await channel(save, '更改…').click();
+  await save.getByText(directory, {exact:true}).waitFor();
+  await channel(save, '保存').click();
+  await page.locator('#redact-panel').getByText('项目已保存', {exact:true}).waitFor();
+  await project.close();
+
+  const reopen = await open(t, {provider:'cpu', model:false});
+  const path = join(directory, '合成恢复项目.lrproj');
   const txt = join(directory, '恢复文本.txt');
-  await writeProject(path, state);
-  await app.evaluate(({dialog}, {path, txt}) => {
+  await reopen.app.evaluate(({dialog}, {path, txt}) => {
     dialog.showOpenDialog = async () => ({canceled:false, filePaths:[path]});
     dialog.showSaveDialog = async () => ({canceled:false, filePath:txt});
   }, {path, txt});
-  await channel(page.getByRole('tabpanel', {name:'脱敏'}), '打开项目').click();
-  await channel(page, '初次笔录的材料操作').click();
-  await channel(page, '删除材料').click();
-  const deletion = role(page, '删除材料');
-  const choice = deletion.getByLabel('为张甲选择恢复原词');
-  await choice.waitFor();
-  assert.equal(await channel(deletion, '确认删除').isDisabled(), true);
-  await choice.selectOption('小东');
-  await channel(deletion, '确认删除').click();
-  const review = page.getByRole('region', {name:'映射清单'});
-  const group = review.locator('.mapping').filter({has:channel(page, '小东 → 【张某】')});
-  await channel(group, '小东的映射操作').click();
-  await channel(group, '管理原词与别称').click();
-  const aliases = page.getByRole('region', {name:'管理原词与别称'});
-  await channel(aliases, '小宁的位置操作').click();
-  await channel(aliases, '设为恢复原词').click();
-  const adjust = page.getByRole('region', {name:'调整清单'});
-  await adjust.getByText('恢复原词 小东 → 小宁', {exact:true}).waitFor();
-  await channel(adjust, '确认设置').click();
-  await aliases.getByText(/曾用名1.*恢复原词/u).waitFor();
-
-  await page.getByRole('tab', {name:'恢复'}).click();
-  const restore = page.getByRole('tabpanel', {name:'恢复'});
-  await restore.getByRole('textbox', {name:'待恢复文本'}).fill('【张某-曾用名1】与【旧代号】\n这里再见【旧代号】');
+  await channel(reopen.page.getByRole('tabpanel', {name:'脱敏'}), '打开项目').click();
+  const reopenedReview = reopen.page.getByRole('region', {name:'映射清单'});
+  const savedMapping = channel(reopenedReview, '张甲 → 【当事人甲】');
+  await savedMapping.waitFor();
+  await reopen.page.getByRole('tab', {name:'恢复'}).click();
+  const restore = reopen.page.getByRole('tabpanel', {name:'恢复'});
+  const aliasCode = '【张某-曾用名1】';
+  await restore.getByRole('textbox', {name:'待恢复文本'}).fill(`【当事人甲】与${aliasCode}\n这里再见${aliasCode}`);
   await channel(restore, '完成').click();
   const mappings = restore.getByRole('region', {name:'恢复映射清单'});
   assert.equal(await mappings.locator('.restore-mapping').count(), 2);
@@ -554,8 +564,16 @@ test('删材料要求选择恢复原词，未匹配筛选保留完整恢复稿�
   assert.equal(await mappings.locator('.restore-mapping').count(), 1);
   await mappings.locator('.restore-mapping').click();
   await channel(mappings, '第 2 行 · 第 2 处').click();
-  assert.equal(await restore.locator('[data-restore-text="output"] mark.selected').textContent(), '【旧代号】');
+  assert.equal(await restore.locator('[data-restore-text="output"] mark.selected').textContent(), aliasCode);
   await channel(restore, '导出 TXT').click();
   await restore.getByText('已导出 TXT', {exact:true}).waitFor();
-  assert.equal(await readFile(txt, 'utf8'), '小宁与【旧代号】\n这里再见【旧代号】');
+  assert.equal(await readFile(txt, 'utf8'), `张甲与${aliasCode}\n这里再见${aliasCode}`);
+
+  await reopen.page.getByRole('tab', {name:'脱敏'}).click();
+  await channel(reopenedReview, '张甲的映射操作').click();
+  await channel(reopenedReview, '删除映射').click();
+  await channel(role(reopen.page, '删除映射'), '确认删除').click();
+  await savedMapping.waitFor({state:'detached'});
+  await channel(reopenedReview, '撤销上次订正').click();
+  await savedMapping.waitFor();
 });

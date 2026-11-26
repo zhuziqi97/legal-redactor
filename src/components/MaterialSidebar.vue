@@ -121,7 +121,7 @@ watch(() => props.documents.length, count => { if (!count) searching.value = fal
       </button>
       <MappingMenu :label="`${doc.title}的材料操作`" :disabled="locked">
         <button @click="emit('manage', 'rename', doc.id)">重命名</button>
-        <button class="danger" @click="emit('manage', 'delete', doc.id)">删除材料</button>
+        <button class="danger" @click="emit('manage', 'delete', doc.id)">移除材料</button>
       </MappingMenu>
       </div>
     </div>

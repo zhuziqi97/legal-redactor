@@ -5,7 +5,7 @@ const { existsSync } = require('node:fs') as typeof import('node:fs');
 const { realpath, stat } = require('node:fs/promises') as typeof import('node:fs/promises');
 const { basename, dirname, extname, join } = require('node:path') as typeof import('node:path');
 const { projectProtection, readProject, writeProject } = require('./project-file.cjs') as typeof import('./project-file.js');
-const { projectDirty, updateProjectTitle, serialize } = require('./workspace-session.cjs') as typeof import('./workspace-session.js');
+const { hasProjectContent, projectDirty, updateProjectTitle, serialize } = require('./workspace-session.cjs') as typeof import('./workspace-session.js');
 
 const comparablePath = (path: string) => process.platform === 'win32' ? path.toLowerCase() : path;
 
@@ -87,7 +87,7 @@ function createProjectActions({sessions, lastProject, preferredDirectory, rememb
       if (other) return focusProject(other);
       if (isSavingTo(path)) throw new Error('项目正在保存，请稍后再打开。');
       rememberProject(path);
-      if (session.file || session.state.materials.length || session.scan) {
+      if (session.file || hasProjectContent(session) || session.scan) {
         openWindow({ state, file, view, protection });
         return null;
       }

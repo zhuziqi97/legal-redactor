@@ -1,8 +1,12 @@
 import type { Session, WindowSession } from './session-types.js';
 const { basename, extname } = require('node:path') as typeof import('node:path');
 
+function hasProjectContent({state}: Session) {
+  return state.materials.length > 0 || Object.keys(state.groups).length > 0;
+}
+
 function projectDirty(session: WindowSession) {
-  return session.file ? session.changeSeq !== session.savedSeq : session.state.materials.length > 0;
+  return session.file ? session.changeSeq !== session.savedSeq : hasProjectContent(session);
 }
 
 function updateProjectTitle(session: WindowSession) {
@@ -22,4 +26,4 @@ function serialize<T>(session: Session, task: () => T | Promise<T>) {
   return result;
 }
 
-export = { projectDirty, updateProjectTitle, projectChanged, serialize };
+export = { hasProjectContent, projectDirty, updateProjectTitle, projectChanged, serialize };

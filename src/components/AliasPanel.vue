@@ -6,16 +6,21 @@ import type { Group, Occurrence } from '../model';
 import MappingMenu from './MappingMenu.vue';
 import OccurrenceRow from './OccurrenceRow.vue';
 
-const props = defineProps<{ group: Group; materialId?: string; selected: number | null; locked: boolean }>();
+const props = defineProps<{ group: Group; materialId?: string; selected: number | null; locked: boolean; canAdd: boolean }>();
 const emit = defineEmits<{
   back: []; add: []; addPositions: [alias: AliasTarget]; jump: [row: Occurrence];
   term: [action: 'rebind' | 'removePositions' | 'primary' | 'edit', rows: Occurrence[]];
 }>();
 
 const selectedOriginal = ref('');
-const terms = computed(() => [...mappingTerms(props.group)].map(([original, rows]) => ({
-  original, rows, primary: original === props.group.primary, codes: [...new Set(rows.map(row => row.replacement))],
-})).sort((left, right) => Number(right.primary) - Number(left.primary)));
+const terms = computed(() => {
+  const occurrences = mappingTerms(props.group);
+  const {primary, code} = props.group;
+  if (!occurrences.has(primary)) occurrences.set(primary, []);
+  return [...occurrences].map(([original, rows]) => ({
+    original, rows, primary: original === primary, codes: rows.length ? [...new Set(rows.map(row => row.replacement))] : [code],
+  })).sort((left, right) => Number(right.primary) - Number(left.primary));
+});
 const selectedTerm = computed(() => terms.value.find(term => term.original === selectedOriginal.value));
 
 function termAction(action: 'rebind' | 'removePositions' | 'primary' | 'edit', rows: Occurrence[]) {
@@ -31,7 +36,7 @@ function termAction(action: 'rebind' | 'removePositions' | 'primary' | 'edit', r
       <button class="button small quiet" :disabled="locked" @click="emit('back')">返回映射清单</button>
     </div>
     <div class="alias-panel-context">
-      <button class="button small" :disabled="locked" @click="emit('add')">＋ 添加别称</button>
+      <button class="button small" :disabled="locked || !canAdd" @click="emit('add')">＋ 添加别称</button>
     </div>
     <div class="alias-list" role="group" aria-label="原词与别称列表">
       <div v-for="term in terms" :key="term.original" class="alias-entry" :class="{ 'alias-selected': selectedTerm === term }">
@@ -40,18 +45,20 @@ function termAction(action: 'rebind' | 'removePositions' | 'primary' | 'edit', r
           <span class="alias-name"><strong>{{ term.original }}</strong><span>{{ term.codes.join(' · ') }}<template v-if="term.primary"> · 恢复原词</template></span></span>
           <small>{{ term.rows.length }} 处</small>
         </button>
-        <MappingMenu :label="`${term.original}的位置操作`" :disabled="locked">
+        <MappingMenu v-if="canAdd" :label="`${term.original}的位置操作`" :disabled="locked">
           <button v-for="code in term.codes" :key="code" @click="selectedOriginal = term.original; emit('addPositions', {original: term.original, code})">
             {{ term.codes.length === 1 ? '添加位置' : `添加位置 · ${code}` }}
           </button>
-          <button @click="termAction('rebind', term.rows)">改绑位置</button>
-          <button @click="termAction('edit', term.rows)">修正标注范围</button>
-          <button v-if="!term.primary" @click="termAction('primary', term.rows)">设为恢复原词</button>
-          <button class="danger" @click="termAction('removePositions', term.rows)">移出位置</button>
+          <template v-if="term.rows.length">
+            <button @click="termAction('rebind', term.rows)">改绑位置</button>
+            <button @click="termAction('edit', term.rows)">修正标注范围</button>
+            <button v-if="!term.primary" @click="termAction('primary', term.rows)">设为恢复原词</button>
+            <button class="danger" @click="termAction('removePositions', term.rows)">移出位置</button>
+          </template>
         </MappingMenu>
       </div>
     </div>
-    <section v-if="selectedTerm" :key="selectedTerm.original" class="mapping-positions" aria-label="原词位置">
+    <section v-if="selectedTerm?.rows.length" :key="selectedTerm.original" class="mapping-positions" aria-label="原词位置">
       <div class="position-heading"><h3>{{ selectedTerm.original }}的出现位置</h3></div>
       <div class="position-list">
         <OccurrenceRow v-for="row in selectedTerm.rows" :key="`${row.materialId}/${row.itemId}`" :row="row"
