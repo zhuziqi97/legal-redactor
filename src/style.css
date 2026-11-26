@@ -117,17 +117,18 @@ h1, h2, h3, p { margin: 0; }
   color: #30313d; font: 15px/1.88 var(--reading);
 }
 .pane-scroll:not(.without-wrap) { overflow-x: hidden; }
+.pane-scroll:has(> .document-text > .with-line-numbers) { padding-inline-start: 9px; }
 .without-wrap .document-text, .document-text.without-wrap {
   white-space: pre; overflow-wrap: normal;
 }
 .text-line { min-height: 1lh; }
 .text-line-body { min-width: 0; }
 .with-line-numbers > .text-line {
-  display: grid; grid-template-columns: calc(var(--line-number-digits) * 1ch + 1.1em) minmax(0, 1fr);
+  display: grid; grid-template-columns: calc(var(--line-number-digits) * .5rem + 6px) minmax(0, 1fr);
 }
 .with-line-numbers > .text-line::before {
   content: attr(data-line-number); position: sticky; inset-inline-start: 0; z-index: 1; align-self: start;
-  padding-inline-end: .65em; text-align: right; font-family: var(--sans); font-size: 12px; line-height: 1lh;
+  padding-inline-end: 6px; text-align: right; white-space: nowrap; font-family: var(--sans); font-size: 12px; line-height: 1lh;
   font-variant-numeric: tabular-nums;
   color: var(--muted); background: var(--paper); user-select: none;
 }
