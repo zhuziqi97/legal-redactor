@@ -1,4 +1,22 @@
-import type { Group, Occurrence } from './model';
+import type { Group, Occurrence, labels } from './model';
+
+export const mappingCategories = {
+  all: '全部类别', person: '姓名', organization: '机构', address: '地名与地址',
+  contact: '联系方式', identifier: '证件与编号', other: '其他',
+} as const;
+export type MappingCategory = keyof typeof mappingCategories;
+type MappingType = keyof typeof labels;
+
+const groupCategories: Record<MappingType, Exclude<MappingCategory, 'all'>> = {
+  person: 'person', organization: 'organization', address: 'address',
+  mobile: 'contact', email: 'contact', social: 'contact',
+  id_card: 'identifier', bank_account: 'identifier', number: 'identifier', tail: 'identifier',
+  case_number: 'identifier', uscc: 'identifier', nickname: 'other',
+};
+
+export function mappingCategory(type: string) {
+  return Object.hasOwn(groupCategories, type) ? groupCategories[type as MappingType] : 'other';
+}
 
 const searchText = (value: string) => value.trim().toLowerCase();
 const withoutBrackets = (value: string) => value.replace(/^【(.*)】$/u, '$1');

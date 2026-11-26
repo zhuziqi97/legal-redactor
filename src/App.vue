@@ -8,6 +8,7 @@ import ReviewPanel from './components/ReviewPanel.vue';
 import ProjectDialogs from './components/ProjectDialogs.vue';
 import RecoveryChoice from './components/RecoveryChoice.vue';
 import MappingTargetPicker from './components/MappingTargetPicker.vue';
+import type { MappingCategory } from './mapping-search';
 import { useAnalysisQueue } from './analysis-queue';
 import RestoreWorkspace from './components/RestoreWorkspace.vue';
 import type { MappingScope, Preferences, SettingsSection, UpdateStatus } from '../engine/preferences';
@@ -35,6 +36,7 @@ const material = computed(() => workspace.value.current);
 const ready = computed(() => material.value?.status === 'ready');
 const collapsed = ref(false);
 const mappingScope = ref<MappingScope>('all');
+const reviewCategory = ref<MappingCategory>('all');
 function applyPreferences(settings: Preferences, reset: boolean) {
   if (reset || !viewOptions.value) {
     collapsed.value = settings.usage.sidebarCollapsed;
@@ -244,11 +246,16 @@ function adopt(result: Workspace, reset = false) {
   workspace.value = result;
 }
 
+function adoptProject(result: Workspace) {
+  reviewCategory.value = 'all';
+  adopt(result, true);
+}
+
 onMounted(async () => {
   try {
     const [project, { settings }] = await Promise.all([api.initialProject(), api.preferences()]);
     if (!viewOptions.value) applyPreferences(settings, false);
-    if (project && 'view' in project) adopt(project.view, true);
+    if (project && 'view' in project) adoptProject(project.view);
     else if (project && 'locked' in project) await projectDialogs.value?.unlock(project.title);
     else if (project) announce(project.warning, true);
   } catch (error) {
@@ -1002,7 +1009,7 @@ function showEvidence(link: Evidence) {
             @add="addAlias()" @add-positions="addAlias" @term="termAction" />
           <ReviewPanel v-show="!draft && !aliasGroup" ref="review" :material="material" :groups="workspace.groups" :pending="workspace.pending"
             :issues="issues" :selected="selected" :locked="busy || !!sourceEdit" :can-undo="workspace.canUndo"
-            :scope="mappingScope" @scope="changeMappingScope" @jump="jump" @issue="locate"
+            v-model:category="reviewCategory" :scope="mappingScope" @scope="changeMappingScope" @jump="jump" @issue="locate"
             @create="makeDraft('create'); clearQuick()" @group="openGroupAction" @undo="undo" />
         </div>
       </section>
@@ -1012,7 +1019,7 @@ function showEvidence(link: Evidence) {
   </div>
 
   <ProjectDialogs ref="projectDialogs" :busy="busy" :source-dirty="sourceDirty" :is-import-open="() => !!importDialog?.open"
-    @busy="busy = $event" @redact="mode = 'redact'" @adopt="adopt($event, true)" @notice="announce" />
+    @busy="busy = $event" @redact="mode = 'redact'" @adopt="adoptProject" @notice="announce" />
 
   <dialog ref="importDialog" class="import-dialog" aria-labelledby="import-title" @cancel.prevent="cancelImport">
     <form class="dialog-form" @submit.prevent="addMaterial">

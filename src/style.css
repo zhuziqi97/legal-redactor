@@ -436,8 +436,9 @@ dialog::backdrop { background: #17284a40; }
 .quick-actions .button { min-height: 26px; }
 
 /* Mapping list */
-.mapping-filters { display: flex; gap: 6px; padding: 4px 12px 3px; }
-.mapping-filters input { min-width: 0; flex: 1; font-size: 12px; }
+.mapping-filters { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; padding: 4px 12px 3px; }
+.mapping-filters input { grid-column: 1 / -1; min-width: 0; font-size: 12px; }
+.mapping-filters select { width: 100%; min-width: 0; }
 .mapping-filters select, .candidate-search select { font-size: 12px; }
 .mapping-filters input::placeholder, .candidate-search input::placeholder { color: #66758a; }
 .mapping-row { display: flex; align-items: center; gap: 6px; }

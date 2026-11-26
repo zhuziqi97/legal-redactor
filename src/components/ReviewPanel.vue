@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref } from 'vue';
-import { mappingTerms, matchMapping } from '../mapping-search';
+import { mappingCategories, mappingCategory, mappingTerms, matchMapping, type MappingCategory } from '../mapping-search';
 import type { MappingScope } from '../../engine/preferences';
 import { categoryColor, type Group, type Issue, type Material, type Occurrence } from '../model';
 import MappingMenu from './MappingMenu.vue';
@@ -10,6 +10,7 @@ const props = defineProps<{
   material: Material | null; groups: Group[]; pending: Occurrence[]; issues: Issue[];
   selected: number | null; locked: boolean; canUndo: boolean; scope: MappingScope;
 }>();
+const category = defineModel<MappingCategory>('category', {required: true});
 const emit = defineEmits<{
   jump: [row: Occurrence]; issue: [issue: Issue]; undo: []; create: [];
   group: [action: 'edit' | 'aliases' | 'merge' | 'delete', group: Group];
@@ -27,6 +28,7 @@ const belongs = (row: Occurrence) => props.scope === 'all' || row.materialId ===
 const isCurrent = (row: Occurrence) => row.materialId === props.material?.id && row.itemId === props.selected;
 
 const filtered = computed(() => props.groups.flatMap(group => {
+  if (category.value !== 'all' && mappingCategory(group.type) !== category.value) return [];
   const scoped = group.occurrences.filter(belongs);
   if (!scoped.length) return [];
   const {found, terms} = matchMapping(group, search.value, scoped);
@@ -60,16 +62,27 @@ async function reveal() {
   positionList.value?.querySelector('.occurrence.current')?.scrollIntoView({ block: 'nearest' });
 }
 async function showGroup(id: string) {
-  selectGroup(id);
   await nextTick();
-  if (hidden.value) query.value = '';
-  if (hidden.value && props.scope === 'current') emit('scope', 'all', false);
+  const group = props.groups.find(item => item.id === id);
+  if (!group) return;
+  selectGroup(id);
+  if (category.value !== 'all') category.value = mappingCategory(group.type);
+  const scoped = group.occurrences.filter(belongs);
+  if (!scoped.length && props.scope === 'current') emit('scope', 'all', false);
+  if (!matchMapping(group, search.value, scoped.length ? scoped : group.occurrences).found) query.value = '';
   await reveal();
 }
 function showCurrent() {
-  emit('scope', 'all', false);
-  query.value = '';
-  void reveal();
+  if (groupId.value) void showGroup(groupId.value);
+}
+function chooseCategory(event: Event) {
+  category.value = (event.currentTarget as HTMLSelectElement).value as MappingCategory;
+  const group = props.groups.find(item => item.id === groupId.value);
+  if (group && category.value !== 'all' && mappingCategory(group.type) !== category.value) {
+    groupId.value = null;
+    termFilter.value = '';
+    resetPositionScroll();
+  }
 }
 function chooseScope(event: Event) {
   const input = event.currentTarget as HTMLSelectElement;
@@ -91,6 +104,9 @@ defineExpose({ selectGroup, reveal, showGroup });
       <select :value="scope" aria-label="映射材料范围" @change="chooseScope">
         <option value="all">全部材料</option><option value="current">本份材料</option>
       </select>
+      <select :value="category" aria-label="映射类别" @change="chooseCategory">
+        <option v-for="(label, value) in mappingCategories" :key="value" :value="value">{{ label }}</option>
+      </select>
     </div>
     <div class="review-filters">
       <button class="button small quiet" :aria-pressed="showPending" @click="showPending = !showPending">待核 {{ pending.length }}</button>
@@ -102,7 +118,7 @@ defineExpose({ selectGroup, reveal, showGroup });
     </div>
     <div v-if="hidden" class="hidden-mapping"><button class="button small quiet" @click="showCurrent">查看所属映射</button></div>
     <div ref="list" class="review-list">
-      <p v-if="!filtered.length" class="muted-empty">{{ search ? '没有匹配的映射' : '没有映射' }}</p>
+      <p v-if="!filtered.length" class="muted-empty">{{ search || category !== 'all' || groups.length ? '没有匹配的映射' : '没有映射' }}</p>
       <div v-for="{group, matched, count} in filtered" :key="group.id" class="mapping"
         :class="{ 'mapping-selected': mapping?.id === group.id }">
         <div class="mapping-row">
@@ -125,7 +141,7 @@ defineExpose({ selectGroup, reveal, showGroup });
         </div>
       </div>
     </div>
-    <section v-if="mapping || showPending" class="mapping-positions" :aria-label="showPending ? '待核位置' : '出现位置'">
+    <section v-if="showPending || (mapping && !hidden)" class="mapping-positions" :aria-label="showPending ? '待核位置' : '出现位置'">
       <div class="position-heading">
         <h3>{{ showPending ? '待核位置' : '出现位置' }}</h3>
         <div v-if="mapping && options.length > 1" class="position-filter">

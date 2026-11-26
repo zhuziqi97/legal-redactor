@@ -260,6 +260,8 @@ test('搜索派生代号找到跨类别目标，预览三处后合并并撤销',
   await channel(page.getByRole('tabpanel', {name:'脱敏'}), '打开项目').click();
   const mappings = page.getByRole('region', {name:'映射清单'});
   const filter = mappings.getByRole('searchbox', {name:'搜索映射'});
+  const category = mappings.getByLabel('映射类别');
+  await category.selectOption('organization');
   await filter.fill('L机构');
   const source = mappings.locator('.mapping').filter({has: channel(page, '柳明川 → 【L机构】')});
   await channel(source, '柳明川的映射操作').click();
@@ -300,13 +302,22 @@ test('搜索派生代号找到跨类别目标，预览三处后合并并撤销',
   await channel(preview, '确认合并').click();
   const merged = mappings.locator('.mapping').filter({has:channel(page, '柳明川 → 【柳某甲】')});
   await merged.getByText('102 处', {exact:true}).waitFor();
+  assert.equal(await category.inputValue(), 'person');
   assert.equal(await filter.inputValue(), '');
   assert.equal(await channel(merged, '柳明川 → 【柳某甲】').getAttribute('aria-pressed'), 'true');
   assert.equal(await source.count(), 0);
   assert.equal(await output(page).getByText('【L机构】', {exact:true}).count(), 0);
   await channel(mappings, '撤销上次订正').click();
-  await source.getByText('3 处', {exact:true}).waitFor();
+  await output(page).getByText('【L机构】', {exact:true}).first().waitFor();
+  assert.equal(await category.inputValue(), 'person');
+  assert.equal(await source.count(), 0);
 
+  await page.locator('#source-text mark[data-item="101"]').click();
+  await filter.fill('柳');
+  await channel(mappings, '查看所属映射').click();
+  await source.getByText('3 处', {exact:true}).waitFor();
+  assert.equal(await category.inputValue(), 'organization');
+  assert.equal(await filter.inputValue(), '柳');
   await page.locator('#source-text mark[data-item="101"]').click();
   await channel(page, '绑定到现有映射').click();
   const picker = preview.getByRole('searchbox', {name:'搜索目标映射'});
@@ -315,7 +326,91 @@ test('搜索派生代号找到跨类别目标，预览三处后合并并撤销',
   await preview.getByLabel('柳明川的代号').selectOption('【柳某甲】');
   await channel(preview, '应用到所选 1 处').click();
   await merged.getByText('100 处', {exact:true}).waitFor();
+  assert.equal(await category.inputValue(), 'person');
+  assert.equal(await filter.inputValue(), '柳');
+  await category.selectOption('organization');
   await source.getByText('2 处', {exact:true}).waitFor();
+});
+
+test('按类别和材料搜索映射，保留原文位置和脱敏输出', async t => {
+  const {writeProject} = require('../build/project-file.cjs');
+  const {runWorkspace} = await import('../build/engine/workspace.js');
+  const {app, page, directory} = await open(t, {provider:'cpu'});
+  let state = {materials:[], groups:{}, activeId:null, undo:null, revision:0};
+  for (const [title, text] of [
+    ['初次笔录', '姓名：张雷\n姓名：张雪\n单位：张氏商贸有限公司\n联系电话：13800138000'],
+    ['补充说明', '被询问人：张雷\n问：你以前叫什么？\n答：我以前叫小雷。\n住址：北京市东城区和平路12号。'],
+  ]) {
+    state = (await runWorkspace(state, {op:'add', title, text})).state;
+    state = (await runWorkspace(state, {op:'scan', materialId:state.activeId})).state;
+  }
+  state.activeId = '1';
+  const {view} = await runWorkspace(state, {op:'view'});
+  const alias = view.groups.find(group => group.primary === '张雷').occurrences.find(row => row.original === '小雷');
+  const paths = [join(directory, '类别复核.lrproj'), join(directory, '另一个项目.lrproj')];
+  for (const path of paths) await writeProject(path, state);
+  await app.evaluate(({dialog, BrowserWindow}, paths) => {
+    dialog.showOpenDialog = async () => ({canceled:false, filePaths:[paths.shift()]});
+    BrowserWindow.getAllWindows()[0].setSize(1000, 700);
+  }, paths);
+  await channel(page.getByRole('tabpanel', {name:'脱敏'}), '打开项目').click();
+
+  const mappings = page.getByRole('region', {name:'映射清单'});
+  const category = mappings.getByLabel('映射类别');
+  const scope = mappings.getByLabel('映射材料范围');
+  const search = mappings.getByRole('searchbox', {name:'搜索映射'});
+  const titles = () => mappings.locator('.mapping-title strong').allTextContents();
+  await category.waitFor();
+  assert.equal(await category.inputValue(), 'all');
+  assert.deepEqual(await mappings.locator('.mapping-filters').evaluate(form => {
+    const [query, materials, categories] = [...form.children].map(input => input.getBoundingClientRect());
+    return [query.bottom < materials.top, materials.top === categories.top, materials.right < categories.left,
+      Math.abs(query.right - categories.right) < 1];
+  }), [true,true,true,true]);
+
+  const readOutput = () => page.evaluate(() => window.redaction.engine({op:'output', materialId:'1'}));
+  const saved = await readOutput();
+  assert.match(saved.output, /【张某[^】]+】/u);
+  await category.selectOption('person');
+  await search.fill('张');
+  assert.deepEqual(await titles(), ['张雷','张雪']);
+  const positions = mappings.getByRole('region', {name:'出现位置'});
+  const lei = mappings.getByRole('button', {name:/^张雷 →/u});
+  await lei.click();
+  await positions.getByRole('button', {name:/补充说明.*小雷/u}).click();
+  await page.locator('#source-text mark.selected').filter({hasText:'小雷'}).waitFor();
+  assert.equal(await category.inputValue(), 'person');
+  const firstMaterial = page.locator('.material-row').filter({hasText:'初次笔录'});
+  await firstMaterial.click();
+  await firstMaterial.and(page.locator('[aria-current="page"]')).waitFor();
+
+  await scope.selectOption('current');
+  await search.fill('小雷');
+  await mappings.getByText('没有匹配的映射', {exact:true}).waitFor();
+  await search.fill(alias.replacement);
+  assert.deepEqual(await titles(), []);
+  await scope.selectOption('all');
+  await lei.waitFor();
+  assert.deepEqual(await titles(), ['张雷']);
+  await search.fill('张');
+  await category.selectOption('organization');
+  assert.deepEqual(await titles(), ['张氏商贸有限公司']);
+  assert.equal(await positions.count(), 0);
+  await category.selectOption('all');
+  assert.deepEqual(await titles(), ['张雷','张雪','张氏商贸有限公司']);
+  assert.deepEqual(await readOutput(), saved);
+
+  await search.fill('');
+  await category.selectOption('contact');
+  assert.deepEqual(await titles(), ['13800138000']);
+  await add(page, '追加笔录', '姓名：李春');
+  await output(page).getByText(/【李某/u).waitFor();
+  assert.equal(await category.inputValue(), 'contact');
+  const [other] = await Promise.all([app.waitForEvent('window'), viaMenu(app, '打开项目…')]);
+  const otherCategory = other.getByLabel('映射类别');
+  await otherCategory.waitFor({timeout:10000});
+  assert.equal(await otherCategory.inputValue(), 'all');
+  assert.equal(await category.inputValue(), 'contact');
 });
 
 test('通过映射菜单管理别称，跨材料补位置沿用实际代号', async t => {
