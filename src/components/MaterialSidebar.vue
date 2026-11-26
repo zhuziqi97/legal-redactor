@@ -59,6 +59,7 @@ watch(query, () => {
   error.value = '';
 });
 watch(() => props.revision, () => { if (submitted.value) void search(); });
+watch(() => props.documents.length, count => { if (!count) searching.value = false; });
 </script>
 
 <template>
@@ -72,12 +73,13 @@ watch(() => props.revision, () => { if (submitted.value) void search(); });
       </button>
       <h2 v-if="!collapsed">材料</h2>
       <button v-if="!collapsed" class="button quiet icon-button" aria-label="搜索项目" title="搜索项目"
-        :aria-pressed="searching" :disabled="!documents.length && !searching" @click="toggleSearch">
+        :aria-pressed="searching" :disabled="!documents.length" @click="toggleSearch">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
           <circle cx="10.5" cy="10.5" r="5.5"/><path d="m15 15 5 5"/>
         </svg>
       </button>
-      <button class="button quiet icon-button add-material" :disabled="locked" aria-label="添加材料" title="添加材料" @click="emit('add')">
+      <button class="button quiet icon-button" :disabled="locked"
+        aria-label="添加文本材料" title="添加文本材料" @click="emit('add')">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
       </button>
     </div>
@@ -101,6 +103,7 @@ watch(() => props.revision, () => { if (submitted.value) void search(); });
       </div>
     </template>
     <div v-else-if="!collapsed" class="material-list">
+      <p v-if="!documents.length" class="material-empty">暂无材料</p>
       <div v-for="doc in documents" :key="doc.id" class="material-entry">
       <button class="material-row"
         :aria-current="current === doc.id ? 'page' : undefined" :title="doc.title" :disabled="locked"

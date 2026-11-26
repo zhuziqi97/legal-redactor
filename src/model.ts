@@ -61,6 +61,8 @@ declare global {
       viewOptions(): Promise<ViewOptions>;
       onViewOptions(callback: (options: ViewOptions) => void): void;
       open: (mode?: 'restore') => Promise<ImportSelection | null>;
+      onWordExtracting: (callback: () => void) => void;
+      cancelWordImport: () => void;
       decodeImport: (mode?: 'restore') => Promise<SourceFile>;
       inferenceSettings: () => Promise<InferenceSettings>;
       setProvider: (provider: string) => Promise<string>;

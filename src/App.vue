@@ -163,10 +163,13 @@ const materialImpact = computed(() => {
   return { groups: affected.length, removed: affected.filter(item => item.occurrences.every(row => row.materialId === materialEdit.id)).length };
 });
 const inputText = ref<HTMLTextAreaElement>();
-const input = reactive({ title: '', text: '', path: null as string | null, encoding: '' });
+const input = reactive({ title: '', text: '', path: null as string | null });
+const importFilename = computed(() => input.path?.split(/[\\/]/).at(-1));
 const openingImport = ref(false);
+const extractingWord = ref(false);
 const importEncodingTitle = ref('');
 const importError = ref('');
+let pasteDraft = { title: '', text: '' };
 const groupDialog = ref<HTMLDialogElement>();
 const groupAction = ref<'merge' | 'delete' | 'remove'>('merge');
 const group = shallowRef<Group | null>(null);
@@ -493,14 +496,16 @@ async function locate(issue: Issue) {
 function showImport() {
   if (busy.value) return;
   clearQuick();
-  Object.assign(input, { title: '', text: '', path: null, encoding: '' });
+  Object.assign(input, { title: '', text: '', path: null });
+  pasteDraft = { title: '', text: '' };
   importEncodingTitle.value = '';
   importError.value = '';
   importDialog.value?.showModal();
   inputText.value?.focus();
 }
-function adoptImport(file: SourceFile) {
-  Object.assign(input, file);
+function adoptImport({ title, text, path }: SourceFile) {
+  if (!input.path) pasteDraft = { title: input.title, text: input.text };
+  Object.assign(input, { title, text, path });
   importEncodingTitle.value = '';
 }
 
@@ -521,6 +526,11 @@ async function openSettings() {
 }
 
 api.onOpenSettings(openSettings);
+api.onWordExtracting(() => {
+  if (!openingImport.value) return;
+  importEncodingTitle.value = '';
+  extractingWord.value = true;
+});
 
 async function saveSettings() {
   if (!settings.value?.enabled || settingsBusy.value) return;
@@ -551,9 +561,14 @@ async function pickFile() {
     importEncodingTitle.value = '';
     importError.value = prettyError(error);
   } finally {
+    extractingWord.value = false;
     openingImport.value = false;
     busy.value = false;
   }
+}
+function cancelImport() {
+  if (extractingWord.value) api.cancelWordImport();
+  else if (!busy.value) importDialog.value?.close();
 }
 async function readSimplifiedChinese() {
   if (busy.value) return;
@@ -568,10 +583,9 @@ async function readSimplifiedChinese() {
   }
 }
 function pasteInstead() {
+  if (input.path) Object.assign(input, pasteDraft, { path: null });
   importEncodingTitle.value = '';
   importError.value = '';
-  input.path = null;
-  input.encoding = '';
   void nextTick(() => inputText.value?.focus());
 }
 
@@ -609,7 +623,7 @@ function findProject(text: string) {
   return api.engine<Occurrence[]>({ op: 'findOriginal', text });
 }
 async function addMaterial() {
-  if (busy.value || !input.text.trim()) return;
+  if (busy.value || importEncodingTitle.value || !input.text.trim()) return;
   if (!confirmSourceSwitch()) return;
   try {
     const result = await run<{ view: Workspace }>({ op: 'add', text: input.text, title: input.title, sourcePath: input.path });
@@ -617,7 +631,8 @@ async function addMaterial() {
     adopt(result.view, true);
     mode.value = 'redact';
     importDialog.value?.close();
-    Object.assign(input, { title: '', text: '', path: null, encoding: '' });
+    Object.assign(input, { title: '', text: '', path: null });
+    pasteDraft = { title: '', text: '' };
   } catch (error) {
     importError.value = prettyError(error);
     return;
@@ -1119,10 +1134,13 @@ function showEvidence(link: Evidence) {
           </div>
         </div>
         <div v-if="!material" class="empty-workspace">
-          <div class="empty-icon" aria-hidden="true"><svg width="27" height="27" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6M8 13h8M8 17h6"/></svg></div>
-          <h2>添加文本材料</h2>
+          <img src="/legal-redactor-icon.png" width="58" height="58" alt="">
+          <div class="empty-workspace-copy">
+            <h2>法律文档脱敏</h2>
+            <p>导入 Word（.docx）、TXT 文件，或粘贴文本。</p>
+          </div>
           <div class="toolbar">
-            <button class="button primary" :disabled="busy" @click="showImport">打开文件或粘贴文本</button>
+            <button class="button primary" :disabled="busy" @click="showImport">添加文本材料</button>
             <button class="button" :disabled="busy || projectBusy" @click="projectAction('open')">打开项目</button>
           </div>
         </div>
@@ -1248,23 +1266,44 @@ function showEvidence(link: Evidence) {
     </div>
   </dialog>
 
-  <dialog ref="importDialog" aria-labelledby="import-title" @cancel.prevent="!busy && importDialog?.close()">
+  <dialog ref="importDialog" class="import-dialog" aria-labelledby="import-title" @cancel.prevent="cancelImport">
     <form class="dialog-form" @submit.prevent="addMaterial">
-      <div class="dialog-heading"><h2 id="import-title">添加材料</h2><button type="button" class="button quiet small close-dialog" aria-label="关闭添加材料" :disabled="busy" @click="importDialog?.close()">×</button></div>
-      <label>材料名称<input v-model="input.title" :disabled="busy" placeholder="可选"></label>
-      <div class="import-source">
-        <span class="count">{{ openingImport ? '正在打开文件…' : input.path ? `已读取 ${input.encoding.toUpperCase()}` : '原文' }}</span>
-        <button type="button" class="button small" :disabled="busy" @click="pickFile">打开 TXT 或 DOCX</button>
+      <div class="dialog-heading">
+        <h2 id="import-title">添加文本材料</h2>
+        <button type="button" class="button quiet small close-dialog" aria-label="关闭" :disabled="busy" @click="importDialog?.close()">×</button>
       </div>
-      <div v-if="importEncodingTitle" class="import-source">
-        <span class="count">「{{ importEncodingTitle }}」需要选择编码</span>
-        <button type="button" class="button small" :disabled="busy" @click="readSimplifiedChinese">简体中文（GB18030）</button>
-        <button type="button" class="button small quiet" :disabled="busy" @click="pasteInstead">改用粘贴</button>
+      <div class="import-content">
+        <div class="import-source">
+          <span v-if="importFilename" class="import-filename" :title="importFilename">{{ importFilename }}</span>
+          <label v-else for="import-text">原文</label>
+          <div class="toolbar">
+            <button v-if="input.path" type="button" class="button small quiet" :disabled="busy" @click="pasteInstead">改用粘贴</button>
+            <button type="button" class="button small" :disabled="busy" @click="pickFile">
+              {{ openingImport && !extractingWord ? '正在打开…' : input.path ? '更换文件' : '打开文件' }}
+            </button>
+          </div>
+        </div>
+        <div v-if="importEncodingTitle" class="import-encoding" aria-live="polite">
+          <span>「{{ importEncodingTitle }}」需要选择编码</span>
+          <div class="toolbar">
+            <button type="button" class="button small" :disabled="busy" @click="readSimplifiedChinese">简体中文（GB18030）</button>
+            <button v-if="!input.path" type="button" class="button small quiet" :disabled="busy" @click="pasteInstead">改用粘贴</button>
+          </div>
+        </div>
+        <div class="import-text-area">
+          <textarea id="import-text" ref="inputText" v-model="input.text" :disabled="busy" :readonly="!!input.path"
+            :aria-label="input.path ? '正文预览' : undefined" placeholder="粘贴或输入文本"></textarea>
+          <div v-if="extractingWord" class="import-progress" role="status">
+            <span aria-hidden="true"></span>正在提取正文…
+          </div>
+        </div>
+        <p v-if="importError" class="form-error" role="alert">{{ importError }}</p>
       </div>
-      <textarea ref="inputText" v-model="input.text" :disabled="busy" :readonly="!!input.path" aria-label="材料原文" placeholder="在此粘贴原文"></textarea>
-      <p v-if="importError" class="form-error" role="alert">{{ importError }}</p>
+      <label class="import-name">材料名称<input v-model="input.title" :disabled="busy" placeholder="留空自动命名"></label>
       <div class="dialog-actions">
-        <button type="button" class="button" :disabled="busy" @click="importDialog?.close()">取消</button>
+        <button type="button" class="button" :disabled="busy && !extractingWord" @click="cancelImport">
+          {{ extractingWord ? '取消提取' : '取消' }}
+        </button>
         <button class="button primary" :disabled="busy || !!importEncodingTitle || !input.text.trim()">添加并识别</button>
       </div>
     </form>

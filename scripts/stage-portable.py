@@ -141,7 +141,7 @@ def stage(target, inputs, staging, model, windows_crt, windows_rcedit):
     instructions = (
         f"{PRODUCT_NAME} {metadata['version']} · {target.capitalize()} {arch}\n\n"
         f"先解压整个目录，然后打开 {executable}。请保留同目录的资源文件。\n"
-        "左侧点「添加材料」，可以打开 TXT 或 Word（DOCX），也可以粘贴文本。\n"
+        "点击「添加文本材料」，可以打开 TXT 或 Word（DOCX），也可以粘贴文本。\n"
         "TXT 需要选择编码时，可用简体中文（GB18030）重读。首次识别需要加载本地模型。\n"
         "包内带有脱敏引擎、CPU ONNX Runtime 和 Otter 模型，可离线工作。\n"
         "推理设置显示本发行包的 ONNX Runtime 后端。GPU 后端需要兼容设备和本机驱动。\n"

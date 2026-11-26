@@ -2,6 +2,8 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('redaction', {
   open: (mode?: 'restore') => ipcRenderer.invoke('redaction:open', mode),
+  onWordExtracting: (callback: () => void) => ipcRenderer.on('redaction:word-extracting', () => callback()),
+  cancelWordImport: () => ipcRenderer.send('redaction:cancel-word-import'),
   decodeImport: (mode?: 'restore') => ipcRenderer.invoke('redaction:decode-gb18030', mode),
   inferenceSettings: () => ipcRenderer.invoke('redaction:inference-settings'),
   setProvider: (provider: string) => ipcRenderer.invoke('redaction:set-provider', provider),

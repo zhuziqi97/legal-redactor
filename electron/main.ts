@@ -4,8 +4,8 @@ if (process.platform === 'linux') process.env.FC_LANG ||= 'zh-cn';
 const { app, BrowserWindow, Menu, clipboard, dialog, ipcMain, utilityProcess } = require('electron');
 const { existsSync, mkdirSync, readFileSync, writeFileSync } = require('node:fs');
 const { appendFile, readFile, writeFile, realpath, mkdtemp, rename, rm, stat } = require('node:fs/promises');
+const { Worker } = require('node:worker_threads') as typeof import('node:worker_threads');
 const { decodeInput } = require('./text-input.cjs');
-const { readWordInput } = require('./word-input.cjs');
 const { findOriginal } = require('./text-engine.cjs');
 const { projectProtection, readProject, writeProject } = require('./project-file.cjs');
 const { basename, dirname, extname, join, resolve } = require('node:path');
@@ -128,6 +128,7 @@ type WindowSession = Session & {
   editingDraft?: boolean;
   protection?: ProjectProtection;
   unlockPath?: string;
+  cancelWordImport?: () => void;
 };
 
 const sessions = new Map<number, WindowSession>();
@@ -464,11 +465,32 @@ function decodeImport(session: Session, restoring: boolean, encoding?: 'gb18030'
   return { path: source.path, title: source.title, ...result };
 }
 
+async function extractWord(session: WindowSession, bytes: Buffer) {
+  if (session.window.isDestroyed()) return null;
+  const worker = new Worker(join(__dirname, 'word-worker.cjs'), { workerData: bytes });
+  try {
+    return await new Promise<string | null>((resolve, reject) => {
+      session.cancelWordImport = () => resolve(null);
+      worker.once('message', (result: { text: string } | { error: string }) => {
+        if ('error' in result) reject(new Error(result.error));
+        else resolve(result.text);
+      });
+      const interrupted = () => reject(new Error('正文提取已中断，请重试。'));
+      worker.once('error', interrupted);
+      worker.once('exit', interrupted);
+      session.window.webContents.send('redaction:word-extracting');
+    });
+  } finally {
+    session.cancelWordImport = undefined;
+    void worker.terminate();
+  }
+}
+
 ipcMain.handle('redaction:open', async (event, mode = 'redact') => {
   const owner = BrowserWindow.fromWebContents(event.sender);
   const restoring = mode === 'restore';
   const choice = await dialog.showOpenDialog(owner, {
-    title: restoring ? '打开 TXT' : '打开材料', properties: ['openFile'],
+    title: restoring ? '打开 TXT' : '打开文件', properties: ['openFile'],
     filters: restoring ? [{ name: '纯文本', extensions: ['txt'] }]
       : [{ name: '文本和 Word 文档', extensions: ['txt', 'docx'] }],
   });
@@ -496,7 +518,8 @@ ipcMain.handle('redaction:open', async (event, mode = 'redact') => {
   if (isWord) {
     const extraction = performance.now();
     try {
-      const text = await readWordInput(bytes);
+      const text = await extractWord(session, bytes);
+      if (text === null) return null;
       diagnose({ stage: 'import', format, bytes: bytes.length, readMs, decodeMs: performance.now() - extraction,
         characters: Array.from(text).length });
       return { path: sourcePath, title, text, encoding: format };
@@ -509,6 +532,7 @@ ipcMain.handle('redaction:open', async (event, mode = 'redact') => {
   session[slot] = { path: sourcePath, title, bytes, readMs };
   return decodeImport(session, restoring);
 });
+ipcMain.on('redaction:cancel-word-import', event => sessions.get(event.sender.id)?.cancelWordImport?.());
 ipcMain.handle('redaction:decode-gb18030', (event, mode = 'redact') => decodeImport(windowSession(event.sender), mode === 'restore', 'gb18030'));
 ipcMain.handle('redaction:view-options', () => viewOptions);
 ipcMain.handle('redaction:inference-settings', async () => ({
@@ -636,6 +660,7 @@ function openWindow(initial?: { state: Workspace; file: ProjectFile; view: unkno
     window.webContents.send('redaction:confirm-close');
   });
   window.on('closed', () => {
+    session.cancelWordImport?.();
     cancelAnalysis(session);
     if (session.analysis) stopWorker(session.analysis);
     stopWorker(session);

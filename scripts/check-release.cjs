@@ -32,11 +32,13 @@ async function main(executable, version) {
     await desktop.evaluate(({dialog}, path) => {
       dialog.showOpenDialog = async () => ({canceled:false, filePaths:[path]});
     }, sourcePath);
-    await page.getByRole('button', {name:'添加材料', exact:true}).click();
-    const input = page.getByRole('dialog', {name:'添加材料', exact:true});
-    await input.getByRole('button', {name:'打开 TXT 或 DOCX', exact:true}).click();
-    await input.getByText('已读取 DOCX', {exact:true}).waitFor();
-    assert.equal(await input.getByLabel('材料原文').inputValue(), sourceText);
+    await page.getByRole('tabpanel', {name:'脱敏'}).getByRole('button', {name:'添加文本材料', exact:true}).click();
+    const input = page.getByRole('dialog', {name:'添加文本材料', exact:true});
+    await input.getByRole('button', {name:'打开文件', exact:true}).click();
+    await input.getByText('离线测试.docx', {exact:true}).waitFor();
+    const preview = input.getByLabel('正文预览');
+    assert.equal(await preview.inputValue(), sourceText);
+    assert.equal(await preview.isEditable(), false);
     await input.getByRole('button', {name:'添加并识别', exact:true}).click();
 
     const exportPath = join(profile, '脱敏.txt');

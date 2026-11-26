@@ -233,12 +233,37 @@ dialog::backdrop { background: #17284a40; }
 .save-password-toggle input::before { content: ''; width: 13px; height: 13px; border-radius: 50%; background: #fff; }
 .save-password-toggle input:checked::before { justify-self: end; }
 .save-password-toggle input:disabled { opacity: .65; }
-.import-source { display: flex; align-items: center; justify-content: space-between; gap: 7px; }
 .dialog-form textarea { width: 100%; min-height: 125px; padding: 8px; resize: vertical; }
 .dialog-heading, .dialog-actions { display: flex; align-items: center; justify-content: space-between; gap: 7px; }
 .dialog-heading h2 { font-size: 16px; }
 .dialog-actions { justify-content: end; }
 .close-dialog { font-size: 18px !important; padding-inline: 8px; }
+.import-dialog { width: min(580px, calc(100vw - 36px)); }
+.import-dialog .dialog-form { gap: 15px; padding: 18px 20px; }
+.import-dialog .dialog-heading h2 { font-size: 17px; }
+.import-content { display: grid; gap: 7px; min-width: 0; }
+.import-source, .import-encoding { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-width: 0; }
+.import-source .toolbar { flex: none; }
+.import-filename { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 600; }
+.import-encoding { flex-wrap: wrap; padding: 5px 8px; background: var(--warn-soft); border-radius: 6px; color: var(--warn); font-size: 12px; }
+.import-encoding span { overflow-wrap: anywhere; }
+.import-text-area { position: relative; }
+.import-dialog textarea { display: block; min-height: 180px; padding: 10px 11px; resize: none; }
+.import-dialog textarea[readonly] { background: var(--surface); }
+.import-dialog textarea:focus-visible { border-color: var(--focus); outline: none; box-shadow: 0 0 0 2px var(--accent-soft); }
+.import-progress {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; gap: 8px;
+  border: 1px solid var(--edge); border-radius: 6px; background: var(--surface); color: var(--muted); font-size: 13px;
+}
+.import-progress span {
+  width: 15px; height: 15px; border: 2px solid var(--accent-edge); border-top-color: var(--accent);
+  border-radius: 50%; animation: import-spin 800ms linear infinite;
+}
+@keyframes import-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .import-progress span { animation: none; } }
+.import-dialog .import-name { grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 10px; }
+.import-name input { min-width: 0; padding: 6px 9px; }
+.import-dialog .dialog-actions { border-top: 1px solid var(--line); padding-top: 13px; }
 @media (max-width: 1050px) {
   .workbench { gap: 9px; }
   .pane-scroll { padding: 10px 13px; }
@@ -263,17 +288,18 @@ dialog::backdrop { background: #17284a40; }
 .workspace-tabs button[aria-selected="true"] { border-bottom-color: var(--accent); color: var(--accent); font-weight: 650; }
 .materials {
   width: clamp(144px, 15.5vw, 222px); flex: none; min-height: 0;
-  display: flex; flex-direction: column; background: #f0f4fa;
-  border-right: 1px solid #dde6f1;
+  display: flex; flex-direction: column; background: #f8f9fc;
+  border-right: 1px solid var(--line);
 }
 .materials.collapsed { width: 49px; }
 .materials-heading {
-  display: flex; align-items: center; gap: 4px; padding: 8px 9px; min-height: 51px;
+  display: flex; align-items: center; gap: 3px; padding: 8px; min-height: 51px;
 }
-.materials-heading h2 { font-size: 13px; font-weight: 700; flex: 1; }
+.materials-heading h2 { font-size: 13px; font-weight: 700; flex: 1; white-space: nowrap; }
 .materials-heading .icon-button { flex: none; }
 .materials.collapsed .materials-heading { flex-direction: column; }
 .material-list { overflow: auto; padding: 0 7px 8px; }
+.material-empty { padding: 9px 8px; color: var(--muted); font-size: 13px; }
 .inference-settings { align-self: flex-start; margin: auto 7px 7px; }
 .project-search { display: flex; flex: none; gap: 4px; margin: 0 7px 7px; }
 .project-search input { flex: 1; min-width: 0; font-size: 12px; }
@@ -299,13 +325,11 @@ dialog::backdrop { background: #17284a40; }
 .workspace-main { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; padding: 13px 14px 14px; }
 .workbench { grid-template-columns: minmax(0, 1fr) clamp(292px, 26vw, 365px); gap: 11px; min-height: 0; }
 .empty-workspace {
-  margin: auto; display: grid; justify-items: center; gap: 15px; padding: 30px; text-align: center;
+  margin: auto; display: grid; justify-items: center; gap: 16px; padding: 30px; text-align: center;
 }
-.empty-workspace h2 { font-size: 19px; }
-.empty-icon {
-  display: grid; place-items: center; width: 58px; height: 58px; color: var(--accent);
-  background: var(--accent-soft); border: 1px solid var(--accent-edge); border-radius: 15px;
-}
+.empty-workspace-copy { display: grid; gap: 4px; }
+.empty-workspace-copy h2 { font-size: 19px; }
+.empty-workspace-copy p { color: var(--muted); font-size: 13px; }
 .reader { position: relative; }
 .quick-actions {
   position: absolute; z-index: 2; top: var(--quick-top); left: min(var(--quick-left), max(6px, calc(100% - 455px)));
