@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
 import MappingTargetPicker from './MappingTargetPicker.vue';
-import { kindLabel, labels, positionKey, type Adjustment, type AdjustmentPreviewResult, type Group, type Issue, type Occurrence,
+import { kindLabel, labels, positionKey, type Adjustment, type AdjustmentPreview, type AdjustmentPreviewResult, type Group, type Issue, type Occurrence,
   type RangeCandidate, type RangeSuggestion, type SourceChange } from '../model';
 
 const props = defineProps<{
   draft: Adjustment; groups: Group[]; materialId?: string; selected: number | null; locked: boolean;
-  previewing: boolean; impact: AdjustmentPreviewResult | null; sourceChanges: SourceChange[];
+  previewing: boolean; impact: AdjustmentPreviewResult | null; previewSources: AdjustmentPreview['sources']; sourceChanges: SourceChange[];
   mergePrompt: Issue | null; rangeFor: { materialId: string; id: number } | null;
   suggestions: { rows: RangeSuggestion[]; error?: string } | null;
 }>();
@@ -86,7 +86,7 @@ const resultCount = computed(() => props.draft.searchKeys.size);
 const checkedResults = computed(() => [...props.draft.searchKeys].filter(key => props.draft.chosen.has(key)).length);
 const allSelected = computed(() => resultCount.value > 0 && checkedResults.value === resultCount.value);
 const affected = computed(() => preview.value?.materials || []);
-const sourceImpacts = computed(() => needsPreview.value ? preview.value?.sources ?? []
+const sourceImpacts = computed(() => needsPreview.value ? props.previewSources
   : props.sourceChanges.map(change => ({
     id: change.group.id, primary: change.group.primary, code: change.group.code,
     moved: change.moved.length, remaining: change.rest.length,

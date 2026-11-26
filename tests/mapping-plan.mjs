@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import {hit} from '../build/engine/fields.js';
 import {runWorkspace} from '../build/engine/workspace.js';
 import fixture from './mapping-fixture.cjs';
 
@@ -84,6 +85,54 @@ test('明确选择目标后合并跨类别的同名映射，并能撤销', async
   assert.deepEqual(view.groups.map(row => [row.id,row.type,row.occurrences.length]), [['person','person',102]]);
   assert.ok(view.current.items.slice(-3).every(row => row.type === 'organization' && row.replacement === preview.code));
   assert.deepEqual((await w.run({op:'undo'})).view.groups.map(row => row.occurrences.length), [99,3]);
+});
+
+test('跨类别订正后新增材料按各自的识别结果匹配，局部修订保留已有订正', async () => {
+  const w = workspace(fixture.crossCategoryProject());
+  const change = {mode:'merge', groupId:'organization', targetId:'person'};
+  const {state, view} = await w.apply(change, await w.preview(change));
+  const decisions = state.materials[0].decisions;
+  assert.deepEqual(decisions[0].match, ['person', fixture.original]);
+  assert.ok(decisions.slice(-3).every(row => row.match === undefined && row.type === 'organization'));
+
+  const extraPerson = await w.add(`姓名：${fixture.original}`, '人员补录');
+  assert.equal(extraPerson.current.items[0].group, 'person');
+
+  const prefix = '登记单位为';
+  const {view: extra} = await w.run({op:'add', title:'单位补录', text:`${prefix}${fixture.original}。`});
+  const latest = await w.run({op:'scan', materialId:extra.current.id}, () => [
+    hit(prefix.length, prefix.length + fixture.original.length, 'organization', 'Otter', 85),
+  ]);
+  const organization = latest.view.current.items.find(item => item.original === fixture.original);
+  assert.equal(organization.type, 'organization');
+  assert.notEqual(organization.group, 'person');
+
+  const {current} = view;
+  const revised = await w.run({op:'reviseMaterial', materialId:current.id, revision:current.revision,
+    text:`说明已核对。\n${current.text}`});
+  const preserved = revised.view.groups.find(group => group.id === 'person').occurrences
+    .filter(row => row.materialId === current.id).slice(-3);
+  assert.deepEqual(preserved.map(row => [row.itemId, row.start, row.replacement]),
+    view.groups[0].occurrences.slice(-3).map(row => [row.itemId, row.start + '说明已核对。\n'.length, row.replacement]));
+});
+
+test('迁入检查使用实际派生代号，并阻止绑定到原文里已有的代号', async () => {
+  const state = fixture.crossCategoryProject();
+  const doc = state.materials[0];
+  doc.decisions.at(-1).aliasType = '曾用名';
+  doc.decisions.at(-1).replacement = '【L机构-曾用名1】';
+  doc.text += '曾记录【柳某甲-曾用名1】。';
+  const w = workspace(state);
+  const change = {mode:'merge', groupId:'organization', targetId:'person'};
+  const result = await w.preview(change);
+  assert.deepEqual(result.preview.materials[0].changes.at(-1).after, [{text:'【柳某甲-曾用名2】'}]);
+  const {view} = await w.apply(change, result);
+  assert.equal(view.current.items.at(-1).replacement, '【柳某甲-曾用名2】');
+
+  const existing = await w.add('姓名：程明\n已存在【柳某甲】。');
+  const row = existing.groups.find(group => group.primary === '程明').occurrences[0];
+  const {issue} = await w.preview({mode:'bind', groupId:'person', positions:[row]});
+  assert.equal(issue.positions[0].original, '【柳某甲】');
 });
 
 test('新建撞码、修改撞码和从原文选中绑定使用同一跨类别规则', async () => {

@@ -230,9 +230,16 @@ test('搜索派生代号找到跨类别目标，预览三处后合并并撤销',
   const {app, page, directory} = await open(t, {provider: 'cpu', model: false});
   const path = join(directory, '跨类别复核.lrproj');
   const state = crossCategoryProject();
-  const first = state.materials[0].decisions[0];
+  const original = state.materials[0];
+  const first = original.decisions[0];
   first.aliasType = '曾用名';
   first.replacement = '【柳某甲-曾用名1】';
+  const lastTwo = original.decisions.splice(-2);
+  const offset = original.text.lastIndexOf('\n', lastTwo[0].start - 1) + 1;
+  state.materials.push({...original, id:'2', title:'补充材料', text:original.text.slice(offset),
+    decisions:lastTwo.map(row => ({...row, start:row.start - offset, end:row.end - offset}))});
+  state.nextMaterialId = 3;
+  original.text = original.text.slice(0, offset);
   await writeProject(path, state);
   await app.evaluate(({dialog}, path) => {
     dialog.showOpenDialog = async () => ({canceled:false, filePaths:[path]});
@@ -258,7 +265,10 @@ test('搜索派生代号找到跨类别目标，预览三处后合并并撤销',
   const preview = page.getByRole('region', {name:'调整清单'});
   await preview.getByText('迁入 3 处 → 【柳某甲】', {exact:true}).waitFor();
   assert.equal(await preview.locator('.impact-entry').count(), 3);
-  assert.equal(await output(page).getByText('【L机构】', {exact:true}).count(), 3);
+  assert.equal(await output(page).getByText('【L机构】', {exact:true}).count(), 1);
+  await channel(preview, '第 1 行 · 定位原文').click();
+  await page.locator('#source-text mark[data-item="101"]').waitFor();
+  assert.equal(await output(page).getByText('【L机构】', {exact:true}).count(), 2);
   await channel(preview, '更换目标').click();
   await channel(dialog, '查看合并').click();
   await channel(preview, '确认合并').click();
@@ -269,7 +279,7 @@ test('搜索派生代号找到跨类别目标，预览三处后合并并撤销',
   await channel(mappings, '撤销上次订正').click();
   await source.getByText('3 处', {exact:true}).waitFor();
 
-  await page.locator('#source-text mark[data-item="100"]').click();
+  await page.locator('#source-text mark[data-item="101"]').click();
   await channel(page, '绑定到现有映射').click();
   const picker = preview.getByRole('searchbox', {name:'搜索目标映射'});
   await picker.fill('柳某甲-曾用名1');

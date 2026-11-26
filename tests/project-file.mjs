@@ -6,7 +6,9 @@ import test from 'node:test';
 import { ZipReader, ZipWriter, Uint8ArrayReader, Uint8ArrayWriter, TextReader } from '@zip.js/zip.js';
 import { runWorkspace } from '../build/engine/workspace.js';
 import { encodeProject } from '../build/engine/project-state.js';
+import { restoreText } from '../build/engine/restore.js';
 import { projectProtection, readProject, writeProject } from '../build/project-file.cjs';
+import fixture from './mapping-fixture.cjs';
 
 function workspace() {
   let state = { materials: [], groups: {}, activeId: null, undo: null, revision: 0 };
@@ -61,6 +63,36 @@ test('项目保留跨材料改绑、派生代号、导出状态和待识别原�
   assert.deepEqual((await runWorkspace(restored, { op: 'output', materialId: '2' })).sourcePaths, [originalPath]);
   const added = await runWorkspace(restored, { op: 'add', title: '又一份材料', text: '姓名：王乙' });
   assert.equal(added.view.current.id, '4');
+});
+
+test('加密 v1 项目重开后仍使用跨类别订正的结果导出与恢复', async t => {
+  const path = await localProject(t);
+  const password = '合成项目口令';
+  const initial = fixture.crossCategoryProject();
+  const {output: previousOutput} = await runWorkspace(initial, {op:'output', materialId:'1'});
+  const exported = await runWorkspace(initial, {op:'markExported', materialId:'1', text:previousOutput});
+  await writeProject(path, exported.state, await projectProtection(password));
+  const opened = await readProject(path, password);
+  const change = {mode:'merge', groupId:'organization', targetId:'person'};
+  const {preview} = await runWorkspace(opened.state, {op:'previewAdjustment', change});
+  const applied = await runWorkspace(opened.state, {op:'apply', expectedRevision:preview.revision, change});
+  assert.equal(applied.view.documents[0].exportState, 'changed');
+  assert.equal(encodeProject(applied.state).schemaVersion, 1);
+  await writeProject(path, applied.state, opened.protection);
+
+  assert.deepEqual(await readProject(path), {locked:true});
+  const {state} = await readProject(path, password);
+  const {view} = await runWorkspace(state, {op:'view'});
+  assert.deepEqual(view.groups.map(group => [group.id, group.type, group.occurrences.length]), [['person','person',102]]);
+  assert.deepEqual(view.groups[0].occurrences.slice(-3), applied.view.groups[0].occurrences.slice(-3));
+  assert.ok(state.materials[0].decisions.slice(-3).every(row => row.type === 'organization' && row.match === undefined));
+  assert.equal(view.documents[0].exportState, 'changed');
+  const {output} = await runWorkspace(state, {op:'output', materialId:'1'});
+  assert.equal(output.match(/【柳某甲】/gu)?.length, 102);
+  assert.doesNotMatch(output, /【L机构】/u);
+  const restored = restoreText('【柳某甲】与【L机构】', view.groups);
+  assert.equal(restored.output, `${fixture.original}与【L机构】`);
+  assert.deepEqual(restored.occurrences.map(row => row.value), [fixture.original,null]);
 });
 
 test('修改原文后、重新识别前保存的项目仍可接续人工订正', async t => {

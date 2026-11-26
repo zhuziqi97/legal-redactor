@@ -66,7 +66,7 @@ const readySelection = computed(() => ready.value && (selection.value || quickIt
 const rangeFor = ref<{ materialId: string; id: number } | null>(null);
 const draft = ref<Adjustment | null>(null);
 const draftKey = ref(0);
-const previewReply = shallowRef<{ key: string; result: AdjustmentPreviewResult }>();
+const previewReply = shallowRef<{ key: string; scope: string; result: AdjustmentPreviewResult }>();
 const mergeReply = shallowRef<{ key: string; issue: Issue }>();
 const suggestionReply = shallowRef<{ key: string; rows: RangeSuggestion[]; error?: string }>();
 const suggestionsKey = computed(() => {
@@ -134,6 +134,10 @@ const transferScope = computed(() => {
   if (!draftChange.value) return '';
   const {primaries: _primaries, ...choice} = changePayload(draftChange.value);
   return JSON.stringify([draftKey.value, workspace.value.revision, choice]);
+});
+const previewSources = computed(() => {
+  const reply = previewReply.value;
+  return reply?.scope === transferScope.value && 'preview' in reply.result ? reply.result.preview.sources : [];
 });
 watch(transferScope, () => {
   if (draft.value && Object.keys(draft.value.primaries).length) draft.value.primaries = {};
@@ -667,14 +671,15 @@ watch([previewKey, busy], ([key, locked], _, onCleanup) => {
     const change = draftChange.value;
     if (!change || busy.value || previewKey.value !== key || previewReply.value?.key === key) return;
     const conflictKey = mergeKey.value;
+    const scope = transferScope.value;
     previewing.value = true;
     busy.value = true;
     try {
       const result = await api.engine({ op: 'previewAdjustment', change: changePayload(change) });
-      previewReply.value = { key, result };
+      previewReply.value = { key, scope, result };
       if ('issue' in result && result.issue.merge) mergeReply.value = { key: conflictKey, issue: result.issue };
     } catch (error) {
-      previewReply.value = { key, result: { error: prettyError(error) } };
+      previewReply.value = { key, scope, result: { error: prettyError(error) } };
     } finally {
       previewing.value = false;
       busy.value = false;
@@ -907,7 +912,8 @@ function showEvidence(link: Evidence) {
             </template>
           </DocumentReader>
           <AdjustmentPanel v-if="draft" :key="draftKey" :draft="draft" :groups="workspace.groups" :material-id="material.id"
-            :selected="selected" :locked="busy" :previewing="previewing || suggesting" :impact="visibleImpact" :source-changes="sourceChanges"
+            :selected="selected" :locked="busy" :previewing="previewing || suggesting" :impact="visibleImpact"
+            :preview-sources="previewSources" :source-changes="sourceChanges"
             :merge-prompt="mergePrompt" :range-for="rangeFor"
             :suggestions="visibleSuggestions" @original="setOriginal"
             @cancel="draft = null; rangeFor = null; clearQuick()" @search="searchDraft" @jump="jump($event, true)" @reselect="chooseRange"

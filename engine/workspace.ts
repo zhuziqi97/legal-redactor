@@ -584,10 +584,11 @@ function moveMembers(state: Workspace, rows: Iterable<Member>, target: Group, us
   for (const [, row] of rows) {
     const label = row.aliasType ?? '';
     const code = aliasCode(state, target, row.original, label, used);
+    if (row.match && !compatible(row.match[0], target.type)) delete row.match;
     manual(row, target, code, 'replace', label, keepEvidence);
     codes.add(code);
   }
-  return literalIssue(state, codes);
+  if (codes.size) return literalIssue(state, codes);
 }
 
 function literalIssue(state: Workspace, requested: Set<string>) {
@@ -807,7 +808,7 @@ function apply(state: Workspace, change: Change, newId: NewId, cover: boolean): 
 
   const positions = change.positions ?? [];
   if (!positions.length) throw new Error('请先选择要处理的位置。');
-  const kind = change.type;
+  let kind = change.type;
   if (kind != null && !Object.hasOwn(labels, kind)) throw new Error('请选择有效的脱敏类别。');
   if (op === 'create' && !kind) throw new Error('请选择脱敏类别。');
   const targetKind = kind || group?.type;
@@ -839,6 +840,7 @@ function apply(state: Workspace, change: Change, newId: NewId, cover: boolean): 
       if (!group) return {issue: {message: '这个代号已被其他映射使用。', merge: {reason: 'code', canRetain: false,
         codeChoices: false, groups: owners.map(candidate => candidate.id), occupants,
         options: eligible.map(candidate => ({groupId: candidate.id, whole: false, selected: true}))}}};
+      kind = undefined;
     } else {
       group = newGroup(state, kind!, raw, code, newId);
     }
@@ -851,8 +853,7 @@ function apply(state: Workspace, change: Change, newId: NewId, cover: boolean): 
   if (op === 'create' || op === 'bind' || op === 'range') {
     for (const [, row] of resolved) {
       if (op === 'create') row.aliasType = '';
-      if (kind && !compatible(row.type, kind)) delete row.match;
-      if (kind && (op !== 'create' || !change.resolution)) row.type = kind;
+      if (kind) row.type = kind;
     }
     const issue = moveMembers(state, resolved, group!, used);
     if (issue) return issue;
