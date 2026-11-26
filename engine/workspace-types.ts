@@ -35,7 +35,8 @@ export type Issue = {
     occupants?: CodeOccupant[]};
 };
 export type Change = {
-  mode: 'editMapping' | 'rename' | 'primary' | 'merge' | 'delete' | 'create' | 'bind' | 'range' | 'keep' | 'review';
+  mode: 'editMapping' | 'rename' | 'primary' | 'merge' | 'delete' | 'deleteMaterial' | 'create' | 'bind' | 'range' | 'keep' | 'review';
+  materialId?: string;
   groupId?: string; type?: string; code?: string; positions?: Position[]; rebindPositions?: Position[];
   resolution?: {mode: MergeMode; targetId?: string}; targetId?: string; term?: {original: string};
   alias?: AliasTarget;

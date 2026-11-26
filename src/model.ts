@@ -20,6 +20,9 @@ export function kindLabel(kind: string) { return labels[kind as keyof typeof lab
 export type Term = { original: string };
 export type AdjustmentPreview = Extract<WorkspaceReplies['previewAdjustment'], {preview: unknown}>['preview'];
 export type AdjustmentPreviewResult = { preview: AdjustmentPreview } | { issue: Issue } | { error: string };
+export function recoveryChoicesComplete(sources: AdjustmentPreview['sources'], chosen: Record<string, string>) {
+  return sources.every(source => source.terms.length < 2 || source.terms.includes(chosen[source.id]));
+}
 export type RangeCandidate = { position: Occurrence; clear: boolean; overlap: boolean };
 export type RangeSuggestion = { original: Occurrence; candidates: RangeCandidate[] };
 export type OriginalEdit = { base: string; value: string; origin?: Occurrence; manual: Record<string, Occurrence> };
@@ -43,7 +46,7 @@ export function prettyError(error: unknown) {
 }
 
 export type Adjustment = {
-  mode: 'create' | 'bind' | 'remove' | 'edit' | 'rename' | 'merge';
+  mode: 'create' | 'bind' | 'remove' | 'edit' | 'rename' | 'merge' | 'primary';
   title: string;
   groupId: string;
   fixedTarget: boolean;
@@ -61,7 +64,7 @@ export type Adjustment = {
   targetCodes: Record<string, string>;
   edits: Record<string, Occurrence>;
   originalEdit?: OriginalEdit;
-  primary: string;
+  recoveryOriginal?: string;
   resolution: { mode: 'whole' | 'selected' | 'retain'; targetId?: string } | null;
   keep: boolean;
   error: string;

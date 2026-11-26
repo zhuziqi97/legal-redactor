@@ -2,7 +2,8 @@
 import { computed, onMounted, ref } from 'vue';
 import type { TargetCodeChoice } from '../../engine/workspace-types';
 import MappingTargetPicker from './MappingTargetPicker.vue';
-import { kindLabel, labels, positionKey, type Adjustment, type AdjustmentPreview, type AdjustmentPreviewResult, type Group, type Issue, type Occurrence,
+import RecoveryChoice from './RecoveryChoice.vue';
+import { kindLabel, labels, positionKey, recoveryChoicesComplete, type Adjustment, type AdjustmentPreview, type AdjustmentPreviewResult, type Group, type Issue, type Occurrence,
   type RangeCandidate, type RangeSuggestion } from '../model';
 
 const props = defineProps<{
@@ -46,13 +47,13 @@ function locate(row: Occurrence) {
 const editing = computed(() => props.draft.mode === 'edit');
 const merging = computed(() => props.draft.mode === 'merge');
 const renaming = computed(() => props.draft.mode === 'rename');
+const choosingPrimary = computed(() => props.draft.mode === 'primary');
 const pickingSource = ref(false);
 const originalWord = computed({
   get: () => props.draft.originalEdit?.value || '',
   set: value => { pickingSource.value = false; emit('original', value); },
 });
 const wordChanged = computed(() => originalWord.value !== props.draft.originalEdit?.base);
-const editedTerms = computed(() => [...new Set(props.draft.rows.map(row => props.draft.edits[positionKey(row)]?.original || row.original))]);
 const editCount = computed(() => Object.keys(props.draft.edits).length);
 const conflict = computed(() => props.mergePrompt?.merge);
 const conflictGroups = computed(() => props.groups.filter(group => conflict.value?.groups.includes(group.id)));
@@ -100,8 +101,10 @@ const destination = computed(() => {
   if (editing.value && preview.value) return `${preview.value.primary} → ${preview.value.code}`;
   return preview.value?.code || props.draft.alias?.code || target.value?.code || '';
 });
-const canApply = computed(() => !props.locked && !props.rangeFor && preview.value !== null);
+const canApply = computed(() => !props.locked && !props.rangeFor && preview.value !== null &&
+  recoveryChoicesComplete(props.previewSources, props.draft.primaries));
 const applyLabel = computed(() => {
+  if (choosingPrimary.value) return '确认设置';
   if (renaming.value) return '确认改代号';
   if (props.draft.mode === 'remove') return `移出所选 ${selectedRows.value.length} 处`;
   if (props.draft.resolution?.mode === 'whole') return '确认合并';
@@ -132,7 +135,6 @@ function toggleResults(event: Event) {
 function toggleEdit(key: string, candidate: RangeCandidate, checked: boolean) {
   if (checked) props.draft.edits[key] = candidate.position;
   else delete props.draft.edits[key];
-  props.draft.primary = '';
 }
 
 function toggleClearMatches() {
@@ -153,15 +155,15 @@ function resolve(mode: 'whole' | 'selected' | 'retain', targetId?: string) {
 </script>
 
 <template>
-  <section class="card review adjustment" :class="{ 'merge-preview': merging }" aria-label="调整清单">
+  <section class="card review adjustment" :class="{ 'merge-preview': merging || choosingPrimary }" aria-label="调整清单">
     <div class="review-heading">
-      <h2>{{ editing || merging || renaming ? draft.title : '调整清单' }}</h2>
+      <h2>{{ editing || merging || renaming || choosingPrimary ? draft.title : '调整清单' }}</h2>
       <div class="toolbar">
         <button v-if="merging" class="button small quiet" :disabled="locked" @click="emit('chooseTarget')">更换目标</button>
         <button class="button small quiet" :disabled="locked" @click="emit('cancel')">取消</button>
       </div>
     </div>
-    <div v-if="!merging" class="adjust-controls">
+    <div v-if="!merging && !choosingPrimary" class="adjust-controls">
       <h3 v-if="!editing && !renaming">{{ draft.title }}</h3>
       <template v-if="renaming && target">
         <p class="adjust-target">{{ target.primary }} → {{ target.code }}</p>
@@ -173,12 +175,6 @@ function resolve(mode: 'whole' | 'selected' | 'retain', targetId?: string) {
           <button type="button" class="button small quiet" :disabled="locked" @click="takeFrom()">从原文取词</button>
           <textarea id="mapping-original" ref="originalInput" v-model="originalWord" rows="1" :disabled="editingLocked"></textarea>
         </div>
-        <label v-if="editCount && editedTerms.length > 1" class="edit-field">映射主名
-          <select v-model="draft.primary" aria-label="映射主名" :disabled="editingLocked || !!draft.resolution?.targetId">
-            <option value="">{{ preview?.primary || '沿用或随原位置修正' }}</option>
-            <option v-for="term in editedTerms" :key="term" :value="term">{{ term }}</option>
-          </select>
-        </label>
         <div class="edit-position-heading">出现位置 <span>{{ wordChanged ? `已选 ${editCount} / ` : '' }}{{ editRows.length }} 处</span></div>
       </template>
       <div v-if="draft.mode === 'create'" class="adjust-fields">
@@ -245,7 +241,7 @@ function resolve(mode: 'whole' | 'selected' | 'retain', targetId?: string) {
         </div>
       </div>
     </div>
-    <div v-else-if="!merging && !renaming" class="adjust-results">
+    <div v-else-if="!merging && !renaming && !choosingPrimary" class="adjust-results">
       <p v-if="!visibleRows.length" class="muted-empty">{{ draft.alias ? '没有可添加的位置' : draft.searched ? '没有找到同文位置' : '在原文选词，或查找同文位置' }}</p>
       <div v-for="row in visibleRows" :key="positionKey(row)" class="candidate-row"
         :class="{ checked: draft.chosen.has(positionKey(row)), current: row.materialId === materialId && (located === positionKey(row) || (row.itemId !== null && row.itemId === selected)) }">
@@ -269,14 +265,9 @@ function resolve(mode: 'whole' | 'selected' | 'retain', targetId?: string) {
     <div class="adjust-footer">
       <div class="adjust-impact-scroll">
         <div v-for="change in previewSources" :key="change.id" class="adjust-impact">
-          <span>{{ change.primary }} {{ change.code }} · 移出 {{ change.moved }} 处{{ change.remaining ? '' : '，原组将移除' }}</span>
-          <span v-if="change.terms.length === 1">恢复原词改为「{{ change.nextPrimary }}」</span>
-          <label v-else-if="change.terms.length > 1">恢复原词
-            <select :value="draft.primaries[change.id] || change.nextPrimary" :aria-label="`为${change.primary}选择恢复原词`" :disabled="editingLocked"
-              @change="draft.primaries[change.id] = ($event.target as HTMLSelectElement).value">
-              <option v-for="term in change.terms" :key="term" :value="term">{{ term }}</option>
-            </select>
-          </label>
+          <span v-if="change.moved">{{ change.primary }} {{ change.code }} · 移出 {{ change.moved }} 处{{ change.remaining ? '' : '，原组将移除' }}</span>
+          <RecoveryChoice :source="change" :value="draft.primaries[change.id]" :locked="editingLocked"
+            :show-code="!change.moved" @choose="draft.primaries[change.id] = $event" />
         </div>
         <label v-for="choice in targetCodeChoices" :key="choice.original" class="edit-field">
           <span>{{ choice.original }}的代号</span>

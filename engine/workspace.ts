@@ -360,7 +360,7 @@ function restoreManualReview(state: Workspace, doc: Material, previous: Previous
   }
 }
 
-function repairGroups(state: Workspace, primaries: Primaries) {
+function repairGroups(state: Workspace, primaries: Primaries, explicit?: string) {
   const live = new Map<string, string[]>();
   for (const doc of state.materials) {
     for (const row of doc.decisions ?? []) {
@@ -376,10 +376,10 @@ function repairGroups(state: Workspace, primaries: Primaries) {
       continue;
     }
     const chosen = primaries[id];
-    if (chosen) {
-      if (!terms.includes(chosen.original)) throw new Error('请选择映射中仍有位置的主名。');
-      group.primary = chosen.original;
-    } else if (!terms.includes(group.primary)) group.primary = terms[0];
+    if (id === explicit && chosen && !terms.includes(chosen.original)) throw new Error('请选择映射中仍有位置的原词。');
+    if (id === explicit || !terms.includes(group.primary)) {
+      group.primary = chosen && terms.includes(chosen.original) ? chosen.original : terms[0];
+    }
   }
 }
 
@@ -800,7 +800,7 @@ function editMapping(state: Workspace, group: Group, change: Change, used: Set<s
     if (issue) return issue;
   }
   let primary = destination === group ? change.primary : undefined;
-  if (!primary && editedPrimary && destination === group &&
+  if (!primary && !change.primaries?.[group.id] && editedPrimary && destination === group &&
     ![...members(state, group.id)].some(([, row]) => row.original === group.primary)) primary = editedPrimary;
   return {changed: true, groupId: destination.id, focus,
     primaries: {...change.primaries, ...(primary ? {[group.id]: {original: primary}} : {})}};
@@ -830,12 +830,16 @@ function renameMapping(state: Workspace, group: Group, code: string, used: Set<s
 
 function apply(state: Workspace, change: Change, newId: NewId, cover: boolean): AdjustmentResult {
   const op = change.mode;
+  if (op === 'deleteMaterial') {
+    removeMaterial(state, lookupMaterial(state, change.materialId!));
+    return {changed:true, primaries:change.primaries};
+  }
   let group = change.groupId ? findGroup(state, change.groupId) : undefined;
   const used = occupied(state);
   const checkMove = transferCheck(state);
   if (op === 'editMapping') return editMapping(state, group!, change, used, checkMove);
   if (op === 'rename') return renameMapping(state, group!, displayCode(change.code!), used);
-  if (op === 'primary') return {changed: true, primaries: {[group!.id]: change.term!}};
+  if (op === 'primary') return {changed: true, groupId:group!.id, primaries: {[group!.id]: change.term!}};
   if (op === 'merge') {
     const target = findGroup(state, change.targetId);
     if (target === group) throw new Error('请选择其他映射。');
@@ -924,10 +928,17 @@ function applyReview(state: Workspace, change: Change, newId: NewId, cover: bool
   const result = apply(state, change, newId, cover);
   if (!('issue' in result) && result.changed) {
     settleAliases(state, newId);
-    repairGroups(state, result.primaries ?? {});
+    const explicit = change.mode === 'primary' || change.mode === 'editMapping' && change.primary ? change.groupId : undefined;
+    repairGroups(state, {...change.primaries, ...result.primaries}, explicit);
     delete result.primaries;
   }
   return result;
+}
+
+function removeMaterial(state: Workspace, doc: Material) {
+  const index = state.materials.indexOf(doc);
+  state.materials.splice(index, 1);
+  if (state.activeId === doc.id) state.activeId = state.materials[Math.min(index, state.materials.length - 1)]?.id ?? null;
 }
 
 const maskedRanges = (rows: Row[]): Span[] => rows.filter(row => row.action !== 'keep').map(row => [row.start, row.end]);
@@ -1001,7 +1012,7 @@ function sourceImpacts(before: Workspace, after: Workspace, destination?: string
     const grouped = new Map<string, string[]>();
     for (const doc of state.materials) {
       for (const row of doc.decisions ?? []) {
-        if (row.action !== 'replace' || !row.group || row.group === destination) continue;
+        if (row.action !== 'replace' || !row.group) continue;
         if (!grouped.has(row.group)) grouped.set(row.group, []);
         grouped.get(row.group)!.push(row.original);
       }
@@ -1012,12 +1023,13 @@ function sourceImpacts(before: Workspace, after: Workspace, destination?: string
   return [...originals(before)].flatMap(([id, originals]) => {
     const group = before.groups[id];
     const remaining = next.get(id) ?? [];
-    if (remaining.length >= originals.length) return [];
     const primary = after.groups[id]?.primary;
+    const changed = primary !== undefined && primary !== group.primary;
+    if (!changed && (id === destination || remaining.length >= originals.length)) return [];
     return [{
-      id, code: group.code, primary: group.primary, moved: originals.length - remaining.length,
-      remaining: remaining.length, nextPrimary: primary === group.primary ? undefined : primary,
-      terms: primary && primary !== group.primary ? [...new Set(remaining)] : [],
+      id, code: group.code, primary: group.primary, moved: Math.max(0, originals.length - remaining.length),
+      remaining: remaining.length, nextPrimary: changed ? primary : undefined,
+      terms: changed && !remaining.includes(group.primary) ? [...new Set(remaining)] : [],
     }];
   });
 }
@@ -1027,8 +1039,10 @@ function previewAdjustment(state: Workspace, change: Change, newId: NewId) {
     materials: state.materials.map(doc => ({...doc, decisions: structuredClone(doc.decisions)}))};
   const result = applyReview(trial, change, newId, true);
   if ('issue' in result) return result;
-  const materials = state.materials.flatMap((doc, index) => {
-    const proposed = trial.materials[index];
+  const proposedMaterials = new Map(trial.materials.map(doc => [doc.id, doc]));
+  const materials = state.materials.flatMap(doc => {
+    const proposed = proposedMaterials.get(doc.id);
+    if (!proposed) return [];
     if (JSON.stringify(doc.decisions) === JSON.stringify(proposed.decisions)) return [];
     const impact = adjustmentImpact(doc, viewMaterial(doc), viewMaterial(proposed));
     return impact.changes.length ? [impact] : [];
@@ -1084,7 +1098,7 @@ export async function runWorkspace(state: Workspace, request: Request, scan?: Sc
     if (revision != null && revision !== state.revision) {
       return {issue: {message: '材料已更新，请查看最新的影响预览。', stalePreview: true}};
     }
-    const before = {groups: structuredClone(state.groups),
+    const before = request.change.mode === 'deleteMaterial' ? null : {groups: structuredClone(state.groups),
       rows: Object.fromEntries(state.materials.map(doc => [doc.id, structuredClone(doc.decisions)]))};
     const change = applyReview(state, request.change, newId, revision != null);
     if ('issue' in change) return change;
@@ -1122,9 +1136,7 @@ export async function runWorkspace(state: Workspace, request: Request, scan?: Sc
         repairGroups(state, {});
       }
     } else {
-      const index = state.materials.indexOf(doc);
-      state.materials.splice(index, 1);
-      if (state.activeId === doc.id) state.activeId = state.materials[Math.min(index, state.materials.length - 1)]?.id ?? null;
+      removeMaterial(state, doc);
       state.undo = null;
       settleAliases(state, newId);
       repairGroups(state, {});

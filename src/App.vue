@@ -6,11 +6,12 @@ import DocumentReader from './components/DocumentReader.vue';
 import MaterialSidebar from './components/MaterialSidebar.vue';
 import ReviewPanel from './components/ReviewPanel.vue';
 import ProjectDialogs from './components/ProjectDialogs.vue';
+import RecoveryChoice from './components/RecoveryChoice.vue';
 import MappingTargetPicker from './components/MappingTargetPicker.vue';
 import { useAnalysisQueue } from './analysis-queue';
 import RestoreWorkspace from './components/RestoreWorkspace.vue';
 import type { MappingScope, Preferences, SettingsSection, UpdateStatus } from '../engine/preferences';
-import { positionKey, prettyError, type Adjustment, type AdjustmentPreviewResult, type Evidence,
+import { positionKey, prettyError, recoveryChoicesComplete, type Adjustment, type AdjustmentPreviewResult, type Evidence,
   type Group, type Issue, type Occurrence, type RangeSuggestion, type Span, type Term,
   type SourceFile, type ViewOptions, type Workspace } from './model';
 import { indexText } from './positions';
@@ -78,25 +79,30 @@ const suggestionsKey = computed(() => {
 const visibleSuggestions = computed(() => suggestionsKey.value && suggestionsKey.value === suggestionReply.value?.key
   ? suggestionReply.value : null);
 const picked = computed(() => draft.value?.rows.filter(row => draft.value!.chosen.has(positionKey(row))) || []);
+function recoveryTerms(values: Record<string, string>): Record<string, Term> {
+  return Object.fromEntries(Object.entries(values).filter(([, original]) => original).map(([id, original]) => [id, {original}]));
+}
 const draftChange = computed<Change | null>(() => {
   const active = draft.value;
   if (!active) return null;
   const targetCodes = active.targetCodes;
+  const primaries = recoveryTerms(active.primaries);
   if (active.mode === 'merge') {
-    return active.resolution?.targetId ? {mode: 'merge', groupId: active.groupId, targetId: active.resolution.targetId, targetCodes} : null;
+    return active.resolution?.targetId ? {mode: 'merge', groupId: active.groupId, targetId: active.resolution.targetId, targetCodes, primaries} : null;
+  }
+  if (active.mode === 'primary' && active.recoveryOriginal) {
+    return {mode:'primary', groupId:active.groupId, term:{original:active.recoveryOriginal}};
   }
   if (active.mode === 'rename') {
     const code = active.code.trim();
     const saved = workspace.value.groups.find(item => item.id === active.groupId)?.code;
     return code && code !== saved && `【${code}】` !== saved ? {mode:'rename', groupId:active.groupId, code} : null;
   }
-  const primaries: Record<string, Term> = {};
-  for (const [id, original] of Object.entries(active.primaries)) if (original) primaries[id] = {original};
   if (active.mode === 'edit') {
     const item = workspace.value.groups.find(group => group.id === active.groupId);
     const positions = Object.values(active.edits);
     if (!item || !positions.length) return null;
-    return { mode: 'editMapping', groupId: active.groupId, positions, code: item.code, primary: active.primary, primaries, targetCodes,
+    return { mode: 'editMapping', groupId: active.groupId, positions, code: item.code, primaries, targetCodes,
       ...(active.resolution ? { resolution: { ...active.resolution } } : {}) };
   }
   if (!picked.value.length || (active.mode === 'bind' && !active.groupId)) return null;
@@ -136,6 +142,7 @@ watch(() => [draftKey.value, draft.value?.groupId, draft.value?.resolution?.targ
 const pendingOutput = computed(() => {
   const active = draft.value;
   const id = material.value?.id;
+  if (id && rangeFor.value?.materialId === id && selection.value) return true;
   if (!active || !id) return false;
   const impact = visibleImpact.value;
   if (impact && 'preview' in impact) return impact.preview.materials.some(doc => doc.materialId === id && doc.affectsOutput);
@@ -143,12 +150,10 @@ const pendingOutput = computed(() => {
   const change = draftChange.value;
   if (!change) return false;
   if (active.mode === 'edit') return change.positions?.some(row => row.materialId === id) ?? false;
-  return (active.mode === 'rename' || active.mode === 'merge') && active.rows.some(row => row.materialId === id);
+  if (active.mode !== 'rename' && active.mode !== 'merge') return false;
+  return workspace.value.groups.find(item => item.id === active.groupId)?.occurrences.some(row => row.materialId === id) ?? false;
 });
 const canOutput = computed(() => !busy.value && ready.value && !sourceEdit.value && !pendingOutput.value);
-watch(transferScope, () => {
-  if (draft.value && Object.keys(draft.value.primaries).length) draft.value.primaries = {};
-});
 const issues = ref<Issue[]>([]);
 const notice = ref({ text: '', error: false });
 const reader = ref<InstanceType<typeof DocumentReader>>();
@@ -157,7 +162,22 @@ const importDialog = ref<HTMLDialogElement>();
 const projectDialogs = ref<InstanceType<typeof ProjectDialogs>>();
 const projectBusy = computed(() => projectDialogs.value?.projectBusy ?? false);
 const materialDialog = ref<HTMLDialogElement>();
-const materialEdit = reactive({ action: 'rename' as 'rename' | 'delete', id: '', title: '', error: '' });
+const materialEdit = reactive({action:'rename' as 'rename' | 'delete', id:'', title:'', error:'', open:false,
+  primaries:{} as Record<string,string>});
+const materialDelete = computed<Change | null>(() => materialEdit.open && materialEdit.action === 'delete'
+  ? {mode:'deleteMaterial', materialId:materialEdit.id, primaries:recoveryTerms(materialEdit.primaries)} : null);
+const materialScope = computed(() => materialDelete.value ? JSON.stringify([workspace.value.revision, materialEdit.id]) : '');
+const materialKey = computed(() => materialDelete.value ? JSON.stringify([materialScope.value, materialDelete.value.primaries]) : '');
+const materialReply = shallowRef<{key:string; scope:string; result:AdjustmentPreviewResult}>();
+const materialPreview = computed(() => {
+  const reply = materialReply.value;
+  return reply?.key === materialKey.value && 'preview' in reply.result ? reply.result.preview : null;
+});
+const materialSources = computed(() => {
+  const reply = materialReply.value;
+  return reply?.scope === materialScope.value && 'preview' in reply.result ? reply.result.preview.sources.filter(source => source.nextPrimary) : [];
+});
+const canDeleteMaterial = computed(() => !!materialPreview.value && recoveryChoicesComplete(materialSources.value, materialEdit.primaries));
 const materialImpact = computed(() => {
   const affected = workspace.value.groups.filter(item => item.occurrences.some(row => row.materialId === materialEdit.id));
   return { groups: affected.length, removed: affected.filter(item => item.occurrences.every(row => row.materialId === materialEdit.id)).length };
@@ -172,15 +192,14 @@ const importError = ref('');
 let pasteDraft = { title: '', text: '' };
 const groupDialog = ref<HTMLDialogElement>();
 const groupDialogKey = ref(0);
-const groupAction = ref<'merge' | 'delete' | 'remove'>('merge');
-const group = shallowRef<Group | null>(null);
-const groupRows = shallowRef<Occurrence[]>([]);
+const groupAction = ref<'merge' | 'delete'>('merge');
+const groupDialogId = ref('');
+const group = computed(() => workspace.value.groups.find(item => item.id === groupDialogId.value));
+const groupRows = computed(() => group.value?.occurrences ?? []);
 const aliasGroupId = ref('');
 const aliasGroup = computed(() => workspace.value.groups.find(item => item.id === aliasGroupId.value));
 const targetId = ref('');
 const groupError = ref('');
-const groupTerm = computed(() => groupRows.value[0]?.original || '');
-const groupCodes = computed(() => groupAction.value === 'remove' ? [...new Set(groupRows.value.map(row => row.replacement))].join(' · ') : group.value?.code);
 const mergeReferences = computed(() => group.value ? [group.value.primary, ...new Set(group.value.occurrences.map(row => row.original))] : []);
 const mergeTargets = computed(() => workspace.value.groups.filter(candidate => candidate.id !== group.value?.id));
 const mergeTarget = computed(() => mergeTargets.value.find(candidate => candidate.id === targetId.value));
@@ -396,17 +415,42 @@ function pasteInstead() {
 async function manageMaterial(action: typeof materialEdit.action, id: string) {
   const item = workspace.value.documents.find(doc => doc.id === id);
   if (!item || busy.value) return;
-  Object.assign(materialEdit, { action, id, title: item.title, error: '' });
+  Object.assign(materialEdit, {action, id, title:item.title, error:'', open:true, primaries:{}});
   materialDialog.value?.showModal();
 }
 
-async function applyMaterial() {
-  const { action, id, title } = materialEdit;
-  if (busy.value || !id) return;
+watch(materialKey, async key => {
+  const change = materialDelete.value;
+  if (!key || !change || materialReply.value?.key === key) return;
+  const scope = materialScope.value;
   materialEdit.error = '';
   try {
-    const result = await run(action === 'rename' ? { op: 'renameMaterial', materialId: id, title }
-      : { op: 'deleteMaterial', materialId: id });
+    const result = await api.engine({op:'previewAdjustment', change:changePayload(change)});
+    if (materialKey.value !== key) return;
+    materialReply.value = {key, scope, result};
+    if ('issue' in result) materialEdit.error = result.issue.message;
+  } catch (error) {
+    if (materialKey.value === key) materialEdit.error = prettyError(error);
+  }
+});
+
+async function applyMaterial() {
+  const { action, id, title } = materialEdit;
+  const change = materialDelete.value;
+  const preview = materialPreview.value;
+  if (busy.value || !id || (action === 'delete' && (!preview || !change || !canDeleteMaterial.value))) return;
+  materialEdit.error = '';
+  try {
+    const result = action === 'rename' ? await run({op:'renameMaterial', materialId:id, title})
+      : await run({op:'apply', change:changePayload(change!), expectedRevision:preview!.revision});
+    if ('issue' in result) {
+      materialEdit.error = result.issue.message;
+      if (result.issue.stalePreview) {
+        const current = await run({op:'view'});
+        adopt(current.view);
+      }
+      return;
+    }
     adopt(result.view, action !== 'rename');
     if (action !== 'rename') { draft.value = null; rangeFor.value = null; }
     if (action === 'delete') {
@@ -500,7 +544,7 @@ function makeDraft(mode: Adjustment['mode'], options: Partial<Adjustment> = {}) 
   draft.value = {
     mode, title: '新建映射', groupId: '', fixedTarget: false, type: quickItem.value?.type || 'person',
     code: '', query: '', scope: 'all', rows: [], searchKeys: new Set(), chosen: new Set(), primaries: {}, targetCodes: {}, keep: false,
-    edits: {}, primary: '', resolution: null,
+    edits: {}, resolution: null,
     error: '', issue: null, searched: false, ...options,
   };
   return draft.value;
@@ -514,7 +558,6 @@ function setOriginal(value: string) {
   edit.manual = {};
   active.edits = {};
   active.chosen.clear();
-  active.primary = '';
   active.error = '';
   active.issue = null;
 }
@@ -634,7 +677,6 @@ async function finishRange(id = rangeFor.value?.id) {
       delete active.originalEdit!.manual[key];
       delete active.edits[key];
     }
-    active.primary = '';
   } else {
     const active = makeDraft('create', { title: '重选原文位置', type: row.type, query: original });
     register(active, [entry], true);
@@ -744,7 +786,8 @@ async function applyDraft() {
   const active = draft.value;
   const change = draftChange.value;
   const shown = visibleImpact.value;
-  if (!active || !change || rangeFor.value || !shown || !('preview' in shown)) return;
+  if (!active || !change || rangeFor.value || !shown || !('preview' in shown) ||
+    !recoveryChoicesComplete(shown.preview.sources, active.primaries)) return;
   active.issue = null;
   active.error = '';
   const result = await commit(change, (message, issue) => { active.error = message; active.issue = issue || null; },
@@ -773,7 +816,7 @@ function editMapping(item: Group, origin?: Occurrence, rows = item.occurrences) 
     originalEdit: { base: value, value, origin, manual: {} } });
 }
 
-function openGroupAction(action: 'edit' | 'aliases' | 'merge' | 'delete' | 'remove', item: Group, rows = item.occurrences) {
+function openGroupAction(action: 'edit' | 'aliases' | 'merge' | 'delete', item: Group) {
   clearQuick();
   if (action === 'edit') {
     makeDraft('rename', {title:'修改代号', groupId:item.id, rows:item.occurrences, code:item.code.slice(1,-1)});
@@ -784,8 +827,7 @@ function openGroupAction(action: 'edit' | 'aliases' | 'merge' | 'delete' | 'remo
     aliasGroupId.value = item.id;
     return;
   }
-  group.value = item;
-  groupRows.value = rows;
+  groupDialogId.value = item.id;
   groupAction.value = action;
   groupDialogKey.value++;
   targetId.value = '';
@@ -797,7 +839,7 @@ function termAction(action: 'rebind' | 'removePositions' | 'edit' | 'primary', r
   if (!item) return;
   const term = rows[0]!;
   if (action === 'primary') {
-    void commit({ mode: 'primary', groupId: item.id, term });
+    makeDraft('primary', {title:'设置恢复原词', groupId:item.id, recoveryOriginal:term.original});
     return;
   }
   clearQuick();
@@ -822,10 +864,8 @@ async function applyGroup(keep = false) {
     groupDialog.value?.close();
     return;
   }
-  const change: Change = groupAction.value === 'remove'
-    ? { mode: keep ? 'keep' : 'review', positions: groupRows.value }
-    : { mode: groupAction.value, groupId: group.value.id, targetId: targetId.value, keep };
-  if (await commit(change, message => { groupError.value = message; })) groupDialog.value?.close();
+  const change: Change = {mode:'delete', groupId:group.value.id, keep};
+  if (await commit(change, message => { groupError.value = message; }, workspace.value.revision)) groupDialog.value?.close();
 }
 
 function chooseMergeTarget() {
@@ -1017,18 +1057,20 @@ function showEvidence(link: Evidence) {
     </form>
   </dialog>
 
-  <dialog ref="materialDialog" aria-labelledby="material-title" @cancel.prevent="!busy && materialDialog?.close()">
+  <dialog ref="materialDialog" aria-labelledby="material-title" @cancel.prevent="!busy && materialDialog?.close()" @close="materialEdit.open = false">
     <form class="dialog-form" @submit.prevent="applyMaterial">
       <div class="dialog-heading"><h2 id="material-title">{{ materialEdit.action === 'rename' ? '重命名材料' : '删除材料' }}</h2></div>
       <label v-if="materialEdit.action === 'rename'">材料名称<input v-model="materialEdit.title" :disabled="busy" autofocus></label>
       <template v-else>
         <p>删除「{{ materialEdit.title }}」会影响 {{ materialImpact.groups }} 组映射，其中 {{ materialImpact.removed }} 组在本材料中有全部位置。</p>
+        <RecoveryChoice v-for="source in materialSources" :key="source.id" :source="source" :value="materialEdit.primaries[source.id]"
+          :locked="busy" show-code @choose="materialEdit.primaries[source.id] = $event" />
         <p v-if="sourceDirty && sourceEdit?.id === materialEdit.id">该材料未应用的原文修改也会被丢弃。</p>
       </template>
       <p v-if="materialEdit.error" class="form-error" role="alert">{{ materialEdit.error }}</p>
       <div class="dialog-actions">
         <button type="button" class="button" :disabled="busy" @click="materialDialog?.close()">取消</button>
-        <button class="button primary" :disabled="busy || (materialEdit.action === 'rename' && !materialEdit.title.trim())">
+        <button class="button primary" :disabled="busy || (materialEdit.action === 'rename' ? !materialEdit.title.trim() : !canDeleteMaterial)">
           {{ materialEdit.action === 'rename' ? '保存名称' : '确认删除' }}
         </button>
       </div>
@@ -1038,20 +1080,16 @@ function showEvidence(link: Evidence) {
   <dialog ref="groupDialog" aria-labelledby="group-dialog-title" @cancel.prevent="!busy && groupDialog?.close()">
     <form v-if="group" class="dialog-form" @submit.prevent="applyGroup()">
       <div class="dialog-heading">
-        <h2 id="group-dialog-title">{{ {merge: '合并映射', delete: '删除映射', remove: '移除别称'}[groupAction] }}</h2>
+        <h2 id="group-dialog-title">{{ groupAction === 'merge' ? '合并映射' : '删除映射' }}</h2>
         <button type="button" class="button quiet small close-dialog" aria-label="关闭映射操作" :disabled="busy" @click="groupDialog?.close()">×</button>
       </div>
-      <div class="group-preview"><strong>{{ groupAction === 'remove' ? groupTerm : group.primary }}</strong> → {{ groupCodes }}<span>{{ groupImpact }}</span></div>
+      <div class="group-preview"><strong>{{ group.primary }}</strong> → {{ group.code }}<span>{{ groupImpact }}</span></div>
       <MappingTargetPicker v-if="groupAction === 'merge'" :key="groupDialogKey" v-model="targetId" :groups="mergeTargets"
         :references="mergeReferences" :disabled="busy" autofocus />
-      <div v-if="['delete','remove'].includes(groupAction)" class="disposition-preview">
-        <p v-if="groupAction === 'delete'" class="count">涉及 {{ new Set(groupRows.filter(row => row.original !== group?.primary).map(row => row.original)).size }} 个别称</p>
-        <p>转待核后，处理完这些位置即可输出相应材料。</p>
-      </div>
       <p v-if="groupError" class="form-error" role="alert">{{ groupError }}</p>
       <div class="dialog-actions">
         <button type="button" class="button" :disabled="busy" @click="groupDialog?.close()">取消</button>
-        <button v-if="['delete','remove'].includes(groupAction)" type="button" class="button" :disabled="busy" @click="applyGroup(true)">{{ groupRows.length }} 处保留原文</button>
+        <button v-if="groupAction === 'delete'" type="button" class="button" :disabled="busy" @click="applyGroup(true)">{{ groupRows.length }} 处保留原文</button>
         <button class="button primary" :disabled="busy || (groupAction === 'merge' && !mergeTarget)">
           {{ groupAction === 'merge' ? '查看合并' : `${groupRows.length} 处转待核` }}
         </button>
