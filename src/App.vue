@@ -11,7 +11,7 @@ import { useAnalysisQueue } from './analysis-queue';
 import RestoreWorkspace from './components/RestoreWorkspace.vue';
 import type { MappingScope, Preferences, SettingsSection, UpdateStatus } from '../engine/preferences';
 import { positionKey, prettyError, type Adjustment, type AdjustmentPreviewResult, type Evidence,
-  type Group, type Issue, type Occurrence, type RangeSuggestion, type SourceChange, type Span, type Term,
+  type Group, type Issue, type Occurrence, type RangeSuggestion, type Span, type Term,
   type SourceFile, type ViewOptions, type Workspace } from './model';
 import { indexText } from './positions';
 import type { EngineRequest } from '../electron/contract';
@@ -78,19 +78,6 @@ const suggestionsKey = computed(() => {
 const visibleSuggestions = computed(() => suggestionsKey.value && suggestionsKey.value === suggestionReply.value?.key
   ? suggestionReply.value : null);
 const picked = computed(() => draft.value?.rows.filter(row => draft.value!.chosen.has(positionKey(row))) || []);
-const coverage = computed(() => draft.value && ['create', 'bind', 'edit', 'merge'].includes(draft.value.mode));
-const sourceChanges = computed<SourceChange[]>(() => {
-  const active = draft.value;
-  if (active?.mode !== 'remove') return [];
-  return workspace.value.groups.flatMap(group => {
-    const moved = group.occurrences.filter(row => active.chosen.has(positionKey(row)));
-    if (!moved.length) return [];
-    const removed = new Set(moved);
-    const rest = group.occurrences.filter(row => !removed.has(row));
-    const terms = rest.some(row => row.original === group.primary) ? [] : [...new Map(rest.map(row => [row.original, row])).values()];
-    return [{ group, moved, rest, terms }];
-  });
-});
 const draftChange = computed<Change | null>(() => {
   const active = draft.value;
   if (!active) return null;
@@ -98,18 +85,18 @@ const draftChange = computed<Change | null>(() => {
   if (active.mode === 'merge') {
     return active.resolution?.targetId ? {mode: 'merge', groupId: active.groupId, targetId: active.resolution.targetId, targetCodes} : null;
   }
+  if (active.mode === 'rename') {
+    const code = active.code.trim();
+    const saved = workspace.value.groups.find(item => item.id === active.groupId)?.code;
+    return code && code !== saved && `【${code}】` !== saved ? {mode:'rename', groupId:active.groupId, code} : null;
+  }
   const primaries: Record<string, Term> = {};
   for (const [id, original] of Object.entries(active.primaries)) if (original) primaries[id] = {original};
   if (active.mode === 'edit') {
     const item = workspace.value.groups.find(group => group.id === active.groupId);
     const positions = Object.values(active.edits);
-    const wordChanged = active.originalEdit?.value !== active.originalEdit?.base;
-    const inputCode = active.code.trim();
-    const codeChanged = item?.code !== inputCode && item?.code !== `【${inputCode}】`;
-    if (!item || !inputCode || (wordChanged && !positions.length) || (!positions.length && !active.primary && !codeChanged)) return null;
-    const rebindPositions = !positions.length && codeChanged ? picked.value : [];
-    return { mode: 'editMapping', groupId: active.groupId, positions, code: active.code, primary: active.primary, primaries, targetCodes,
-      ...(rebindPositions.length ? { rebindPositions } : {}),
+    if (!item || !positions.length) return null;
+    return { mode: 'editMapping', groupId: active.groupId, positions, code: item.code, primary: active.primary, primaries, targetCodes,
       ...(active.resolution ? { resolution: { ...active.resolution } } : {}) };
   }
   if (!picked.value.length || (active.mode === 'bind' && !active.groupId)) return null;
@@ -121,7 +108,7 @@ const draftChange = computed<Change | null>(() => {
     ...(mode === 'bind' ? { groupId: active.groupId, ...(active.alias ? {alias: active.alias} : {}) } : {}),
   };
 });
-const previewKey = computed(() => coverage.value && draftChange.value
+const previewKey = computed(() => draftChange.value
   ? JSON.stringify([draftKey.value, workspace.value.revision, changePayload(draftChange.value)]) : '');
 const visibleImpact = computed(() => previewKey.value && previewKey.value === previewReply.value?.key
   ? previewReply.value.result : null);
@@ -154,8 +141,9 @@ const pendingOutput = computed(() => {
   if (impact && 'preview' in impact) return impact.preview.materials.some(doc => doc.materialId === id && doc.affectsOutput);
   if (picked.value.some(row => row.materialId === id)) return true;
   const change = draftChange.value;
-  if (!change || active.mode !== 'edit' && active.mode !== 'merge') return false;
-  return active.rows.some(row => row.materialId === id);
+  if (!change) return false;
+  if (active.mode === 'edit') return change.positions?.some(row => row.materialId === id) ?? false;
+  return (active.mode === 'rename' || active.mode === 'merge') && active.rows.some(row => row.materialId === id);
 });
 const canOutput = computed(() => !busy.value && ready.value && !sourceEdit.value && !pendingOutput.value);
 watch(transferScope, () => {
@@ -604,8 +592,7 @@ async function startRange() {
   const mapping = workspace.value.groups.find(group => group.id === item?.group);
   const origin = mapping?.occurrences.find(row => row.materialId === material.value?.id && row.itemId === id);
   if (!selection.value && mapping && origin) {
-    clearQuick();
-    editMapping(mapping, origin);
+    await chooseRange(origin);
     return;
   }
   if (!selection.value) {
@@ -757,7 +744,7 @@ async function applyDraft() {
   const active = draft.value;
   const change = draftChange.value;
   const shown = visibleImpact.value;
-  if (!active || !change || rangeFor.value || (coverage.value && (!shown || !('preview' in shown)))) return;
+  if (!active || !change || rangeFor.value || !shown || !('preview' in shown)) return;
   active.issue = null;
   active.error = '';
   const result = await commit(change, (message, issue) => { active.error = message; active.issue = issue || null; },
@@ -765,7 +752,7 @@ async function applyDraft() {
   if (result) {
     const destination = active.resolution?.targetId || active.groupId;
     draft.value = null;
-    if (destination && !aliasGroup.value) await review.value?.showGroup(destination);
+    if (!aliasGroup.value && workspace.value.groups.some(item => item.id === destination)) await review.value?.showGroup(destination);
   }
   else if (draft.value?.issue?.stalePreview) {
     const current = await run({ op: 'view' }).catch(() => null);
@@ -775,20 +762,23 @@ async function applyDraft() {
 function addAlias(alias?: AliasTarget) {
   const item = aliasGroup.value;
   if (!item) return;
-  makeDraft('bind', {title: alias ? '添加别称位置' : '添加别称', groupId: item.id, fixedTarget: true,
+  makeDraft('bind', {title: alias ? '添加位置' : '添加别称', groupId: item.id, fixedTarget: true,
     alias, query: alias?.original || ''});
   if (alias) void searchDraft();
 }
 
-function editMapping(item: Group, origin?: Occurrence) {
-  const value = origin?.original || item.primary;
-  return makeDraft('edit', { title: '修改映射', groupId: item.id, rows: item.occurrences, code: item.code.slice(1, -1),
+function editMapping(item: Group, origin?: Occurrence, rows = item.occurrences) {
+  const value = origin?.original || rows[0]?.original || item.primary;
+  return makeDraft('edit', { title: origin ? '修正这处标注' : '修正标注范围', groupId: item.id, rows,
     originalEdit: { base: value, value, origin, manual: {} } });
 }
 
 function openGroupAction(action: 'edit' | 'aliases' | 'merge' | 'delete' | 'remove', item: Group, rows = item.occurrences) {
   clearQuick();
-  if (action === 'edit') { editMapping(item); return; }
+  if (action === 'edit') {
+    makeDraft('rename', {title:'修改代号', groupId:item.id, rows:item.occurrences, code:item.code.slice(1,-1)});
+    return;
+  }
   if (action === 'aliases') {
     review.value?.selectGroup(item.id);
     aliasGroupId.value = item.id;
@@ -802,20 +792,21 @@ function openGroupAction(action: 'edit' | 'aliases' | 'merge' | 'delete' | 'remo
   groupError.value = '';
   void nextTick(() => groupDialog.value?.showModal());
 }
-function termAction(action: 'rebind' | 'removePositions' | 'remove' | 'primary', rows: Occurrence[]) {
+function termAction(action: 'rebind' | 'removePositions' | 'edit' | 'primary', rows: Occurrence[]) {
   const item = aliasGroup.value;
   if (!item) return;
   const term = rows[0]!;
-  if (action === 'remove') { openGroupAction(action, item, rows); return; }
   if (action === 'primary') {
     void commit({ mode: 'primary', groupId: item.id, term });
     return;
   }
   clearQuick();
+  if (action === 'edit') { editMapping(item, undefined, rows); return; }
+  const searchKeys = new Set(rows.map(positionKey));
   if (action === 'rebind') {
-    makeDraft('bind', {title: '改绑别称位置', rows, rebindAlias: term.original, targetOriginal: term.original});
+    makeDraft('bind', {title: '改绑位置', rows, searchKeys, rebindAlias: term.original, targetOriginal: term.original});
   } else {
-    makeDraft('remove', {title: '移出别称位置', groupId: item.id, rows});
+    makeDraft('remove', {title: '移出位置', groupId: item.id, rows, searchKeys});
   }
 }
 async function applyGroup(keep = false) {
@@ -951,7 +942,7 @@ function showEvidence(link: Evidence) {
                 <button class="button small" @mousedown.prevent @click="fromSelection('bind')">绑定到现有映射</button>
                 <button class="button small" @mousedown.prevent @click="fromSelection('create')">新建映射</button>
                 <button v-if="selection ? overlap.length === 1 : quickItem" class="button small" @mousedown.prevent @click="startRange">
-                  {{ (selection ? overlap[0]?.group : quickItem?.group) ? '修改映射' : '重选原文' }}
+                  {{ (selection ? overlap[0]?.group : quickItem?.group) ? '修正这处标注' : '重选原文' }}
                 </button>
                 <button v-if="quickItem" class="button small quiet" @mousedown.prevent @click="keepSelection">保留原文</button>
                 <button v-if="evidence" class="button small quiet" @mousedown.prevent @click="showEvidence(evidence)">查看关联依据</button>
@@ -961,7 +952,7 @@ function showEvidence(link: Evidence) {
           </DocumentReader>
           <AdjustmentPanel v-if="draft" :key="draftKey" :draft="draft" :groups="workspace.groups" :material-id="material.id"
             :selected="selected" :locked="busy" :previewing="previewing || suggesting" :impact="visibleImpact"
-            :preview-sources="previewSources" :source-changes="sourceChanges" :target-code-choices="targetCodeChoices"
+            :preview-sources="previewSources" :target-code-choices="targetCodeChoices"
             :merge-prompt="mergePrompt" :range-for="rangeFor"
             :suggestions="visibleSuggestions" @original="setOriginal"
             @cancel="draft = null; rangeFor = null; clearQuick()" @search="searchDraft" @jump="jump($event, true)" @reselect="chooseRange"

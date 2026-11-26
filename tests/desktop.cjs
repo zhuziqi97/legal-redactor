@@ -168,10 +168,10 @@ test('无模型时可应用偏好，重启可读，更新提醒可打开更新�
 
 async function renameMapping(page, previous, next) {
   const mapping = page.locator('.mapping').filter({has: channel(page, `张甲 → 【${previous}】`)});
-  await channel(mapping, '修改映射').click();
+  await channel(mapping, '修改代号').click();
   const adjustment = page.getByRole('region', {name: '调整清单'});
   await adjustment.getByLabel('代号').fill(next);
-  await channel(adjustment, '应用修改').click();
+  await channel(adjustment, '确认改代号').click();
   await output(page).getByText(`【${next}】`, {exact: true}).waitFor();
 }
 
@@ -344,13 +344,32 @@ test('通过映射菜单管理别称，跨材料补位置沿用实际代号', as
   assert.equal(await positions.getByRole('button', {name:'小宁的别称操作'}).count(), 0);
 
   await channel(mapping, '张甲的映射操作').click();
-  await channel(mapping, '管理别称').click();
-  const aliases = page.getByRole('region', {name:'管理别称'});
-  const term = aliases.locator('.alias-entry');
+  await channel(mapping, '管理原词与别称').click();
+  const aliases = page.getByRole('region', {name:'管理原词与别称'});
+  const entries = aliases.locator('.alias-entry');
+  const term = entries.filter({has:channel(page, '小宁的位置操作')});
+  const primary = entries.filter({has:channel(page, '张甲的位置操作')});
+  await primary.getByText(/恢复原词/u).waitFor();
+  await channel(primary, '张甲的位置操作').click();
+  await channel(primary, '修正标注范围').click();
+  const adjustment = page.getByRole('region', {name:'调整清单'});
+  await adjustment.getByRole('heading', {name:'修正标注范围'}).waitFor();
+  assert.equal(await adjustment.getByLabel('代号', {exact:true}).count(), 0);
+  await channel(adjustment, '取消').click();
   const aliasButton = term.getByRole('button', {name:/小宁.*曾用名1.*1 处/});
   await aliasButton.click();
-  await aliases.getByRole('region', {name:'别称位置'}).getByText(/合成笔录/u).waitFor();
-  await channel(term, '小宁的别称操作').click();
+  await page.keyboard.press('Tab');
+  await aliasButton.focus();
+  assert.deepEqual(await aliasButton.evaluate(button => {
+    const row = button.closest('.alias-entry');
+    const list = row.parentElement;
+    const outer = list.getBoundingClientRect();
+    const inner = row.getBoundingClientRect();
+    return {sameInset:Math.abs(inner.left - outer.left - (outer.right - inner.right)) < 1,
+      rowFocus:getComputedStyle(row).boxShadow !== 'none', innerFocus:getComputedStyle(button).outlineStyle};
+  }), {sameInset:true, rowFocus:true, innerFocus:'none'});
+  await aliases.getByRole('region', {name:'原词位置'}).getByText(/合成笔录/u).waitFor();
+  await channel(term, '小宁的位置操作').click();
   await channel(term, '添加位置').click();
   const adjust = page.getByRole('region', {name:'调整清单'});
   await adjust.getByRole('checkbox', {name:/选择合成补录.*小宁/u}).check();
@@ -367,15 +386,17 @@ test('通过映射菜单管理别称，跨材料补位置沿用实际代号', as
   await output(page).getByText('【张某-曾用名1】', {exact:true}).waitFor();
   assert.equal(await channel(page, '导出 TXT').isEnabled(), true);
 
-  await channel(term, '小宁的别称操作').click();
+  await channel(term, '小宁的位置操作').click();
   await channel(term, '改绑位置').click();
   await channel(adjust, '赵敏 → 【赵某】 1 处').click();
   await adjust.getByRole('checkbox', {name:/选择合成补录.*小宁/u}).check();
   await channel(adjust, '改绑所选 1 处').click();
   await term.getByText('1 处', {exact:true}).waitFor();
   await output(page).getByText('【赵某-曾用名1】', {exact:true}).waitFor();
-  await channel(term, '小宁的别称操作').click();
-  await channel(term, '移除别称').click();
-  await channel(role(page, '移除别称'), '1 处转待核').click();
-  await aliases.getByText('暂无别称', {exact:true}).waitFor();
+  await channel(term, '小宁的位置操作').click();
+  await channel(term, '移出位置').click();
+  await adjust.getByRole('checkbox', {name:'全选本次结果'}).check();
+  await channel(adjust, '移出所选 1 处').click();
+  await primary.waitFor();
+  assert.equal(await term.count(), 0);
 });

@@ -111,9 +111,9 @@ defineExpose({ selectGroup, reveal, showGroup });
           </button>
           <div class="mapping-actions">
             <span v-if="count === group.occurrences.length" class="mapping-count">{{ count }} 处</span>
-            <button class="button small quiet rename-button" :disabled="locked" @click="emit('group', 'edit', group)">修改映射</button>
+            <button class="button small quiet rename-button" :disabled="locked" @click="emit('group', 'edit', group)">修改代号</button>
             <MappingMenu :label="`${group.primary}的映射操作`" :disabled="locked">
-              <button @click="emit('group', 'aliases', group)">管理别称</button>
+              <button @click="emit('group', 'aliases', group)">管理原词与别称</button>
               <button v-if="groups.length > 1" @click="emit('group', 'merge', group)">合并到其他映射</button>
               <button class="danger" @click="emit('group', 'delete', group)">删除映射</button>
             </MappingMenu>

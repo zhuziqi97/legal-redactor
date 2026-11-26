@@ -766,7 +766,8 @@ function editMapping(state: Workspace, group: Group, change: Change, used: Set<s
 
   const destination = reason && validTarget ? findGroup(state, targetId) : group;
   if (destination === group && code !== group.code) {
-    renameMapping(state, group, code, used);
+    const renamed = renameMapping(state, group, code, used);
+    if ('issue' in renamed) return renamed;
     used = occupied(state);
   }
   let editedPrimary: string | undefined;
@@ -774,11 +775,19 @@ function editMapping(state: Workspace, group: Group, change: Change, used: Set<s
   if (positions.length) {
     const resolved = resolveCoverage(state, positions, group.type);
     if ('issue' in resolved) return resolved;
+    const retainedCodes = new Set<string>();
     for (const [index, [, row]] of resolved.entries()) {
-      if (originals[index]!.original === group.primary && editedPrimary == null) editedPrimary = row.original;
+      const original = originals[index]!;
+      if (original.original === group.primary && editedPrimary == null) editedPrimary = row.original;
+      if (destination === group) {
+        const code = original.replacement;
+        if (row.match && !compatible(row.match[0], group.type)) delete row.match;
+        manual(row, group, code, 'replace', original.aliasType);
+        retainedCodes.add(code);
+      }
     }
-    const issue = moveMembers(state, resolved, destination, used,
-      destination !== group ? {targetCodes:change.targetCodes ?? {}} : {});
+    const issue = destination === group ? literalIssue(state, retainedCodes)
+      : moveMembers(state, resolved, destination, used, {targetCodes:change.targetCodes ?? {}});
     if (issue) return issue;
     const [doc, row] = resolved.at(-1)!;
     focus = occurrence(doc, row);
@@ -797,20 +806,26 @@ function editMapping(state: Workspace, group: Group, change: Change, used: Set<s
     primaries: {...change.primaries, ...(primary ? {[group.id]: {original: primary}} : {})}};
 }
 
-function renameMapping(state: Workspace, group: Group, code: string, used: Set<string>) {
-  if (code === group.code) return {};
+function renameMapping(state: Workspace, group: Group, code: string, used: Set<string>): AdjustmentResult {
+  if (code === group.code) return {groupId:group.id};
   const affected = [...members(state, group.id)];
   const oldCodes = new Set(affected.map(([, row]) => row.replacement));
   const literals = new Set(state.materials.flatMap(doc => literalCodes(doc.text)));
   const current = new Set([...oldCodes].filter(value => !literals.has(value)));
   const replacements = new Map([...oldCodes].map(old => [old, old === group.code
     ? code : code.slice(0, -1) + slice(old, length(group.code) - 1)]));
-  if (used.has(code) || [...replacements.values()].some(value => used.has(value) && !current.has(value))) {
-    throw new Error('这个代号或其别称代号已在使用，请另选代号。');
+  const collisions = new Set([code, ...replacements.values()].filter(value => used.has(value) && (value === code || !current.has(value))));
+  if (collisions.size) {
+    const literal = literalIssue(state, collisions);
+    if (literal) return literal;
+    const positions = state.materials.flatMap(doc => (doc.decisions ?? [])
+      .filter(row => row.action === 'replace' && collisions.has(row.replacement))
+      .map(row => occurrence(doc, row)));
+    return {issue: {message: '这个代号或其别称代号已在使用，请另选代号。', positions}};
   }
   for (const [, row] of affected) updateCode(row, replacements.get(row.replacement)!);
   group.code = code;
-  return {changed: true};
+  return {changed: true, groupId:group.id};
 }
 
 function apply(state: Workspace, change: Change, newId: NewId, cover: boolean): AdjustmentResult {
@@ -981,7 +996,7 @@ function adjustmentImpact(doc: Material, before: ReturnType<typeof viewMaterial>
     restoredCount: restored.length};
 }
 
-function sourceImpacts(before: Workspace, after: Workspace, destination: string) {
+function sourceImpacts(before: Workspace, after: Workspace, destination?: string) {
   function originals(state: Workspace) {
     const grouped = new Map<string, string[]>();
     for (const doc of state.materials) {
@@ -1018,9 +1033,10 @@ function previewAdjustment(state: Workspace, change: Change, newId: NewId) {
     const impact = adjustmentImpact(doc, viewMaterial(doc), viewMaterial(proposed));
     return impact.changes.length ? [impact] : [];
   });
-  const group = findGroup(trial, result.groupId || result.focus?.group || undefined);
-  return {preview: {revision: state.revision, code: result.code ?? group.code, materials, primary: group.primary,
-    sources: sourceImpacts(state, trial, group.id)}};
+  const id = result.groupId || result.focus?.group;
+  const group = id ? trial.groups[id] : undefined;
+  return {preview: {revision: state.revision, code: result.code ?? group?.code ?? '', materials, primary: group?.primary ?? '',
+    sources: sourceImpacts(state, trial, group?.id)}};
 }
 
 export type WorkspaceView = ReturnType<typeof workspaceView>;

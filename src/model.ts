@@ -23,7 +23,6 @@ export type AdjustmentPreviewResult = { preview: AdjustmentPreview } | { issue: 
 export type RangeCandidate = { position: Occurrence; clear: boolean; overlap: boolean };
 export type RangeSuggestion = { original: Occurrence; candidates: RangeCandidate[] };
 export type OriginalEdit = { base: string; value: string; origin?: Occurrence; manual: Record<string, Occurrence> };
-export type SourceChange = { group: Group; moved: Occurrence[]; rest: Occurrence[]; terms: Occurrence[] };
 declare global { interface Window { redaction: RedactionAPI } }
 
 export function categoryColor(kind: string) {
@@ -44,7 +43,7 @@ export function prettyError(error: unknown) {
 }
 
 export type Adjustment = {
-  mode: 'create' | 'bind' | 'remove' | 'edit' | 'merge';
+  mode: 'create' | 'bind' | 'remove' | 'edit' | 'rename' | 'merge';
   title: string;
   groupId: string;
   fixedTarget: boolean;
