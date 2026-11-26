@@ -20,10 +20,10 @@ LegalRedactor 用于在共享或进一步处理法律文档前，识别和替换
 ```sh
 npm ci
 npm run build
-npm exec --yes --package=electron@44.11.2 -- electron .
+npm start
 ```
 
-使用 `npm test` 运行测试。
+使用 `npm test` 运行测试。Windows 或 Linux 本地开发需要 GPU 探测时，安装 Visual Studio C++ 构建工具或 Linux Vulkan 开发头文件后运行 `npm run build:probe`。
 
 ## 反馈
 

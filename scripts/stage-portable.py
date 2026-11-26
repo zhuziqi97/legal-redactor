@@ -10,8 +10,9 @@ import sys
 from tempfile import TemporaryDirectory
 from zipfile import ZipFile
 
+from release_targets import TARGETS, package_name
+
 PROJECT = Path(__file__).resolve().parents[1]
-PLATFORMS = {"linux": ("linux", "x64", "gnu"), "windows": ("win32", "x64", "msvc"), "macos": ("darwin", "arm64", "")}
 PRODUCT_NAME = "法律文档脱敏工具"
 
 
@@ -84,8 +85,9 @@ def stage_docx_dependencies(app):
 
 def stage(target, inputs, staging, model, windows_crt, windows_rcedit):
     metadata = json.loads((PROJECT / "package.json").read_text(encoding="utf-8"))
-    platform, arch, token_abi = PLATFORMS[target]
-    folder = staging / f"LegalRedactor-{metadata['version']}-{target}-{arch}"
+    spec = TARGETS[target]
+    platform, arch, token_abi = spec["electron"], spec["arch"], spec["token_abi"]
+    folder = staging / package_name(metadata["version"], target)
     folder.mkdir(parents=True)
     electron_zip = inputs / f"electron-{target}.zip"
     if target == "macos":
@@ -155,7 +157,7 @@ def stage(target, inputs, staging, model, windows_crt, windows_rcedit):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("target", choices=PLATFORMS)
+    parser.add_argument("target", choices=TARGETS)
     parser.add_argument("--inputs", required=True, type=Path)
     parser.add_argument("--staging", required=True, type=Path)
     parser.add_argument("--model", required=True, type=Path)

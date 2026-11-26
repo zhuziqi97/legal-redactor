@@ -22,9 +22,6 @@ concurrency:
   group: package-${{ github.ref }}
   cancel-in-progress: false
 
-env:
-  ELECTRON_VERSION: '44.11.2'
-
 defaults:
   run:
     shell: bash
@@ -62,16 +59,11 @@ jobs:
         id: targets
         env:
           BUILD_MACOS: ${{ inputs.build_macos }}
+          VERSION: ${{ steps.version.outputs.value }}
         run: |
           set -euo pipefail
-          targets='[
-            {"target":"windows","electron":"win32","arch":"x64","runner":"windows-2022","extension":"zip"},
-            {"target":"linux","electron":"linux","arch":"x64","runner":"ubuntu-24.04","extension":"tar.gz"}
-          ]'
-          if [[ "$BUILD_MACOS" == true ]]; then
-            targets=$(jq -c '. + [{"target":"macos","electron":"darwin","arch":"arm64","runner":"macos-15","extension":"zip"}]' <<< "$targets")
-          fi
-          echo "matrix=$(jq -c . <<< "$targets")" >> "$GITHUB_OUTPUT"
+          matrix=$(python3 scripts/release_targets.py "$VERSION" "$BUILD_MACOS")
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
@@ -106,6 +98,8 @@ jobs:
       TARGET: ${{ matrix.target }}
       ARCH: ${{ matrix.arch }}
       ELECTRON_PLATFORM: ${{ matrix.electron }}
+      PACKAGE_DIRECTORY: ${{ matrix.directory }}
+      PACKAGE_ARCHIVE: ${{ matrix.archive }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -119,12 +113,13 @@ jobs:
           python-version: '3.12'
       - run: npm ci
       - run: npm test
-      - name: Build Linux GPU probe
+      - name: Install Linux GPU probe headers
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y libvulkan-dev
-          cc -O2 -std=c11 native/inference-probe-linux.c -ldl -o build/inference-probe
+      - run: npm run build:probe
+        if: runner.os != 'macOS'
       - uses: actions/download-artifact@v8
         with:
           name: release-model
@@ -134,6 +129,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p release-inputs
+          ELECTRON_VERSION=$(node -p "require('electron/package.json').version")
           gh release download "v$ELECTRON_VERSION" -R electron/electron \
             --pattern "electron-v$ELECTRON_VERSION-$ELECTRON_PLATFORM-$ARCH.zip" \
             --output "release-inputs/electron-$TARGET.zip"
@@ -145,10 +141,6 @@ jobs:
         run: |
           $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
           $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-          $vcvars = Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
-          cmd /d /c ('call "{0}" && cl /nologo /std:c++17 /EHsc /O2 /MT /Fo:build\inference-probe.obj /Fe:build\inference-probe.exe native\inference-probe-windows.cpp dxgi.lib d3d12.lib user32.lib' -f $vcvars)
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          Remove-Item build/inference-probe.obj
           $crt = Get-ChildItem -Path (Join-Path $vs 'VC\Redist\MSVC') -Directory -Filter '14.*' |
             Sort-Object { [version]$_.Name } -Descending |
             ForEach-Object { Join-Path $_.FullName 'x64\Microsoft.VC143.CRT' } |
@@ -169,12 +161,12 @@ jobs:
             args+=(--windows-crt release-inputs/crt --windows-rcedit release-inputs/rcedit-x64.exe)
           fi
           python scripts/stage-portable.py "${args[@]}"
-          name="LegalRedactor-$VERSION-$TARGET-$ARCH"
+          name="$PACKAGE_DIRECTORY"
           mkdir -p release check
           case "$TARGET" in
             linux)
-              tar -cf - -C staging "$name" | gzip -1 > "release/$name.tar.gz"
-              tar -xf "release/$name.tar.gz" -C check
+              tar -cf - -C staging "$name" | gzip -1 > "release/$PACKAGE_ARCHIVE"
+              tar -xf "release/$PACKAGE_ARCHIVE" -C check
               xvfb-run -a node scripts/check-release.cjs "check/$name/legal-redactor" "$VERSION"
               ;;
             windows)
@@ -182,15 +174,15 @@ jobs:
               node scripts/check-release.cjs "check/$name/LegalRedactor.exe" "$VERSION"
               ;;
             macos)
-              ditto -c -k --sequesterRsrc --keepParent "staging/$name" "release/$name.zip"
-              ditto -x -k "release/$name.zip" check
+              ditto -c -k --sequesterRsrc --keepParent "staging/$name" "release/$PACKAGE_ARCHIVE"
+              ditto -x -k "release/$PACKAGE_ARCHIVE" check
               node scripts/check-release.cjs "check/$name/LegalRedactor.app/Contents/MacOS/LegalRedactor" "$VERSION"
               ;;
           esac
       - uses: actions/upload-artifact@v7
         with:
           name: portable-${{ matrix.target }}-${{ matrix.arch }}
-          path: release/LegalRedactor-${{ needs.model.outputs.version }}-${{ matrix.target }}-${{ matrix.arch }}.${{ matrix.extension }}
+          path: release/${{ matrix.archive }}
           if-no-files-found: error
           compression-level: 0
           retention-days: 3
@@ -224,7 +216,7 @@ jobs:
         run: |
           set -euo pipefail
           tag="v$VERSION"
-          paths=$(jq -er --arg version "$VERSION" '.[] | "release/LegalRedactor-\($version)-\(.target)-\(.arch).\(.extension)"' <<< "$PACKAGE_TARGETS")
+          paths=$(jq -er '.[] | "release/\(.archive)"' <<< "$PACKAGE_TARGETS")
           mapfile -t files <<< "$paths"
           for file in "${files[@]}"; do test -s "$file"; done
           refs=$(git ls-remote origin "refs/tags/$tag" "refs/tags/$tag^{}")

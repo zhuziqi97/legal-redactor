@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
@@ -9,7 +10,8 @@ if (!existsSync(new URL('dist/index.html', application)) || !existsSync(new URL(
 }
 const environment = { ...process.env };
 delete environment.ELECTRON_RUN_AS_NODE;
-const electron = spawn(process.env.ELECTRON_BIN || 'electron', [fileURLToPath(application)], {
+const executable = process.env.ELECTRON_BIN || createRequire(import.meta.url)('electron');
+const electron = spawn(executable, [fileURLToPath(application)], {
   stdio: 'inherit', env: environment,
 });
 electron.on('error', () => {

@@ -64,7 +64,7 @@ async function open(t, {provider = 'auto', model = true, mode = 'ok', profile} =
   if (model) env.REDACTOR_ONNX_DIR = join(temp, 'model');
   else delete env.REDACTOR_ONNX_DIR;
   const app = await _electron.launch({
-    executablePath: process.env.ELECTRON_BIN || require('electron'), args: [fixture], env, timeout: 30000,
+    executablePath: process.env.ELECTRON_BIN || require('electron'), args: process.platform === 'linux' ? [fixture, '--no-sandbox'] : [fixture], env, timeout: 30000,
   });
   const close = () => app.evaluate(({app}) => app.exit(0)).catch(() => {});
   t.after(close);
