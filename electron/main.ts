@@ -5,6 +5,7 @@ const { app, BrowserWindow, Menu, clipboard, dialog, ipcMain, utilityProcess } =
 const { existsSync, mkdirSync, readFileSync, writeFileSync } = require('node:fs');
 const { appendFile, readFile, writeFile, realpath, mkdtemp, rename, rm, stat } = require('node:fs/promises');
 const { decodeInput } = require('./text-input.cjs');
+const { readWordInput } = require('./word-input.cjs');
 const { findOriginal } = require('./text-engine.cjs');
 const { projectProtection, readProject, writeProject } = require('./project-file.cjs');
 const { basename, dirname, extname, join, resolve } = require('node:path');
@@ -465,24 +466,47 @@ function decodeImport(session: Session, restoring: boolean, encoding?: 'gb18030'
 
 ipcMain.handle('redaction:open', async (event, mode = 'redact') => {
   const owner = BrowserWindow.fromWebContents(event.sender);
+  const restoring = mode === 'restore';
   const choice = await dialog.showOpenDialog(owner, {
-    title: '打开 TXT', properties: ['openFile'], filters: [{ name: '纯文本', extensions: ['txt'] }],
+    title: restoring ? '打开 TXT' : '打开材料', properties: ['openFile'],
+    filters: restoring ? [{ name: '纯文本', extensions: ['txt'] }]
+      : [{ name: '文本和 Word 文档', extensions: ['txt', 'docx'] }],
   });
   if (choice.canceled) return null;
   const [path] = choice.filePaths;
   const session = windowSession(event.sender);
-  const restoring = mode === 'restore';
   const slot = restoring ? 'restoreInput' : 'importInput';
   session[slot] = undefined;
+  const extension = extname(path);
+  const suffix = extension.toLowerCase();
+  const isWord = !restoring && suffix === '.docx';
+  if (!restoring && suffix === '.doc') throw new Error('请先将 DOC 文件另存为 DOCX，再导入。');
+  if (!isWord && suffix !== '.txt') throw new Error(restoring ? '请选择 TXT 文件。' : '请选择 TXT 或 DOCX 文件。');
+  const format = isWord ? 'DOCX' : 'TXT';
   const started = performance.now();
   let bytes, sourcePath;
   try {
     [bytes, sourcePath] = await Promise.all([readFile(path), realpath(path)]);
   } catch {
     diagnose({stage: 'import', status: 'read-error', readMs: performance.now() - started});
-    throw new Error('读取 TXT 文件失败。请检查文件仍可访问，再打开一次。');
+    throw new Error(`读取 ${format} 文件失败。请检查文件仍可访问，再打开一次。`);
   }
-  session[slot] = { path: sourcePath, title: basename(path, extname(path)), bytes, readMs: performance.now() - started };
+  const title = basename(path, extension);
+  const readMs = performance.now() - started;
+  if (isWord) {
+    const extraction = performance.now();
+    try {
+      const text = await readWordInput(bytes);
+      diagnose({ stage: 'import', format, bytes: bytes.length, readMs, decodeMs: performance.now() - extraction,
+        characters: Array.from(text).length });
+      return { path: sourcePath, title, text, encoding: format };
+    } catch (error) {
+      diagnose({ stage: 'import', format, status: 'decode-error', bytes: bytes.length, readMs,
+        decodeMs: performance.now() - extraction });
+      throw error;
+    }
+  }
+  session[slot] = { path: sourcePath, title, bytes, readMs };
   return decodeImport(session, restoring);
 });
 ipcMain.handle('redaction:decode-gb18030', (event, mode = 'redact') => decodeImport(windowSession(event.sender), mode === 'restore', 'gb18030'));

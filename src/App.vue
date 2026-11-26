@@ -1122,7 +1122,7 @@ function showEvidence(link: Evidence) {
           <div class="empty-icon" aria-hidden="true"><svg width="27" height="27" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6M8 13h8M8 17h6"/></svg></div>
           <h2>添加文本材料</h2>
           <div class="toolbar">
-            <button class="button primary" :disabled="busy" @click="showImport">打开 TXT 或粘贴文本</button>
+            <button class="button primary" :disabled="busy" @click="showImport">打开文件或粘贴文本</button>
             <button class="button" :disabled="busy || projectBusy" @click="projectAction('open')">打开项目</button>
           </div>
         </div>
@@ -1254,7 +1254,7 @@ function showEvidence(link: Evidence) {
       <label>材料名称<input v-model="input.title" :disabled="busy" placeholder="可选"></label>
       <div class="import-source">
         <span class="count">{{ openingImport ? '正在打开文件…' : input.path ? `已读取 ${input.encoding.toUpperCase()}` : '原文' }}</span>
-        <button type="button" class="button small" :disabled="busy" @click="pickFile">打开 TXT</button>
+        <button type="button" class="button small" :disabled="busy" @click="pickFile">打开 TXT 或 DOCX</button>
       </div>
       <div v-if="importEncodingTitle" class="import-source">
         <span class="count">「{{ importEncodingTitle }}」需要选择编码</span>

@@ -61,6 +61,27 @@ def stage_mac_bundle(archive, folder, version):
     return bundle, resources
 
 
+def stage_docx_dependencies(app):
+    packages = json.loads((PROJECT / "package-lock.json").read_text(encoding="utf-8"))["packages"]
+    pending = [Path("node_modules", name) for name in ("mammoth", "parse5")]
+    copied = set()
+    while pending:
+        package = pending.pop()
+        if package in copied:
+            continue
+        copied.add(package)
+        shutil.copytree(PROJECT / package, app / package,
+                        ignore=shutil.ignore_patterns("node_modules"), dirs_exist_ok=True)
+        for name in packages[package.as_posix()].get("dependencies", {}):
+            for parent in (package, *package.parents):
+                candidate = parent / "node_modules" / name
+                if candidate.as_posix() in packages:
+                    pending.append(candidate)
+                    break
+            else:
+                raise ValueError(f"{package} has an unlocked dependency: {name}")
+
+
 def stage(target, inputs, staging, model, windows_crt, windows_rcedit):
     metadata = json.loads((PROJECT / "package.json").read_text(encoding="utf-8"))
     platform, arch, token_abi = PLATFORMS[target]
@@ -102,6 +123,7 @@ def stage(target, inputs, staging, model, windows_crt, windows_rcedit):
     token_bin = f"tokenizers.{token_suffix}.node"
     shutil.copytree(native / "tokenizers", node_modules / "tokenizers",
                     ignore=lambda _, children: {name for name in children if name.endswith(".node") and name != token_bin})
+    stage_docx_dependencies(app)
     if target == "windows":
         for dll in ("msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll"):
             shutil.copy2(windows_crt / dll, folder)
@@ -119,8 +141,8 @@ def stage(target, inputs, staging, model, windows_crt, windows_rcedit):
     instructions = (
         f"{PRODUCT_NAME} {metadata['version']} · {target.capitalize()} {arch}\n\n"
         f"先解压整个目录，然后打开 {executable}。请保留同目录的资源文件。\n"
-        "左侧点「添加材料」，可以导入 UTF-8 或带 BOM 的 UTF-16 TXT，也可以粘贴文本。\n"
-        "必要时可选择简体中文（GB18030）重读。首次识别需要加载本地模型。\n"
+        "左侧点「添加材料」，可以打开 TXT 或 Word（DOCX），也可以粘贴文本。\n"
+        "TXT 需要选择编码时，可用简体中文（GB18030）重读。首次识别需要加载本地模型。\n"
         "包内带有脱敏引擎、CPU ONNX Runtime 和 Otter 模型，可离线工作。\n"
         "推理设置显示本发行包的 ONNX Runtime 后端。GPU 后端需要兼容设备和本机驱动。\n"
         "通过「文件」菜单保存或打开项目，可继续复核。对外可导出脱敏 TXT。\n\n"

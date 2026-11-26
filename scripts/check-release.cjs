@@ -3,6 +3,7 @@ const {mkdtemp, readFile, rm, writeFile} = require('node:fs/promises');
 const {tmpdir} = require('node:os');
 const {join, resolve} = require('node:path');
 const {_electron} = require('playwright');
+const {makeDocx} = require('../tests/docx-fixture.cjs');
 
 async function main(executable, version) {
   const profile = await mkdtemp(join(tmpdir(), 'legal-redactor-release-'));
@@ -23,13 +24,19 @@ async function main(executable, version) {
     page.setDefaultTimeout(90000);
     const pageErrors = [];
     page.on('pageerror', error => pageErrors.push(error.message));
+    const sourcePath = join(profile, '离线测试.docx');
+    const sourceText = '姓名：\n张甲\n联系电话：13800138000\n业务流水号：2031021800004271\n'
+      + '统一社会信用代码：91000000MA0REDAC1X\n备注：材料已核对。';
+    await writeFile(sourcePath, await makeDocx(sourceText.split('\n')
+      .map(line => `<w:p><w:r><w:t>${line}</w:t></w:r></w:p>`).join('')));
+    await desktop.evaluate(({dialog}, path) => {
+      dialog.showOpenDialog = async () => ({canceled:false, filePaths:[path]});
+    }, sourcePath);
     await page.getByRole('button', {name:'添加材料', exact:true}).click();
     const input = page.getByRole('dialog', {name:'添加材料', exact:true});
-    await input.getByLabel('材料名称').fill('离线测试');
-    await input.getByLabel('材料原文').fill(
-      '姓名：\n张甲\n联系电话：13800138000\n业务流水号：2031021800004271\n'
-      + '统一社会信用代码：91000000MA0REDAC1X\n备注：材料已核对。',
-    );
+    await input.getByRole('button', {name:'打开 TXT 或 DOCX', exact:true}).click();
+    await input.getByText('已读取 DOCX', {exact:true}).waitFor();
+    assert.equal(await input.getByLabel('材料原文').inputValue(), sourceText);
     await input.getByRole('button', {name:'添加并识别', exact:true}).click();
 
     const exportPath = join(profile, '脱敏.txt');
@@ -47,7 +54,7 @@ async function main(executable, version) {
     const diagnostics = (await readFile(join(profile, 'diagnostics.jsonl'), 'utf8')).trim().split('\n').map(JSON.parse);
     assert.ok(diagnostics.some(row => row.stage === 'analysis' && row.native && row.evaluated > 0));
     assert.deepEqual(pageErrors, []);
-    console.log(`LegalRedactor ${version} · ${process.platform} ${process.arch} · bundled CPU inference and actual TXT export passed.`);
+    console.log(`LegalRedactor ${version} · ${process.platform} ${process.arch} · DOCX import, bundled CPU inference and actual TXT export passed.`);
   } catch (error) {
     const page = desktop?.windows()[0];
     if (page) console.error(await page.locator('#redact-panel').getByRole('status').allTextContents().catch(() => []));

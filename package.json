@@ -11,11 +11,13 @@
     "typecheck": "vue-tsc --noEmit",
     "build": "npm run typecheck && vite build --base=./ && tsc -p tsconfig.engine.json && node scripts/build-electron.mjs",
     "start": "node scripts/start.mjs",
-    "test": "npm run build && node tests/inference-routing.cjs && node --test tests/recognition.mjs tests/mapping-plan.mjs tests/project-file.mjs tests/restore-text.mjs"
+    "test": "npm run build && node tests/inference-routing.cjs && node --test tests/recognition.mjs tests/mapping-plan.mjs tests/project-file.mjs tests/restore-text.mjs tests/docx-input.mjs"
   },
   "dependencies": {
     "@zip.js/zip.js": "2.25.0",
+    "mammoth": "1.13.0",
     "onnxruntime-node": "1.31.1",
+    "parse5": "7.3.0",
     "tokenizers": "0.23.2",
     "vue": "^3.5.24"
   },
