@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {runWorkspace} from '../build/engine/workspace.js';
+import fixture from './mapping-fixture.cjs';
 
-function workspace() {
-  let state = {materials: [], groups: {}, activeId: null, undo: null, revision: 0};
+function workspace(initial) {
+  let state = initial ?? {materials: [], groups: {}, activeId: null, undo: null, revision: 0};
   const run = async (request, scan) => {
     const response = await runWorkspace(structuredClone(state), request, scan);
     if (response.state) state = response.state;
@@ -62,12 +63,77 @@ test('地名与机构、不同完整号码、派生代号和字面标记各自�
   assert.equal(literal.positions[0].original, '【已有标记】');
   const address = view.groups.find(group => group.type === 'address');
   const company = view.groups.find(group => group.type === 'organization');
-  assert.deepEqual((await w.preview(w.edit(address, company.code))).issue.merge.options, []);
+  assert.deepEqual((await w.preview(w.edit(address, company.code))).issue.merge.options,
+    [{groupId:company.id, whole:true, selected:false}]);
   const numbers = view.groups.filter(group => group.type === 'mobile');
   assert.equal(numbers.length, 2);
   const numberMerge = (await w.preview(w.edit(numbers[0], numbers[1].code))).issue.merge;
   assert.deepEqual(numberMerge.options.map(({whole,selected}) => [whole,selected]), [[false,false]]);
   assert.equal(numberMerge.occupants[0].code, numbers[1].code);
+});
+
+test('明确选择目标后合并跨类别的同名映射，并能撤销', async () => {
+  const w = workspace(fixture.crossCategoryProject());
+  const change = {mode:'merge', groupId:'organization', targetId:'person'};
+  const {preview} = await w.preview(change);
+  assert.equal(preview.code, '【柳某甲】');
+  assert.equal(preview.materials[0].changes.length, 3);
+  assert.deepEqual(preview.sources.map(row => [row.id, row.moved, row.remaining]), [['organization',3,0]]);
+  assert.equal((await w.run({op:'view'})).view.groups.length, 2);
+  const {view} = await w.apply(change, {preview});
+  assert.deepEqual(view.groups.map(row => [row.id,row.type,row.occurrences.length]), [['person','person',102]]);
+  assert.ok(view.current.items.slice(-3).every(row => row.type === 'organization' && row.replacement === preview.code));
+  assert.deepEqual((await w.run({op:'undo'})).view.groups.map(row => row.occurrences.length), [99,3]);
+});
+
+test('新建撞码、修改撞码和从原文选中绑定使用同一跨类别规则', async () => {
+  const w = workspace(fixture.crossCategoryProject());
+  const {view} = await w.run({op:'view'});
+  const source = view.groups.find(row => row.id === 'organization');
+  const target = view.groups.find(row => row.id === 'person');
+  const positions = source.occurrences.slice(0,1);
+  const resolution = {mode:'selected', targetId:target.id};
+  const edit = {...w.edit(source, target.code, resolution), rebindPositions:positions};
+  const create = {mode:'create', type:'address', code:target.code, positions, resolution};
+  const bind = {mode:'bind', groupId:target.id, positions};
+  for (const change of [edit, create, bind]) {
+    const previous = await w.preview(change);
+    assert.equal(previous.preview.sources[0].remaining, 2);
+    const {view} = await w.apply(change, previous);
+    assert.equal(view.groups.find(row => row.id === source.id).occurrences.length, 2);
+    assert.equal(view.groups.find(row => row.id === target.id).occurrences.length, 100);
+    await w.run({op:'undo'});
+  }
+});
+
+test('以实际完整值约束跨类别转移，允许同一号码的不同写法', async () => {
+  const w = workspace();
+  await w.add('姓名：赵敏\n联系电话：13800138000、13900139000');
+  const {groups} = await w.add('联系电话：138-0013-8000');
+  const name = groups.find(group => group.primary === '赵敏');
+  const target = groups.find(group => group.primary === '13800138000');
+  const other = groups.find(group => group.primary === '13900139000');
+  assert.equal(target.occurrences.length, 2);
+  for (const [from, to] of [[other,target], [other,name], [name,target]]) {
+    const {issue} = await w.preview({mode:'merge', groupId:from.id, targetId:to.id});
+    assert.match(issue.message, /实际相同的完整值/u);
+  }
+});
+
+test('部分改绑预览显示源组的恢复原词，可以选择另一剩余别称', async () => {
+  const w = workspace();
+  const {groups} = await w.add('姓名：张甲\n姓名：赵敏\n姓名：周敏\n姓名：苏平');
+  const [source, first, second, target] = ['张甲','赵敏','周敏','苏平'].map(name => groups.find(row => row.primary === name));
+  await w.apply({mode:'merge', groupId:first.id, targetId:source.id});
+  await w.apply({mode:'merge', groupId:second.id, targetId:source.id});
+  const change = {...w.edit(source, target.code, {mode:'selected', targetId:target.id}), rebindPositions:source.occurrences};
+  const {preview} = await w.preview(change);
+  assert.deepEqual(preview.sources[0].terms, ['赵敏','周敏']);
+  assert.equal(preview.sources[0].nextPrimary, '赵敏');
+  change.primaries = {[source.id]:{original:'周敏'}};
+  const {view} = await w.apply(change, await w.preview(change));
+  assert.equal(view.groups.find(row => row.id === source.id).primary, '周敏');
+  assert.equal((await w.run({op:'undo'})).view.groups.find(row => row.id === source.id).primary, '张甲');
 });
 
 test('新建映射遇占用只改派勾选位置，已失效的预览保留正文', async () => {

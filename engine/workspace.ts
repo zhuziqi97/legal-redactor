@@ -1,7 +1,7 @@
 import { overlap, type Relation } from './context.js';
 import { displayBase } from './display.js';
 import { NUMBER_KINDS, PERSON_VALUE, TITLE } from './field-rules.js';
-import { hit, readFields, typicalName, type Layout } from './fields.js';
+import { hit, readFields, typicalName, type Hit, type Layout } from './fields.js';
 import { buildPlan, completeNumber, labels, normalized, reviewDecisions, validCode, type Action, type Scan } from './pipeline.js';
 import { amend, checkedOutput, displayCode, requireDecisions, viewMaterial, type MaterialItem } from './review.js';
 import { project, projectRelation, revisionBlocks, revisionRanges } from './revision.js';
@@ -10,7 +10,7 @@ import type {
   Change, CodeOccupant, Group, Issue, Material, MergeOption, MergeReason, Occurrence, Position, PreviousReview, Request, Row, Workspace,
 } from './workspace-types.js';
 
-const nameKinds = new Set(['person', 'nickname', 'organization']);
+const identifiers = new Set([...NUMBER_KINDS, 'case_number', 'social', 'email', 'uscc']);
 const shortName = rule('(?:小|老|阿)[\\u3400-\\u9fff]');
 const revisedReview = '原文或关联依据有改动，请复核';
 type Member = [material: Material, row: Row];
@@ -580,11 +580,14 @@ async function scanMaterial(state: Workspace, doc: Material, newId: NewId, scan?
 }
 
 function moveMembers(state: Workspace, rows: Iterable<Member>, target: Group, used: Set<string>, keepEvidence = false) {
+  const codes = new Set<string>();
   for (const [, row] of rows) {
     const label = row.aliasType ?? '';
     const code = aliasCode(state, target, row.original, label, used);
     manual(row, target, code, 'replace', label, keepEvidence);
+    codes.add(code);
   }
+  return literalIssue(state, codes);
 }
 
 function literalIssue(state: Workspace, requested: Set<string>) {
@@ -594,9 +597,48 @@ function literalIssue(state: Workspace, requested: Set<string>) {
   return positions.length ? {issue: {message: '原文已有相同标记，请另选代号。', positions}} : undefined;
 }
 
-function sameCompleteValue(kind: string, raw: string, original: string) {
-  return normalized(kind, raw) === normalized(kind, original) &&
-    (!NUMBER_KINDS.has(kind) || completeNumber(kind, raw, '人工订正'));
+type Transfer = [Material, Pick<Row, 'start' | 'end'> & {reason?: string}];
+
+function transferCheck(state: Workspace) {
+  // Resolving a range can remove old annotations before the transfer is checked.
+  const originalRows = state.materials.map(doc => [doc, doc.decisions] as const);
+  const fields = new Map<Material, Map<string, Hit>>();
+  const primaryKinds = new Map<string, string | undefined>();
+  function actualKind(doc: Material, range: Transfer[1], raw: string) {
+    if (!/[\p{N}\p{Script=Latin}@＠]/u.test(raw)) return undefined;
+    if (!fields.has(doc)) {
+      const byRange = new Map<string, Hit>();
+      for (const hit of readFields(doc.text).hits) {
+        if (hit.priority < 86 || !identifiers.has(hit.kind)) continue;
+        const key = keyOf(hit.start, hit.end);
+        if (!byRange.has(key) || byRange.get(key)!.priority < hit.priority) byRange.set(key, hit);
+      }
+      fields.set(doc, byRange);
+    }
+    return fields.get(doc)!.get(keyOf(range.start, range.end))?.kind;
+  }
+  return (target: Group, rows: readonly Transfer[]) => {
+    if (!primaryKinds.has(target.id)) {
+      let kind: string | undefined;
+      if (/[\p{N}\p{Script=Latin}@＠]/u.test(target.primary)) {
+        for (const [doc, rows] of originalRows) {
+          const primary = rows?.find(row => row.group === target.id && row.original === target.primary);
+          if (primary && (kind = actualKind(doc, primary, primary.original))) break;
+        }
+      }
+      primaryKinds.set(target.id, kind);
+    }
+    const targetKind = primaryKinds.get(target.id);
+    for (const [doc, row] of rows) {
+      const raw = slice(doc.text, row.start, row.end);
+      const kind = targetKind || actualKind(doc, row, raw);
+      if (kind && (normalized(kind, raw) !== normalized(kind, target.primary) ||
+          NUMBER_KINDS.has(kind) && (!completeNumber(kind, raw, row.reason ?? '') ||
+            !completeNumber(kind, target.primary, '')))) {
+        return {issue: {message: '号码和其他标识只能绑定实际相同的完整值。', positions: [occurrence(doc, row)]}};
+      }
+    }
+  };
 }
 
 function codeOccupants(state: Workspace, requested: Set<string>, excludedId?: string) {
@@ -633,11 +675,13 @@ function mappingEditConflict(state: Workspace, group: Group, positions: Position
     }
   }
   if (code !== group.code) {
+    const exact = new Set([code]);
     const requested = new Set([code, ...[...(codes.get(group.id) ?? [])]
       .map(value => code.slice(0, -1) + slice(value, length(group.code) - 1))]);
-    const issue = literalIssue(state, requested);
+    const exactOwners = codeOccupants(state, exact, group.id);
+    const issue = literalIssue(state, exactOwners.length ? exact : requested);
     if (issue) return issue;
-    const occupants = codeOccupants(state, requested, group.id);
+    const occupants = exactOwners.length ? exactOwners : codeOccupants(state, requested, group.id);
     if (occupants.length) {
       const owners = new Set(occupants.map(item => item.groupId));
       return {reason: 'code', targets: others.filter(target => owners.has(target.id)), occupants};
@@ -652,12 +696,11 @@ function mappingEditConflict(state: Workspace, group: Group, positions: Position
   }
   const overlaps = others.filter(target => touched.has(target.id));
   if (overlaps.length) return {reason: 'range', targets: overlaps};
-  const matches = others.filter(target => compatible(group.type, target.type) &&
-    [...(originals.get(target.id) ?? [])].some(value => values.has(value)));
+  const matches = others.filter(target => [...(originals.get(target.id) ?? [])].some(value => values.has(value)));
   return {reason: matches.length ? 'value' : null, targets: matches};
 }
 
-function editMapping(state: Workspace, group: Group, change: Change, used: Set<string>) {
+function editMapping(state: Workspace, group: Group, change: Change, used: Set<string>, checkMove: ReturnType<typeof transferCheck>) {
   const positions = change.positions ?? [];
   const rebind = change.rebindPositions ?? [];
   const code = displayCode(change.code!);
@@ -673,23 +716,16 @@ function editMapping(state: Workspace, group: Group, change: Change, used: Set<s
   if (rebind.some(position => !sourceIds.has(positionKey(position)))) throw new Error('要改绑的位置已变更，请重新选择。');
   const options: MergeOption[] = [];
   let codeChoices = false;
+  const proposed: Transfer[] = positions.map(position => [lookupMaterial(state, position.materialId), position]);
+  const selectedRows: Transfer[] = positions.length ? proposed : rebind.map(position =>
+    [lookupMaterial(state, position.materialId), sourceIds.get(positionKey(position))!]);
+  const modified = new Set(positions.map(positionKey));
+  const wholeRows = [...proposed, ...sourceRows.filter(([doc, row]) => !modified.has(keyOf(doc.id, row.id)))];
   for (const target of targets) {
-    const {type} = target;
-    if (!compatible(group.type, type)) continue;
     if (reason === 'code' && target.code !== code) continue;
-    let whole = nameKinds.has(type) || type === 'address';
-    let selected = !!selectedPositions.length;
-    if (!whole) {
-      const sameValue = (raw: string) => sameCompleteValue(type, raw, target.primary);
-      const replacementValues = positions.map(pos => slice(lookupMaterial(state, pos.materialId).text, pos.start, pos.end));
-      const selectedValues = positions.length ? replacementValues : rebind.map(pos => sourceIds.get(positionKey(pos))!.original);
-      const modified = new Set(positions.map(positionKey));
-      selected = selected && selectedValues.every(sameValue);
-      whole = replacementValues.every(sameValue) && sourceRows.every(([doc, row]) =>
-        modified.has(keyOf(doc.id, row.id)) || sameValue(row.original));
-      if (reason === 'code' && !positions.length) codeChoices ||= sourceRows.some(([, row]) => sameValue(row.original));
-    }
-    if (reason === 'code' && !positions.length) codeChoices ||= whole;
+    const whole = !checkMove(target, wholeRows);
+    const selected = !!selectedPositions.length && !checkMove(target, selectedRows);
+    if (reason === 'code' && !positions.length) codeChoices ||= whole || sourceRows.some(row => !checkMove(target, [row]));
     options.push({groupId: target.id, whole, selected});
   }
   const {mode: choice, targetId} = change.resolution ?? {};
@@ -714,20 +750,23 @@ function editMapping(state: Workspace, group: Group, change: Change, used: Set<s
     for (const [index, [, row]] of resolved.entries()) {
       if (originals[index]!.original === group.primary && editedPrimary == null) editedPrimary = row.original;
     }
-    moveMembers(state, resolved, destination, used);
+    const issue = moveMembers(state, resolved, destination, used);
+    if (issue) return issue;
     const [doc, row] = resolved.at(-1)!;
     focus = occurrence(doc, row);
   }
-  if (destination !== group && choice === 'whole') {
-    moveMembers(state, [...members(state, group.id)], destination, used, true);
-  } else if (destination !== group && choice === 'selected' && !positions.length) {
+  if (destination !== group) {
     const checked = new Set(rebind.map(positionKey));
-    moveMembers(state, sourceRows.filter(([doc, row]) => checked.has(keyOf(doc.id, row.id))), destination, used, true);
+    const remaining = choice === 'whole' ? [...members(state, group.id)]
+      : positions.length ? [] : sourceRows.filter(([doc, row]) => checked.has(keyOf(doc.id, row.id)));
+    const issue = moveMembers(state, remaining, destination, used, true);
+    if (issue) return issue;
   }
   let primary = destination === group ? change.primary : undefined;
   if (!primary && editedPrimary && destination === group &&
     ![...members(state, group.id)].some(([, row]) => row.original === group.primary)) primary = editedPrimary;
-  return {changed: true, groupId: destination.id, focus, primaries: primary ? {[group.id]: {original: primary}} : {}};
+  return {changed: true, groupId: destination.id, focus,
+    primaries: {...change.primaries, ...(primary ? {[group.id]: {original: primary}} : {})}};
 }
 
 function renameMapping(state: Workspace, group: Group, code: string, used: Set<string>) {
@@ -750,20 +789,19 @@ function apply(state: Workspace, change: Change, newId: NewId, cover: boolean): 
   const op = change.mode;
   let group = change.groupId ? findGroup(state, change.groupId) : undefined;
   const used = occupied(state);
-  if (op === 'editMapping') return editMapping(state, group!, change, used);
+  const checkMove = transferCheck(state);
+  if (op === 'editMapping') return editMapping(state, group!, change, used, checkMove);
   if (op === 'rename') return renameMapping(state, group!, displayCode(change.code!), used);
   if (op === 'primary') return {changed: true, primaries: {[group!.id]: change.term!}};
-  if (op === 'merge' || op === 'delete') {
+  if (op === 'merge') {
+    const target = findGroup(state, change.targetId);
+    if (target === group) throw new Error('请选择其他映射。');
     const affected = [...members(state, group!.id)];
-    if (op === 'merge') {
-      const target = findGroup(state, change.targetId);
-      if (target === group || !compatible(group!.type, target.type) || (!nameKinds.has(group!.type) && group!.type !== 'address')) {
-        throw new Error('请选择同类的其他人物、机构或地址映射。');
-      }
-      moveMembers(state, affected, target, used, true);
-    } else {
-      for (const [, row] of affected) manual(row, null, '', change.keep ? 'keep' : 'review');
-    }
+    const issue = checkMove(target, affected) ?? moveMembers(state, affected, target, used, true);
+    return issue ?? {changed: true, groupId: target.id};
+  }
+  if (op === 'delete') {
+    for (const [, row] of members(state, group!.id)) manual(row, null, '', change.keep ? 'keep' : 'review');
     return {changed: true};
   }
 
@@ -796,9 +834,7 @@ function apply(state: Workspace, change: Change, newId: NewId, cover: boolean): 
       const occupants = codeOccupants(state, new Set([code]));
       const ownerIds = new Set(occupants.map(item => item.groupId));
       const owners = Object.values(state.groups).filter(candidate => ownerIds.has(candidate.id));
-      const eligible = owners.filter(candidate => candidate.code === code && compatible(kind!, candidate.type) &&
-        (nameKinds.has(candidate.type) || candidate.type === 'address' ||
-          resolved.every(([, row]) => sameCompleteValue(candidate.type, row.original, candidate.primary))));
+      const eligible = owners.filter(candidate => candidate.code === code && !checkMove(candidate, resolved));
       group = eligible.find(candidate => change.resolution?.mode === 'selected' && change.resolution.targetId === candidate.id);
       if (!group) return {issue: {message: '这个代号已被其他映射使用。', merge: {reason: 'code', canRetain: false,
         codeChoices: false, groups: owners.map(candidate => candidate.id), occupants,
@@ -808,25 +844,20 @@ function apply(state: Workspace, change: Change, newId: NewId, cover: boolean): 
     }
     used.add(group.code);
   }
-  for (const [, row] of resolved) {
-    if (op === 'create' || op === 'bind' || op === 'range') {
-      if (op === 'bind') {
-        const groupKind = group!.type;
-        if (row.group && !compatible(row.type, groupKind)) throw new Error(`「${row.original}」与目标映射类别不同。`);
-        if (!nameKinds.has(groupKind) && groupKind !== 'address' && row.group !== group!.id) {
-          const matches = normalized(groupKind, row.original) === normalized(groupKind, group!.primary) &&
-            (!NUMBER_KINDS.has(groupKind) || completeNumber(groupKind, row.original, row.reason));
-          if (!matches) throw new Error('号码和其他标识只能绑定实际相同的完整值。');
-        }
-      }
-      const label = op !== 'create' ? row.aliasType ?? '' : '';
+  if (op === 'bind') {
+    const issue = checkMove(group!, resolved.filter(([, row]) => row.group !== group!.id));
+    if (issue) return issue;
+  }
+  if (op === 'create' || op === 'bind' || op === 'range') {
+    for (const [, row] of resolved) {
+      if (op === 'create') row.aliasType = '';
       if (kind && !compatible(row.type, kind)) delete row.match;
-      if (kind) row.type = kind;
-      const code = aliasCode(state, group!, row.original, label, used);
-      manual(row, group!, code, 'replace', label);
-    } else {
-      manual(row, null, '', op === 'keep' ? 'keep' : 'review');
+      if (kind && (op !== 'create' || !change.resolution)) row.type = kind;
     }
+    const issue = moveMembers(state, resolved, group!, used);
+    if (issue) return issue;
+  } else {
+    for (const [, row] of resolved) manual(row, null, '', op === 'keep' ? 'keep' : 'review');
   }
   const [doc, last] = resolved.at(-1)!;
   return {changed: true, focus: occurrence(doc, last), primaries: change.primaries ?? {}};
@@ -905,6 +936,32 @@ function adjustmentImpact(doc: Material, before: ReturnType<typeof viewMaterial>
     restoredCount: restored.length};
 }
 
+function sourceImpacts(before: Workspace, after: Workspace, destination: string) {
+  function originals(state: Workspace) {
+    const grouped = new Map<string, string[]>();
+    for (const doc of state.materials) {
+      for (const row of doc.decisions ?? []) {
+        if (row.action !== 'replace' || !row.group || row.group === destination) continue;
+        if (!grouped.has(row.group)) grouped.set(row.group, []);
+        grouped.get(row.group)!.push(row.original);
+      }
+    }
+    return grouped;
+  }
+  const next = originals(after);
+  return [...originals(before)].flatMap(([id, originals]) => {
+    const group = before.groups[id];
+    const remaining = next.get(id) ?? [];
+    if (remaining.length >= originals.length) return [];
+    const primary = after.groups[id]?.primary;
+    return [{
+      id, code: group.code, primary: group.primary, moved: originals.length - remaining.length,
+      remaining: remaining.length, nextPrimary: primary === group.primary ? undefined : primary,
+      terms: primary && primary !== group.primary ? [...new Set(remaining)] : [],
+    }];
+  });
+}
+
 function previewAdjustment(state: Workspace, change: Change, newId: NewId) {
   const trial = {...state, groups: structuredClone(state.groups),
     materials: state.materials.map(doc => ({...doc, decisions: structuredClone(doc.decisions)}))};
@@ -917,7 +974,8 @@ function previewAdjustment(state: Workspace, change: Change, newId: NewId) {
     return impact.changes.length ? [impact] : [];
   });
   const group = findGroup(trial, result.groupId || result.focus?.group || undefined);
-  return {preview: {revision: state.revision, code: group.code, materials, primary: group.primary}};
+  return {preview: {revision: state.revision, code: group.code, materials, primary: group.primary,
+    sources: sourceImpacts(state, trial, group.id)}};
 }
 
 export type WorkspaceView = ReturnType<typeof workspaceView>;
