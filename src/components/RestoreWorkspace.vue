@@ -2,7 +2,7 @@
 import { computed, nextTick, ref, watch } from 'vue';
 import { restoreText, type RestoreOccurrence } from '../../engine/restore';
 import TextLines from './TextLines.vue';
-import { correspondingSpans, useComparisonScroll } from '../comparison-scroll';
+import { correspondingSpans, useComparison } from '../comparison';
 import { prettyError, type Group, type SourceFile, type ViewOptions } from '../model';
 import { copyTextSelection, type TextPiece } from '../positions';
 
@@ -39,7 +39,7 @@ const inputParts = computed(() => {
 const outputParts = computed(() => inputParts.value.map(piece =>
   piece.item?.value != null ? { ...piece, text: piece.item.value } : piece));
 const spans = computed(() => correspondingSpans(inputParts.value, outputParts.value));
-const comparison = useComparisonScroll(inputScroll, outputScroll, () => props.viewOptions,
+const comparison = useComparison(inputScroll, outputScroll, () => props.viewOptions,
   () => props.active && !editing.value, () => spans.value);
 let editStart: { text: string; position: number } | undefined;
 const mappings = computed(() => {
@@ -53,7 +53,8 @@ const mappings = computed(() => {
 });
 watch(result, () => { selected.value = null; });
 
-async function select(occurrence: RestoreOccurrence) {
+async function select(occurrence: RestoreOccurrence, event?: MouseEvent) {
+  if (event && window.getSelection()?.isCollapsed === false) return;
   editing.value = false;
   selected.value = occurrence.id;
   await nextTick();
@@ -62,6 +63,7 @@ async function select(occurrence: RestoreOccurrence) {
   for (const pane of [inputScroll.value, outputScroll.value]) {
     pane?.querySelector(`mark[data-restore-item="${occurrence.id}"]`)?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   }
+  comparison.pinLines(0, occurrence);
   comparison.rememberScroll();
 }
 
@@ -197,14 +199,16 @@ async function output(kind: 'copy' | 'file') {
               class="restore-editor document-text" :class="{ 'without-wrap': !wrap }" aria-label="待恢复文本"
               :wrap="wrap ? 'soft' : 'off'" placeholder="粘贴待恢复文本" @paste="paste"></textarea>
             <div v-else :ref="element => setScroll(side, element)" class="pane-scroll" :class="{ 'without-wrap': !wrap }"
-              @scroll.passive="comparison.onScroll(side === 'input' ? 0 : 1)">
+              @scroll.passive="comparison.onScroll(side === 'input' ? 0 : 1)"
+              @pointerover="comparison.hoverLine(side === 'input' ? 0 : 1, $event)" @pointerleave="comparison.leaveLine"
+              @click="comparison.clickLine(side === 'input' ? 0 : 1, $event)">
               <div class="document-text" :data-restore-text="side" tabindex="0" @copy="copyTextSelection"><TextLines
                 :pieces="side === 'input' ? inputParts : outputParts" :numbers="!!viewOptions?.lineNumbers" :newlines="viewOptions?.newlines !== false">
                 <template #mark="{ item, text: part, continued }"><mark :data-restore-item="item.id"
                   :class="['color-person', { 'review-state': item.value === null, selected: selected === item.id }]"
                   role="button" :tabindex="continued ? -1 : 0"
                   :aria-label="item.value === null ? '未匹配 ' + item.code : item.code + ' → ' + item.value"
-                  @click="select(item)" @keydown.enter.prevent="select(item)" @keydown.space.prevent="select(item)"
+                  @click="select(item, $event)" @keydown.enter.prevent="select(item)" @keydown.space.prevent="select(item)"
                 >{{ part }}</mark></template>
               </TextLines></div>
             </div>

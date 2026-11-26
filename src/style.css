@@ -121,7 +121,10 @@ h1, h2, h3, p { margin: 0; }
 .without-wrap .document-text, .document-text.without-wrap {
   white-space: pre; overflow-wrap: normal;
 }
-.text-line { min-height: 1lh; }
+.without-wrap .text-lines { width: max-content; min-width: 100%; }
+.text-line { min-height: 1lh; background: var(--line-focus, transparent); }
+.text-line[data-line-focus="hover"] { --line-focus: #f3f6fc; }
+.text-line[data-line-focus="active"] { --line-focus: #eaf1fb; }
 .text-line-body { min-width: 0; }
 .with-line-numbers > .text-line {
   display: grid; grid-template-columns: calc(var(--line-number-digits) * .5rem + 6px) minmax(0, 1fr);
@@ -130,7 +133,7 @@ h1, h2, h3, p { margin: 0; }
   content: attr(data-line-number); position: sticky; inset-inline-start: 0; z-index: 1; align-self: start;
   padding-inline-end: 6px; text-align: right; white-space: nowrap; font-family: var(--sans); font-size: 12px; line-height: 1lh;
   font-variant-numeric: tabular-nums;
-  color: var(--muted); background: var(--paper); user-select: none;
+  color: var(--muted); background: var(--line-focus, var(--paper)); user-select: none;
 }
 .line-break { position: relative; white-space: normal; }
 .with-line-breaks .line-break::after {

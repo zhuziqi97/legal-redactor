@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import TextLines from './TextLines.vue';
-import { correspondingSpans, useComparisonScroll } from '../comparison-scroll';
+import { correspondingSpans, useComparison } from '../comparison';
 import { categoryColor, labels, type Item, type Material, type Span, type ViewOptions } from '../model';
 import { copyTextSelection, indexText, rangePoint, selectedSpan, textPieces } from '../positions';
 
@@ -32,7 +32,7 @@ const outputParts = computed(() => previousOutput.value !== null && previousOutp
   ? textPieces(previousOutput.value ?? props.material?.output ?? '', [], true)
   : textPieces(props.material?.output || '', props.material?.items || [], true));
 const spans = computed(() => correspondingSpans(sourceParts.value, outputParts.value));
-const comparison = useComparisonScroll(sourceScroll, outputScroll, () => props.viewOptions,
+const comparison = useComparison(sourceScroll, outputScroll, () => props.viewOptions,
   () => props.active && props.material?.status === 'ready' && previousOutput.value == null && !editing.value,
   () => spans.value);
 let editStart: { position: number; revision?: number } | undefined;
@@ -96,6 +96,8 @@ async function reveal(id: number | null) {
   for (const pane of [sourceScroll.value, outputScroll.value]) {
     pane?.querySelector(`mark[data-item="${id}"]`)?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   }
+  const item = props.material?.items.find(row => row.id === id);
+  if (item) comparison.pinLines(0, { start: index.value.offsets[item.start], end: index.value.offsets[item.end] });
   comparison.rememberScroll();
 }
 
@@ -132,8 +134,12 @@ function selectSpan(span: Span) {
 
 async function highlightSpan(span: Span) {
   const offsets = index.value.offsets;
-  const range = await revealUnits({ start: offsets[span.start], end: offsets[span.end] });
-  if (range) CSS.highlights.set('adjustment-position', new Highlight(range));
+  const units = { start: offsets[span.start], end: offsets[span.end] };
+  const range = await revealUnits(units);
+  if (range) {
+    CSS.highlights.set('adjustment-position', new Highlight(range));
+    comparison.pinLines(0, units);
+  }
 }
 
 function clearHighlight() {
@@ -281,7 +287,8 @@ defineExpose({ reveal, selectSpan, anchorItem, highlightSpan, clearHighlight });
         <textarea v-if="editing" ref="editor" v-model="editable" class="document-text source-editor" aria-label="编辑材料原文"
           :class="{ 'without-wrap': !wrap }" :wrap="wrap ? 'soft' : 'off'" :readonly="revising"></textarea>
         <div v-else id="source-scroll" ref="sourceScroll" class="pane-scroll" :class="{ 'without-wrap': !wrap }"
-          @scroll.passive="comparison.onScroll(0)">
+          @scroll.passive="comparison.onScroll(0)" @pointerover="comparison.hoverLine(0, $event)"
+          @pointerleave="comparison.leaveLine" @click="comparison.clickLine(0, $event)">
           <div
             id="source-text" ref="source" class="document-text" :class="{ placeholder: !material }"
             tabindex="0" aria-label="原文" @copy="copyTextSelection"
@@ -304,7 +311,8 @@ defineExpose({ reveal, selectSpan, anchorItem, highlightSpan, clearHighlight });
           </div>
         </div>
         <div id="output-scroll" ref="outputScroll" class="pane-scroll" :class="{ 'without-wrap': !wrap }"
-          @scroll.passive="comparison.onScroll(1)">
+          @scroll.passive="comparison.onScroll(1)" @pointerover="comparison.hoverLine(1, $event)"
+          @pointerleave="comparison.leaveLine" @click="comparison.clickLine(1, $event)">
           <div id="output-text" class="document-text" tabindex="0" aria-label="脱敏预览" @copy="copyTextSelection"><TextLines
             :pieces="outputParts" :numbers="!!viewOptions?.lineNumbers" :newlines="viewOptions?.newlines !== false">
             <template #mark="{ item, text, continued }"><mark :data-item="item.id" :class="classes(item)"
