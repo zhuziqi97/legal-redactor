@@ -25,6 +25,11 @@ async function main(executable, version) {
       packaged:app.isPackaged, version:app.getVersion(), resources:process.resourcesPath,
     }));
     assert.deepEqual(info, {packaged:true, version});
+    for (const name of ['LICENSE', 'ThirdPartyNotices.txt']) {
+      const license = join('licenses', 'onnxruntime', name);
+      assert.deepEqual(await readFile(join(resources, license)), await readFile(join(__dirname, '..', license)),
+        `Packaged ONNX Runtime ${name} differs from the upstream copy`);
+    }
     const page = await desktop.firstWindow();
     page.setDefaultTimeout(90000);
     const runtime = join(resources, 'app', 'node_modules', 'onnxruntime-node');

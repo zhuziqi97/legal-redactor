@@ -8,6 +8,7 @@ Third-party attributions
 LegalRedactor includes pinyin data derived from pypinyin (MIT).
 DOCX import uses Mammoth.js (BSD-2-Clause) and parse5 (MIT).
 Local inference uses ONNX Runtime (MIT), copyright Microsoft Corporation.
+See licenses/onnxruntime/ for its original license and third-party notices.
 
 Desktop releases include an ONNX export of whoisjones/otter-cross-mmbert,
 licensed under the Apache License, Version 2.0.

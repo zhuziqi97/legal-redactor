@@ -136,6 +136,7 @@ def stage(target, inputs, staging, model, windows_crt, windows_rcedit):
     shutil.copy2(PROJECT / "LICENSE", resources / "legal-redactor-LICENSE")
     shutil.copy2(PROJECT / "NOTICE", resources / "legal-redactor-NOTICE")
     shutil.copy2(PROJECT / "engine" / "pinyin-LICENSE.txt", resources / "pypinyin-LICENSE.txt")
+    shutil.copytree(PROJECT / "licenses" / "onnxruntime", resources / "licenses" / "onnxruntime")
 
     if target == "macos":
         subprocess.run(["codesign", "--force", "--deep", "--sign", "-", bundle], check=True)
