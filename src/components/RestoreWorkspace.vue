@@ -1,9 +1,12 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue';
 import { restoreText, type RestoreOccurrence } from '../../engine/restore';
-import { prettyError, type Group, type SourceFile } from '../model';
+import TextLines from './TextLines.vue';
+import { correspondingSpans, useComparisonScroll } from '../comparison-scroll';
+import { prettyError, type Group, type SourceFile, type ViewOptions } from '../model';
+import { copyTextSelection, type TextPiece } from '../positions';
 
-const props = defineProps<{ groups: Group[]; notice: { text: string; error: boolean } }>();
+const props = defineProps<{ groups: Group[]; notice: { text: string; error: boolean }; active: boolean; viewOptions?: ViewOptions }>();
 const emit = defineEmits<{ notice: [text: string, error?: boolean, brief?: boolean] }>();
 const api = window.redaction;
 const text = ref('');
@@ -11,25 +14,34 @@ const source = ref<Pick<SourceFile, 'title' | 'path'> | null>(null);
 const encodingTitle = ref('');
 const busy = ref(false);
 const editing = ref(true);
+const wrap = computed(() => props.viewOptions?.wrap !== false);
 const editor = ref<HTMLTextAreaElement>();
 const workbench = ref<HTMLElement>();
+const inputScroll = ref<HTMLElement>();
+const outputScroll = ref<HTMLElement>();
 const sides = ['input', 'output'] as const;
 const selected = ref<number | null>(null);
 const result = computed(() => restoreText(text.value, props.groups));
 const unmatched = computed(() => result.value.occurrences.filter(row => row.value === null).length);
 const selectedCode = computed(() => selected.value === null ? null : result.value.occurrences[selected.value]?.code);
 
-const pieces = computed(() => {
-  const parts: { text: string; occurrence?: RestoreOccurrence }[] = [];
+const inputParts = computed(() => {
+  const parts: TextPiece<RestoreOccurrence>[] = [];
   let cursor = 0;
   for (const occurrence of result.value.occurrences) {
     if (cursor < occurrence.start) parts.push({ text: text.value.slice(cursor, occurrence.start) });
-    parts.push({ text: occurrence.code, occurrence });
+    parts.push({ text: occurrence.code, item: occurrence });
     cursor = occurrence.end;
   }
   if (cursor < text.value.length) parts.push({ text: text.value.slice(cursor) });
   return parts;
 });
+const outputParts = computed(() => inputParts.value.map(piece =>
+  piece.item?.value != null ? { ...piece, text: piece.item.value } : piece));
+const spans = computed(() => correspondingSpans(inputParts.value, outputParts.value));
+const comparison = useComparisonScroll(inputScroll, outputScroll, () => props.viewOptions,
+  () => props.active && !editing.value, () => spans.value);
+let editStart: { text: string; position: number } | undefined;
 const mappings = computed(() => {
   const rows = new Map<string, RestoreOccurrence[]>();
   for (const occurrence of result.value.occurrences) {
@@ -47,21 +59,48 @@ async function select(occurrence: RestoreOccurrence) {
   await nextTick();
   const first = mappings.value.find(rows => rows[0].code === occurrence.code)?.[0];
   workbench.value?.querySelector(`[data-restore-group="${first?.id}"]`)?.scrollIntoView({ block: 'nearest' });
-  for (const mark of workbench.value?.querySelectorAll(`mark[data-restore-item="${occurrence.id}"]`) ?? []) {
-    mark.scrollIntoView({ block: 'nearest' });
+  for (const pane of [inputScroll.value, outputScroll.value]) {
+    pane?.querySelector(`mark[data-restore-item="${occurrence.id}"]`)?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   }
+  comparison.rememberScroll();
 }
 
-function edit() {
+async function edit() {
+  const scrollTop = inputScroll.value?.scrollTop ?? 0;
+  const scrollLeft = inputScroll.value?.scrollLeft ?? 0;
+  const position = comparison.position(0) ?? 0;
+  editStart = { text: text.value, position };
   editing.value = true;
-  void nextTick(() => editor.value?.focus());
+  await nextTick();
+  const area = editor.value;
+  if (!area) return;
+  const unit = text.value.slice(0, position).replace(/\r\n?/gu, '\n').length;
+  area.focus({ preventScroll: true });
+  area.setSelectionRange(unit, unit);
+  area.scrollTo(scrollLeft, scrollTop);
+}
+
+async function finishEdit() {
+  const position = editStart?.text === text.value ? editStart.position : (editor.value?.selectionStart ?? 0);
+  const horizontal = editor.value?.scrollLeft ?? 0;
+  editing.value = false;
+  editStart = undefined;
+  await nextTick();
+  if (inputScroll.value) inputScroll.value.scrollLeft = horizontal;
+  comparison.goTo(0, position);
+  comparison.follow(0);
+}
+
+function setScroll(side: 'input' | 'output', element: unknown) {
+  const pane = side === 'input' ? inputScroll : outputScroll;
+  pane.value = element instanceof HTMLElement ? element : undefined;
 }
 
 function setEditor(element: unknown) {
   editor.value = element instanceof HTMLTextAreaElement ? element : undefined;
 }
 
-function paste(event: ClipboardEvent) {
+async function paste(event: ClipboardEvent) {
   const area = editor.value;
   const pasted = event.clipboardData?.getData('text/plain');
   if (!area || !pasted || area.selectionStart !== 0 || area.selectionEnd !== area.value.length) return;
@@ -70,13 +109,23 @@ function paste(event: ClipboardEvent) {
   encodingTitle.value = '';
   text.value = pasted;
   editing.value = false;
+  editStart = undefined;
+  await resetScroll();
 }
 
-function useFile(file: SourceFile) {
+async function resetScroll() {
+  await nextTick();
+  for (const pane of [inputScroll.value, outputScroll.value]) if (pane) pane.scrollTo(0, 0);
+  comparison.rememberScroll();
+}
+
+async function useFile(file: SourceFile) {
   source.value = { title: file.title, path: file.path };
   text.value = file.text;
   encodingTitle.value = '';
   editing.value = false;
+  editStart = undefined;
+  await resetScroll();
 }
 
 async function openFile(retry = false) {
@@ -87,7 +136,7 @@ async function openFile(retry = false) {
     const file = retry ? await api.decodeImport('restore') : await api.open('restore');
     if (!file) return;
     if ('requiresEncoding' in file) encodingTitle.value = file.title;
-    else useFile(file);
+    else await useFile(file);
   } catch (error) {
     if (!retry) encodingTitle.value = '';
     emit('notice', prettyError(error), true);
@@ -137,7 +186,7 @@ async function output(kind: 'copy' | 'file') {
               <div v-if="side === 'input'" class="toolbar pane-output-actions">
                 <button class="button small" :disabled="busy" @click="openFile()">打开 TXT</button>
                 <button v-if="!editing" class="button small" :disabled="busy" @click="edit">编辑</button>
-                <button v-else-if="text" class="button small" :disabled="busy" @click="editing = false">完成</button>
+                <button v-else-if="text" class="button small" :disabled="busy" @click="finishEdit">完成</button>
               </div>
               <div v-else class="toolbar pane-output-actions">
                 <button class="button small" :disabled="busy || !text.trim()" @click="output('copy')">复制文本</button>
@@ -145,16 +194,19 @@ async function output(kind: 'copy' | 'file') {
               </div>
             </div>
             <textarea v-if="side === 'input' && editing" :ref="setEditor" v-model="text"
-              class="restore-editor document-text" aria-label="待恢复文本" placeholder="粘贴待恢复文本" @paste="paste"></textarea>
-            <div v-else class="pane-scroll">
-              <div class="document-text" :data-restore-text="side"><template v-for="(piece, index) in pieces" :key="index"><mark
-                v-if="piece.occurrence" :data-restore-item="piece.occurrence.id"
-                :class="['color-person', { 'review-state': piece.occurrence.value === null, selected: selected === piece.occurrence.id }]"
-                role="button" tabindex="0"
-                :aria-label="piece.occurrence.value === null ? `未匹配 ${piece.text}` : `${piece.text} → ${piece.occurrence.value}`"
-                @click="select(piece.occurrence)" @keydown.enter.prevent="select(piece.occurrence)"
-                @keydown.space.prevent="select(piece.occurrence)"
-              >{{ side === 'output' ? piece.occurrence.value ?? piece.text : piece.text }}</mark><template v-else>{{ piece.text }}</template></template></div>
+              class="restore-editor document-text" :class="{ 'without-wrap': !wrap }" aria-label="待恢复文本"
+              :wrap="wrap ? 'soft' : 'off'" placeholder="粘贴待恢复文本" @paste="paste"></textarea>
+            <div v-else :ref="element => setScroll(side, element)" class="pane-scroll" :class="{ 'without-wrap': !wrap }"
+              @scroll.passive="comparison.onScroll(side === 'input' ? 0 : 1)">
+              <div class="document-text" :data-restore-text="side" tabindex="0" @copy="copyTextSelection"><TextLines
+                :pieces="side === 'input' ? inputParts : outputParts" :numbers="!!viewOptions?.lineNumbers" :newlines="viewOptions?.newlines !== false">
+                <template #mark="{ item, text: part, continued }"><mark :data-restore-item="item.id"
+                  :class="['color-person', { 'review-state': item.value === null, selected: selected === item.id }]"
+                  role="button" :tabindex="continued ? -1 : 0"
+                  :aria-label="item.value === null ? '未匹配 ' + item.code : item.code + ' → ' + item.value"
+                  @click="select(item)" @keydown.enter.prevent="select(item)" @keydown.space.prevent="select(item)"
+                >{{ part }}</mark></template>
+              </TextLines></div>
             </div>
           </article>
         </div>

@@ -1,15 +1,19 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
-import { categoryColor, labels, type Item, type Material, type Span } from '../model';
-import { indexText, rangePoint, selectedSpan, textPieces } from '../positions';
+import TextLines from './TextLines.vue';
+import { correspondingSpans, useComparisonScroll } from '../comparison-scroll';
+import { categoryColor, labels, type Item, type Material, type Span, type ViewOptions } from '../model';
+import { copyTextSelection, indexText, rangePoint, selectedSpan, textPieces } from '../positions';
 
 const props = defineProps<{
   material: Material | null; address: string; selected: number | null; canOutput: boolean; showQuick: boolean;
   active: boolean; editText?: string; editDisabled: boolean; applyDisabled: boolean; revising: boolean; editError: string;
+  viewOptions?: ViewOptions;
 }>();
 const emit = defineEmits<{ select: [id: number]; selection: [span: Span | null]; dismiss: []; output: [kind: 'copy' | 'file'];
   edit: []; 'update:editText': [text: string]; applyEdit: []; cancelEdit: [] }>();
 const editing = computed(() => props.editText !== undefined);
+const wrap = computed(() => props.viewOptions?.wrap !== false);
 const editable = computed({get: () => props.editText ?? '', set: text => emit('update:editText', text)});
 const reader = ref<HTMLElement>();
 const source = ref<HTMLElement>();
@@ -27,6 +31,11 @@ const previousOutput = computed(() => props.material?.previousOutput);
 const outputParts = computed(() => previousOutput.value !== null && previousOutput.value !== undefined || editing.value
   ? textPieces(previousOutput.value ?? props.material?.output ?? '', [], true)
   : textPieces(props.material?.output || '', props.material?.items || [], true));
+const spans = computed(() => correspondingSpans(sourceParts.value, outputParts.value));
+const comparison = useComparisonScroll(sourceScroll, outputScroll, () => props.viewOptions,
+  () => props.active && props.material?.status === 'ready' && previousOutput.value == null && !editing.value,
+  () => spans.value);
+let editStart: { position: number; revision?: number } | undefined;
 
 const matches = computed(() => {
   const text = props.editText ?? props.material?.text ?? '';
@@ -84,9 +93,10 @@ function select(item: Item, event: Event) {
 async function reveal(id: number | null) {
   if (id === null) return;
   await nextTick();
-  for (const mark of reader.value?.querySelectorAll<HTMLElement>(`mark[data-item="${id}"]`) || []) {
-    if (mark.checkVisibility()) mark.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  for (const pane of [sourceScroll.value, outputScroll.value]) {
+    pane?.querySelector(`mark[data-item="${id}"]`)?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   }
+  comparison.rememberScroll();
 }
 
 async function revealUnits(span: Span) {
@@ -99,6 +109,9 @@ async function revealUnits(span: Span) {
   const container = sourceScroll.value.getBoundingClientRect();
   if (bounds.top < container.top + 12 || bounds.bottom > container.bottom - 12) {
     sourceScroll.value.scrollTop += bounds.top - container.top - 36;
+  }
+  if (!wrap.value && (bounds.left < container.left + 12 || bounds.right > container.right - 12)) {
+    sourceScroll.value.scrollLeft += bounds.left - container.left - 36;
   }
   return range;
 }
@@ -148,6 +161,7 @@ function revealEditorMatch(area: HTMLTextAreaElement, match: Span) {
   area.setSelectionRange(match.start, match.end);
   const mirror = document.createElement('div');
   mirror.className = 'document-text source-editor editor-measure';
+  mirror.classList.toggle('without-wrap', !wrap.value);
   mirror.style.width = `${area.clientWidth}px`;
   const text = document.createTextNode(area.value);
   mirror.append(text);
@@ -161,6 +175,10 @@ function revealEditorMatch(area: HTMLTextAreaElement, match: Span) {
     const top = rect.top - mirror.getBoundingClientRect().top;
     if (top < area.scrollTop || top + rect.height > area.scrollTop + area.clientHeight) {
       area.scrollTop = Math.max(0, top - rect.height);
+    }
+    const left = rect.left - mirror.getBoundingClientRect().left;
+    if (!wrap.value && (left < area.scrollLeft || left + rect.width > area.scrollLeft + area.clientWidth)) {
+      area.scrollLeft = Math.max(0, left - 16);
     }
   } finally {
     mirror.remove();
@@ -192,18 +210,30 @@ watch([matches, matchIndex, () => props.active, editing], async ([results, posit
   if (range && matches.value[matchIndex.value] === match && props.active) CSS.highlights.set('document-find', new Highlight(range));
 });
 watch(editing, async isEditing => {
-  const scroll = (isEditing ? sourceScroll.value : editor.value)?.scrollTop ?? 0;
+  const current = isEditing ? sourceScroll.value : editor.value;
+  const scroll = current?.scrollTop ?? 0;
+  const horizontal = current?.scrollLeft ?? 0;
+  if (isEditing) editStart = { position: comparison.position(0) ?? 0, revision: props.material?.revision };
+  const position = isEditing || editStart?.revision === props.material?.revision
+    ? editStart?.position : editor.value?.selectionStart;
   await nextTick();
   if (isEditing && editor.value) {
     editor.value.focus({preventScroll: true});
+    if (position !== undefined) editor.value.setSelectionRange(position, position);
     editor.value.scrollTop = scroll;
-  } else if (sourceScroll.value) sourceScroll.value.scrollTop = scroll;
+    editor.value.scrollLeft = horizontal;
+  } else if (sourceScroll.value) {
+    sourceScroll.value.scrollLeft = horizontal;
+    if (position !== undefined) comparison.goTo(0, position);
+    comparison.follow(0);
+    editStart = undefined;
+  }
 });
 watch(() => props.address, async () => {
   closeFind();
   await nextTick();
-  if (sourceScroll.value) sourceScroll.value.scrollTop = 0;
-  if (outputScroll.value) outputScroll.value.scrollTop = 0;
+  for (const pane of [sourceScroll.value, outputScroll.value]) if (pane) pane.scrollTo(0, 0);
+  comparison.rememberScroll();
 });
 onMounted(() => {
   document.addEventListener('selectionchange', track);
@@ -249,17 +279,20 @@ defineExpose({ reveal, selectSpan, anchorItem, highlightSpan, clearHighlight });
         </div>
         <p v-if="editError" class="source-edit-error form-error" role="alert">{{ editError }}</p>
         <textarea v-if="editing" ref="editor" v-model="editable" class="document-text source-editor" aria-label="编辑材料原文"
-          :readonly="revising"></textarea>
-        <div v-else id="source-scroll" ref="sourceScroll" class="pane-scroll">
+          :class="{ 'without-wrap': !wrap }" :wrap="wrap ? 'soft' : 'off'" :readonly="revising"></textarea>
+        <div v-else id="source-scroll" ref="sourceScroll" class="pane-scroll" :class="{ 'without-wrap': !wrap }"
+          @scroll.passive="comparison.onScroll(0)">
           <div
             id="source-text" ref="source" class="document-text" :class="{ placeholder: !material }"
-            tabindex="0" aria-label="原文"
-          ><template v-if="!material">点击「添加材料」</template><template v-for="(piece, position) in sourceParts" :key="position"><mark
-            v-if="piece.item" :data-item="piece.item.id" :class="classes(piece.item)"
-            role="button" tabindex="0" :aria-label="itemLabel(piece.item, piece.text)"
-            @click="select(piece.item, $event)" @keydown.enter.prevent="select(piece.item, $event)"
-            @keydown.space.prevent="select(piece.item, $event)"
-          >{{ piece.text }}</mark><template v-else>{{ piece.text }}</template></template></div>
+            tabindex="0" aria-label="原文" @copy="copyTextSelection"
+          ><template v-if="!material">点击「添加材料」</template><TextLines v-else :pieces="sourceParts"
+            :numbers="!!viewOptions?.lineNumbers" :newlines="viewOptions?.newlines !== false">
+            <template #mark="{ item, text, continued }"><mark :data-item="item.id" :class="classes(item)"
+              role="button" :tabindex="continued ? -1 : 0" :aria-label="itemLabel(item, text)"
+              @click="select(item, $event)" @keydown.enter.prevent="select(item, $event)"
+              @keydown.space.prevent="select(item, $event)"
+            >{{ text }}</mark></template>
+          </TextLines></div>
         </div>
       </article>
       <article id="output-pane" class="pane output-pane">
@@ -270,13 +303,16 @@ defineExpose({ reveal, selectSpan, anchorItem, highlightSpan, clearHighlight });
             <button class="button small primary" :disabled="!canOutput" @click="emit('output', 'file')">导出 TXT</button>
           </div>
         </div>
-        <div id="output-scroll" ref="outputScroll" class="pane-scroll">
-          <div id="output-text" class="document-text" tabindex="0" aria-label="脱敏预览"><template v-for="(piece, position) in outputParts" :key="position"><mark
-            v-if="piece.item" :data-item="piece.item.id" :class="classes(piece.item)"
-            role="button" tabindex="0" :aria-label="itemLabel(piece.item, piece.text)"
-            @click="select(piece.item, $event)" @keydown.enter.prevent="select(piece.item, $event)"
-            @keydown.space.prevent="select(piece.item, $event)"
-          >{{ piece.text }}</mark><template v-else>{{ piece.text }}</template></template></div>
+        <div id="output-scroll" ref="outputScroll" class="pane-scroll" :class="{ 'without-wrap': !wrap }"
+          @scroll.passive="comparison.onScroll(1)">
+          <div id="output-text" class="document-text" tabindex="0" aria-label="脱敏预览" @copy="copyTextSelection"><TextLines
+            :pieces="outputParts" :numbers="!!viewOptions?.lineNumbers" :newlines="viewOptions?.newlines !== false">
+            <template #mark="{ item, text, continued }"><mark :data-item="item.id" :class="classes(item)"
+              role="button" :tabindex="continued ? -1 : 0" :aria-label="itemLabel(item, text)"
+              @click="select(item, $event)" @keydown.enter.prevent="select(item, $event)"
+              @keydown.space.prevent="select(item, $event)"
+            >{{ text }}</mark></template>
+          </TextLines></div>
         </div>
       </article>
     </div>

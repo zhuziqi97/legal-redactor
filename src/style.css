@@ -116,6 +116,26 @@ h1, h2, h3, p { margin: 0; }
   min-height: 100%; white-space: pre-wrap; overflow-wrap: anywhere;
   color: #30313d; font: 15px/1.88 var(--reading);
 }
+.pane-scroll:not(.without-wrap) { overflow-x: hidden; }
+.without-wrap .document-text, .document-text.without-wrap {
+  white-space: pre; overflow-wrap: normal;
+}
+.text-line { min-height: 1lh; }
+.text-line-body { min-width: 0; }
+.with-line-numbers > .text-line {
+  display: grid; grid-template-columns: calc(var(--line-number-digits) * 1ch + 1.1em) minmax(0, 1fr);
+}
+.with-line-numbers > .text-line::before {
+  content: attr(data-line-number); position: sticky; inset-inline-start: 0; z-index: 1; align-self: start;
+  padding-inline-end: .65em; text-align: right; font-family: var(--sans); font-size: 12px; line-height: 1lh;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted); background: var(--paper); user-select: none;
+}
+.line-break { position: relative; white-space: normal; }
+.with-line-breaks .line-break::after {
+  content: '↵'; position: absolute; inset-inline-start: 0; top: 0; color: var(--muted);
+  opacity: .7; font: inherit; pointer-events: none; user-select: none;
+}
 .document-text.placeholder { color: var(--muted); font: 13px/1.7 var(--sans); }
 .document-text mark {
   padding-block: 2px; color: inherit; border-radius: 3px; cursor: pointer;

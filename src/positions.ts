@@ -1,5 +1,7 @@
 import type { Item, Span } from './model';
 
+export type TextPiece<T> = { text: string; item?: T };
+
 export function indexText(text: string) {
   const offsets = [0];
   const lines = [1];
@@ -16,7 +18,7 @@ export function indexText(text: string) {
 
 export function textPieces(text: string, items: Item[], output = false) {
   const { offsets } = indexText(text);
-  const pieces: { text: string; item?: Item }[] = [];
+  const pieces: TextPiece<Item>[] = [];
   let cursor = 0;
   for (const item of items) {
     const start = offsets[output ? item.output_start : item.start];
@@ -27,6 +29,16 @@ export function textPieces(text: string, items: Item[], output = false) {
   }
   if (cursor < text.length) pieces.push({ text: text.slice(cursor) });
   return pieces;
+}
+
+export function copyTextSelection(event: ClipboardEvent) {
+  const selection = window.getSelection();
+  const root = event.currentTarget as HTMLElement;
+  if (!event.clipboardData || !selection || selection.isCollapsed || !selection.rangeCount) return;
+  const range = selection.getRangeAt(0);
+  if (!root.contains(range.startContainer) || !root.contains(range.endContainer)) return;
+  event.clipboardData.setData('text/plain', range.toString());
+  event.preventDefault();
 }
 
 export function rangePoint(root: HTMLElement, offset: number): [Node, number] {

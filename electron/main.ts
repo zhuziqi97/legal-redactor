@@ -2,7 +2,7 @@
 if (process.platform === 'linux') process.env.FC_LANG ||= 'zh-cn';
 
 const { app, BrowserWindow, Menu, clipboard, dialog, ipcMain, utilityProcess } = require('electron');
-const { existsSync, mkdirSync, readFileSync } = require('node:fs');
+const { existsSync, mkdirSync, readFileSync, writeFileSync } = require('node:fs');
 const { appendFile, readFile, writeFile, realpath, mkdtemp, rename, rm, stat } = require('node:fs/promises');
 const { decodeInput } = require('./text-input.cjs');
 const { findOriginal } = require('./text-engine.cjs');
@@ -37,6 +37,19 @@ if (userData) {
 const nativeEnabled = !!nativeModel && existsSync(join(nativeModel, 'otter.onnx'));
 const rulesOnly = !app.isPackaged && process.env.REDACTOR_RULES_ONLY === '1';
 const settingsPath = join(app.getPath('userData'), 'inference-settings.json');
+const viewSettingsPath = join(app.getPath('userData'), 'view-settings.json');
+type ViewOptions = import('../src/model').ViewOptions;
+const viewOptions: ViewOptions = { sync: true, newlines: true, lineNumbers: false, wrap: true };
+const viewLabels: Record<keyof ViewOptions, string> = {
+  sync: '同步滚动', newlines: '显示换行符', lineNumbers: '显示行号', wrap: '自动换行',
+};
+const viewKeys = Object.keys(viewLabels) as (keyof ViewOptions)[];
+try {
+  const saved = JSON.parse(readFileSync(viewSettingsPath, 'utf8'));
+  for (const key of viewKeys) if (typeof saved?.[key] === 'boolean') viewOptions[key] = saved[key];
+} catch {
+  // Use the comparison view defaults.
+}
 let provider = 'auto';
 try {
   const saved = JSON.parse(readFileSync(settingsPath, 'utf8'));
@@ -473,6 +486,7 @@ ipcMain.handle('redaction:open', async (event, mode = 'redact') => {
   return decodeImport(session, restoring);
 });
 ipcMain.handle('redaction:decode-gb18030', (event, mode = 'redact') => decodeImport(windowSession(event.sender), mode === 'restore', 'gb18030'));
+ipcMain.handle('redaction:view-options', () => viewOptions);
 ipcMain.handle('redaction:inference-settings', async () => ({
   enabled: nativeEnabled, provider, providers: nativeEnabled ? await infer('providers', 'auto') : [],
 }));
@@ -610,6 +624,24 @@ function projectMenu(label: string, accelerator: string | undefined, command: Pr
   return { label, accelerator, click: (_item, window) => window?.webContents.send('redaction:project-command', command) };
 }
 
+function viewMenu(key: keyof ViewOptions) {
+  return {
+    id: 'view-' + key, label: viewLabels[key], type: 'checkbox', checked: viewOptions[key],
+    click(item: { checked: boolean }) {
+      try {
+        mkdirSync(app.getPath('userData'), { recursive: true });
+        writeFileSync(viewSettingsPath, JSON.stringify({ ...viewOptions, [key]: item.checked }), 'utf8');
+      } catch {
+        item.checked = viewOptions[key];
+        dialog.showErrorBox('视图设置', '无法保存视图设置。');
+        return;
+      }
+      viewOptions[key] = item.checked;
+      for (const window of BrowserWindow.getAllWindows()) window.webContents.send('redaction:view-options-changed', viewOptions);
+    },
+  };
+}
+
 if (app.requestSingleInstanceLock()) {
   app.on('second-instance', () => openWindow());
   app.whenReady().then(() => {
@@ -628,6 +660,7 @@ if (app.requestSingleInstanceLock()) {
         { role: 'cut', label: '剪切' }, { role: 'copy', label: '复制' },
         { role: 'paste', label: '粘贴' }, { role: 'selectAll', label: '全选' },
       ] },
+      { label: '视图', submenu: viewKeys.map(viewMenu) },
       { label: '设置', submenu: [{ label: '推理设置…', click: (_item, window) => window?.webContents.send('redaction:open-settings') }] },
     ]));
     openWindow();

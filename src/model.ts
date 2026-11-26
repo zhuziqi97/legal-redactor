@@ -1,4 +1,5 @@
 export type Span = { start: number; end: number };
+export type ViewOptions = { sync: boolean; newlines: boolean; lineNumbers: boolean; wrap: boolean };
 export type Action = 'replace' | 'keep' | 'review';
 export const labels = {
   person: '人员', organization: '单位', address: '地址', id_card: '证件', mobile: '电话',
@@ -57,6 +58,8 @@ export type OutputResult = { output: string; sourcePaths: string[]; filename: st
 declare global {
   interface Window {
     redaction: {
+      viewOptions(): Promise<ViewOptions>;
+      onViewOptions(callback: (options: ViewOptions) => void): void;
       open: (mode?: 'restore') => Promise<ImportSelection | null>;
       decodeImport: (mode?: 'restore') => Promise<SourceFile>;
       inferenceSettings: () => Promise<InferenceSettings>;

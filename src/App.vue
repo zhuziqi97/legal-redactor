@@ -7,7 +7,7 @@ import ReviewPanel from './components/ReviewPanel.vue';
 import RestoreWorkspace from './components/RestoreWorkspace.vue';
 import { positionKey, prettyError, samePersonKind, type Adjustment, type AdjustmentPreviewResult, type Evidence,
   type Group, type InferenceSettings, type Issue, type Occurrence, type OutputResult, type RangeSuggestion, type SourceChange, type Span, type Term,
-  type SourceFile, type Workspace, type WorkspaceResult } from './model';
+  type SourceFile, type ViewOptions, type Workspace, type WorkspaceResult } from './model';
 import { indexText } from './positions';
 
 const api = window.redaction;
@@ -15,6 +15,8 @@ const workspace = shallowRef<Workspace>({ documents: [], groups: [], current: nu
 const workspaceTabs = [{ id: 'redact', label: '脱敏' }, { id: 'restore', label: '恢复' }] as const;
 type WorkspaceMode = (typeof workspaceTabs)[number]['id'];
 const mode = ref<WorkspaceMode>('redact');
+const viewOptions = shallowRef<ViewOptions>();
+api.onViewOptions(options => { viewOptions.value = options; });
 const material = computed(() => workspace.value.current);
 const ready = computed(() => material.value?.status === 'ready');
 const collapsed = ref(false);
@@ -218,7 +220,8 @@ function adopt(result: Workspace, reset = false) {
 
 onMounted(async () => {
   try {
-    const view = await api.initialProject();
+    const [view, options] = await Promise.all([api.initialProject(), api.viewOptions()]);
+    viewOptions.value ??= options;
     if (view) adopt(view, true);
   } catch (error) {
     announce(prettyError(error), true);
@@ -1125,6 +1128,7 @@ function showEvidence(link: Evidence) {
         </div>
         <div v-else class="workbench">
           <DocumentReader ref="reader" :address="material.id" :material="material" :selected="selected"
+            :view-options="viewOptions"
             :can-output="!busy && ready && !sourceEdit" :active="mode === 'redact'"
             :edit-text="sourceEdit?.text" :revising="revising" :edit-error="sourceError"
             :edit-disabled="busy || scanning === material.id || queued.includes(material.id) || !!draft || !!rangeFor"
@@ -1161,7 +1165,7 @@ function showEvidence(link: Evidence) {
         </div>
       </section>
       <RestoreWorkspace v-show="mode === 'restore'" id="restore-panel" role="tabpanel" aria-labelledby="restore-tab"
-        :groups="workspace.groups" :notice="notice" @notice="announce" />
+        :groups="workspace.groups" :notice="notice" :view-options="viewOptions" :active="mode === 'restore'" @notice="announce" />
     </main>
   </div>
 

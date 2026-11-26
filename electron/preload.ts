@@ -6,6 +6,10 @@ contextBridge.exposeInMainWorld('redaction', {
   inferenceSettings: () => ipcRenderer.invoke('redaction:inference-settings'),
   setProvider: (provider: string) => ipcRenderer.invoke('redaction:set-provider', provider),
   onOpenSettings: (callback: () => void) => ipcRenderer.on('redaction:open-settings', () => callback()),
+  viewOptions: () => ipcRenderer.invoke('redaction:view-options'),
+  onViewOptions: (callback: (options: import('../src/model').ViewOptions) => void) => {
+    ipcRenderer.on('redaction:view-options-changed', (_event: unknown, options: import('../src/model').ViewOptions) => callback(options));
+  },
   initialProject: () => ipcRenderer.invoke('redaction:initial-project'),
   openProject: (password?: string | null) => ipcRenderer.invoke('redaction:open-project', password),
   saveProject: (password?: string | null, destination?: import('./main.js').ProjectDestination) =>
