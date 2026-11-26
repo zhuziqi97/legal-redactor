@@ -155,7 +155,7 @@ function showLicense() {
           </div>
         </fieldset>
         <fieldset v-else-if="section === 'habits'" :disabled="!ready || saving">
-          <label class="settings-select-row">启动时
+          <label class="settings-select-row"><span>启动时</span>
             <select :value="draft.startupProject" @change="edit('startupProject', $event)">
               <option value="empty">打开空项目</option><option value="last">打开上次的项目</option>
             </select>
@@ -170,8 +170,8 @@ function showLicense() {
           </div>
         </fieldset>
         <fieldset v-else-if="section === 'inference'" :disabled="!ready || saving">
-          <label class="settings-select-row">推理设备
-            <select :value="draft.provider" @change="edit('provider', $event)">
+          <label class="settings-select-row"><span>推理设备</span>
+            <select class="inference-select" :value="draft.provider" @change="edit('provider', $event)">
               <option v-for="option in inference?.options" :key="option.id" :value="option.id">{{ option.label }}</option>
             </select>
           </label>

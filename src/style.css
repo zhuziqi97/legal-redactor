@@ -78,9 +78,38 @@ h1, h2, h3, p { margin: 0; }
 .settings-content fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }
 .settings-row { display: flex; align-items: end; flex-wrap: wrap; gap: 11px; }
 .settings-row label { display: grid; gap: 5px; font-size: 13px; }
-.settings-row select { min-width: 120px; }
+.settings-row select { width: 120px; }
 .settings-select-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 15px; }
-.settings-select-row select { min-width: 160px; }
+.settings-select-row > span { flex: none; }
+.settings-select-row select { width: 180px; }
+.settings-select-row .inference-select { width: 330px; }
+.settings-content select {
+  min-width: 0; max-width: 100%; min-height: 36px; padding: 6px 10px;
+  border: 1px solid var(--edge); border-radius: 8px; background: var(--paper);
+  align-items: center; gap: 8px; white-space: normal; overflow-wrap: anywhere;
+}
+.settings-content select:disabled { cursor: default; opacity: .55; }
+.settings-content select:enabled:hover, .settings-content select:open { border-color: var(--focus); }
+.settings-content select, .settings-content select::picker(select) { appearance: base-select; }
+.settings-content select::picker-icon {
+  content: ''; flex: none; width: 7px; height: 7px; margin-inline: auto 2px;
+  border: solid var(--muted); border-width: 0 1.5px 1.5px 0; rotate: 45deg; translate: 0 -2px;
+}
+.settings-content select:open::picker-icon { rotate: 225deg; translate: 0 2px; }
+.settings-content select::picker(select) {
+  width: anchor-size(width); min-width: 0; max-height: min(300px, 60vh); overflow: auto;
+  margin-block: 5px; padding: 4px; border: 1px solid var(--edge); border-radius: 9px;
+  color: var(--ink); background: var(--paper); box-shadow: 0 6px 18px #24355422;
+}
+.settings-content option {
+  min-height: 33px; padding: 5px 8px; gap: 8px; border-radius: 5px;
+  white-space: normal; overflow-wrap: anywhere; cursor: pointer;
+}
+.settings-content option:hover, .settings-content option:focus-visible { background: var(--surface); }
+.settings-content option:focus-visible { outline-offset: -2px; }
+.settings-content option:checked { color: var(--accent); background: var(--accent-soft); }
+.settings-content option::checkmark { order: 1; flex: none; margin-inline: auto 0; color: var(--accent); }
+.settings-content .settings-hint { overflow-wrap: anywhere; }
 .reading-preview {
   margin: 15px 0 13px; min-height: 76px; padding: 15px; display: flex; align-items: center;
   border: 1px solid var(--line); border-radius: 8px; background: var(--surface);
