@@ -35,6 +35,40 @@ button { background: transparent; }
 button, select { cursor: pointer; }
 button:disabled { cursor: default; opacity: .48; }
 :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+/* Shared single-choice controls */
+select, select::picker(select) { appearance: base-select; }
+select {
+  min-width: 0; max-width: 100%; min-height: 30px; padding: 4px 8px;
+  border: 1px solid var(--edge); border-radius: 8px; background: var(--paper);
+  align-items: center; gap: 8px; white-space: nowrap;
+}
+select selectedcontent {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+select:disabled { cursor: default; opacity: .55; }
+select:enabled:hover, select:open { border-color: var(--focus); }
+select::picker-icon {
+  content: ''; flex: none; width: 7px; height: 7px; margin-inline: auto 2px;
+  border: solid var(--muted); border-width: 0 1.5px 1.5px 0; rotate: 45deg; translate: 0 -2px;
+}
+select:open::picker-icon { rotate: 225deg; translate: 0 2px; }
+select::picker(select) {
+  width: max(anchor-size(width), var(--select-picker-min-width, 0px)); min-width: 0;
+  max-height: min(300px, 60vh); overflow: auto;
+  margin-block: 5px; padding: 4px; border: 1px solid var(--edge); border-radius: 9px;
+  color: var(--ink); background: var(--paper); box-shadow: 0 6px 18px #24355422;
+}
+select option {
+  min-height: 33px; padding: 5px 8px; gap: 8px; border-radius: 5px;
+  white-space: normal; overflow-wrap: anywhere; cursor: pointer;
+}
+select option:enabled:is(:hover, :focus-visible) { background: var(--surface); }
+select option:focus-visible { outline-offset: -2px; }
+select option:checked { color: var(--accent); background: var(--accent-soft); }
+select option:disabled { color: var(--muted); cursor: default; }
+select option::checkmark { order: 1; flex: none; margin-inline: auto 0; color: var(--accent); }
+
 h1, h2, h3, p { margin: 0; }
 #app { display: flex; flex: 1; flex-direction: column; min-height: 0; }
 
@@ -79,6 +113,7 @@ h1, h2, h3, p { margin: 0; }
 .settings-row { display: flex; align-items: end; flex-wrap: wrap; gap: 11px; }
 .settings-row label { display: grid; gap: 5px; font-size: 13px; }
 .settings-row select { width: 120px; }
+.settings-content select { min-height: 36px; padding: 6px 10px; }
 .settings-select-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 15px; }
 .settings-select-row > span:first-child { flex: none; }
 .settings-select-row select { width: 180px; }
@@ -90,32 +125,6 @@ h1, h2, h3, p { margin: 0; }
   box-shadow: 0 4px 14px #24355420; color: var(--ink); font-size: 12px; line-height: 1.5;
   overflow-wrap: anywhere; pointer-events: none;
 }
-.settings-content select {
-  min-width: 0; max-width: 100%; min-height: 36px; padding: 6px 10px;
-  border: 1px solid var(--edge); border-radius: 8px; background: var(--paper);
-  align-items: center; gap: 8px; white-space: normal; overflow-wrap: anywhere;
-}
-.settings-content select:disabled { cursor: default; opacity: .55; }
-.settings-content select:enabled:hover, .settings-content select:open { border-color: var(--focus); }
-.settings-content select, .settings-content select::picker(select) { appearance: base-select; }
-.settings-content select::picker-icon {
-  content: ''; flex: none; width: 7px; height: 7px; margin-inline: auto 2px;
-  border: solid var(--muted); border-width: 0 1.5px 1.5px 0; rotate: 45deg; translate: 0 -2px;
-}
-.settings-content select:open::picker-icon { rotate: 225deg; translate: 0 2px; }
-.settings-content select::picker(select) {
-  width: anchor-size(width); min-width: 0; max-height: min(300px, 60vh); overflow: auto;
-  margin-block: 5px; padding: 4px; border: 1px solid var(--edge); border-radius: 9px;
-  color: var(--ink); background: var(--paper); box-shadow: 0 6px 18px #24355422;
-}
-.settings-content option {
-  min-height: 33px; padding: 5px 8px; gap: 8px; border-radius: 5px;
-  white-space: normal; overflow-wrap: anywhere; cursor: pointer;
-}
-.settings-content option:hover, .settings-content option:focus-visible { background: var(--surface); }
-.settings-content option:focus-visible { outline-offset: -2px; }
-.settings-content option:checked { color: var(--accent); background: var(--accent-soft); }
-.settings-content option::checkmark { order: 1; flex: none; margin-inline: auto 0; color: var(--accent); }
 .reading-preview {
   margin: 15px 0 13px; min-height: 76px; padding: 15px; display: flex; align-items: center;
   border: 1px solid var(--line); border-radius: 8px; background: var(--surface);
@@ -251,8 +260,7 @@ h1, h2, h3, p { margin: 0; }
   display: flex; flex: none; align-items: center; justify-content: space-between; gap: 8px;
   padding: 4px 12px 8px; border-bottom: 1px solid var(--line);
 }
-select, input, textarea { border: 1px solid var(--edge); background: var(--paper); border-radius: 6px; padding: 5px 7px; }
-.review-filters select { max-width: 112px; font-size: 12px; }
+input, textarea { border: 1px solid var(--edge); background: var(--paper); border-radius: 6px; padding: 5px 7px; }
 .review-filters .button[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent); }
 .review-list { flex: 1; min-height: 60px; overflow: auto; padding: 4px 8px; }
 .chip { display: inline-block; padding: 1px 5px; border-radius: 4px; font-size: 12px; font-weight: 650; }
@@ -439,7 +447,7 @@ dialog::backdrop { background: #17284a40; }
 /* Mapping list */
 .mapping-filters { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; padding: 4px 12px 3px; }
 .mapping-filters input { grid-column: 1 / -1; min-width: 0; font-size: 12px; }
-.mapping-filters select { width: 100%; min-width: 0; }
+.mapping-filters select { width: 100%; }
 .mapping-filters select, .candidate-search select { font-size: 12px; }
 .mapping-filters input::placeholder, .candidate-search input::placeholder { color: #66758a; }
 .mapping-row { display: flex; align-items: center; gap: 6px; }
@@ -471,7 +479,7 @@ dialog::backdrop { background: #17284a40; }
 .position-heading { display: flex; flex: none; align-items: center; justify-content: space-between; gap: 8px; min-height: 38px; padding: 5px 11px; }
 .position-heading h3 { flex: none; font-size: 13px; }
 .position-filter { display: flex; align-items: center; gap: 4px; min-width: 0; }
-.position-filter select { min-width: 0; max-width: 100%; font-size: 12px; text-overflow: ellipsis; }
+.position-filter select { font-size: 12px; }
 .position-list { flex: 1; min-height: 0; overflow: auto; padding: 2px 8px 6px; }
 .position-list .occurrence { width: 100%; margin-inline: 0; }
 .occurrence:focus-visible { outline-offset: -2px; }
@@ -507,6 +515,7 @@ dialog::backdrop { background: #17284a40; }
 .adjust-target { margin: 0; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
 .adjust-fields { display: grid; grid-template-columns: minmax(80px, 1fr) minmax(0, 2fr); gap: 7px; }
 .adjust-fields label { display: grid; gap: 3px; color: var(--muted); font-size: 12px; }
+.adjust-fields select { --select-picker-min-width: 132px; }
 .adjust-fields input, .group-preview { min-width: 0; overflow-wrap: anywhere; }
 .candidate-search { display: flex; gap: 5px; min-width: 0; }
 .candidate-search input { flex: 1; min-width: 45px; font-size: 12px; }

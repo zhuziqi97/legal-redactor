@@ -147,6 +147,7 @@ defineExpose({ selectGroup, reveal, showGroup });
         <h3>{{ showPending ? '待核位置' : '出现位置' }}</h3>
         <div v-if="mapping && options.length > 1" class="position-filter">
           <select v-model="termFilter" aria-label="按原词或别称筛选位置" @change="resetPositionScroll">
+            <button type="button"><component :is="'selectedcontent'" /></button>
             <option value="">全部原词</option>
             <option v-for="term in options" :key="term" :value="term">{{ term }}</option>
           </select>

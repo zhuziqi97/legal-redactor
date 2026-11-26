@@ -14,6 +14,7 @@ defineEmits<{ choose: [original: string] }>();
       <span>恢复原词 {{ source.primary }} →</span>
       <select :value="value || ''" :aria-label="`为${source.primary}选择恢复原词`" :disabled="locked"
         @change="$emit('choose', ($event.target as HTMLSelectElement).value)">
+        <button type="button"><component :is="'selectedcontent'" /></button>
         <option value="" disabled>选择原词</option>
         <option v-for="term in source.terms" :key="term" :value="term">{{ term }}</option>
       </select>
@@ -26,5 +27,5 @@ defineEmits<{ choose: [original: string] }>();
 .recovery-choice, .recovery-choice label {
   display: flex; align-items: baseline; flex-wrap: wrap; gap: 5px 8px; min-width: 0; overflow-wrap: anywhere;
 }
-.recovery-choice select { min-height: 28px; max-width: 100%; }
+.recovery-choice select { --select-picker-min-width: 132px; }
 </style>

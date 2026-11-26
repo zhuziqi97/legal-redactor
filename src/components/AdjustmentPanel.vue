@@ -271,7 +271,9 @@ function resolve(mode: 'whole' | 'selected' | 'retain', targetId?: string) {
         </div>
         <label v-for="choice in targetCodeChoices" :key="choice.original" class="edit-field">
           <span>{{ choice.original }}的代号</span>
-          <select v-model="draft.targetCodes[choice.original]" :aria-label="`${choice.original}的代号`" :disabled="editingLocked">
+          <select :value="draft.targetCodes[choice.original] ?? ''" :aria-label="`${choice.original}的代号`" :disabled="editingLocked"
+            @change="draft.targetCodes[choice.original] = ($event.target as HTMLSelectElement).value">
+            <button type="button"><component :is="'selectedcontent'" /></button>
             <option value="" disabled>选择代号</option>
             <option v-for="{code, count} in choice.codes" :key="code" :value="code">{{ code }} · {{ count }} 处</option>
           </select>

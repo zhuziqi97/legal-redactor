@@ -365,13 +365,19 @@ test('按类别和材料搜索映射，保留原文位置和脱敏输出', async
   assert.deepEqual(await mappings.locator('.mapping-filters').evaluate(form => {
     const [query, materials, categories] = [...form.children].map(input => input.getBoundingClientRect());
     return [query.bottom < materials.top, materials.top === categories.top, materials.right < categories.left,
+      materials.height === categories.height,
       Math.abs(query.right - categories.right) < 1];
-  }), [true,true,true,true]);
+  }), [true,true,true,true,true]);
 
   const readOutput = () => page.evaluate(() => window.redaction.engine({op:'output', materialId:'1'}));
   const saved = await readOutput();
   assert.match(saved.output, /【张某[^】]+】/u);
-  await category.selectOption('person');
+  await category.press('Space');
+  await page.locator('select:open').waitFor();
+  assert.equal(await category.evaluate(select => getComputedStyle(select, '::picker(select)').appearance), 'base-select');
+  await page.keyboard.press('ArrowDown');
+  await page.keyboard.press('Enter');
+  assert.equal(await category.inputValue(), 'person');
   await search.fill('张');
   assert.deepEqual(await titles(), ['张雷','张雪']);
   const positions = mappings.getByRole('region', {name:'出现位置'});
