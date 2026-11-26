@@ -119,6 +119,12 @@ jobs:
           python-version: '3.12'
       - run: npm ci
       - run: npm test
+      - name: Build Linux GPU probe
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libvulkan-dev
+          cc -O2 -std=c11 native/inference-probe-linux.c -ldl -o build/inference-probe
       - uses: actions/download-artifact@v8
         with:
           name: release-model
@@ -139,6 +145,10 @@ jobs:
         run: |
           $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
           $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          $vcvars = Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
+          cmd /d /c ('call "{0}" && cl /nologo /std:c++17 /EHsc /O2 /MT /Fo:build\inference-probe.obj /Fe:build\inference-probe.exe native\inference-probe-windows.cpp dxgi.lib d3d12.lib user32.lib' -f $vcvars)
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Remove-Item build/inference-probe.obj
           $crt = Get-ChildItem -Path (Join-Path $vs 'VC\Redist\MSVC') -Directory -Filter '14.*' |
             Sort-Object { [version]$_.Name } -Descending |
             ForEach-Object { Join-Path $_.FullName 'x64\Microsoft.VC143.CRT' } |

@@ -28,6 +28,9 @@ async function main(executable, version) {
     const page = await desktop.firstWindow();
     page.setDefaultTimeout(90000);
     const runtime = join(resources, 'app', 'node_modules', 'onnxruntime-node');
+    if (process.platform !== 'darwin') {
+      await access(join(resources, 'app', 'build', process.platform === 'win32' ? 'inference-probe.exe' : 'inference-probe'));
+    }
     const {requirements, manifests} = require(join(runtime, 'script', 'install-metadata.js'));
     const target = `${process.platform}/${process.arch}`;
     const binaryDirectory = join(runtime, 'bin', 'napi-v6', target);

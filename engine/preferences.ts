@@ -1,3 +1,5 @@
+import type { Backend } from './inference-devices.js';
+
 export const viewLabels = {
   sync: '同步滚动', newlines: '显示换行符', lineNumbers: '显示行号', wrap: '自动换行',
 } as const;
@@ -10,11 +12,6 @@ export const sections = {
   habits: '常规', reading: '阅读显示', inference: '推理设置', updates: '软件更新', about: '关于',
 } as const;
 export type SettingsSection = keyof typeof sections;
-export const inferenceBackendLabels = {
-  auto: '自动', cpu: 'CPU', dml: 'DirectML', webgpu: 'WebGPU（实验性）',
-  cuda: 'CUDA', tensorrt: 'TensorRT', coreml: 'CoreML',
-} as const;
-export type InferenceBackend = keyof typeof inferenceBackendLabels;
 export type MappingScope = 'all' | 'current';
 export const folderKinds = ['import', 'project', 'redactExport', 'restoreExport'] as const;
 export type FolderKind = (typeof folderKinds)[number];
@@ -29,8 +26,8 @@ export type UpdateStatus =
   | { kind: 'available' | 'unavailable'; version: string; size?: number }
   | { kind: 'error'; message: string };
 
-export function inferenceBackends(platform: string, arch: string): InferenceBackend[] {
-  const backends: InferenceBackend[] = ['auto', 'cpu'];
+export function inferenceBackends(platform: string, arch: string): (Backend | 'auto')[] {
+  const backends: (Backend | 'auto')[] = ['auto', 'cpu'];
   if (platform === 'win32' && arch === 'x64') backends.push('dml', 'webgpu');
   if (platform === 'linux' && arch === 'x64') backends.push('webgpu', 'cuda', 'tensorrt');
   if (platform === 'darwin' && arch === 'arm64') backends.push('coreml', 'webgpu');
@@ -40,7 +37,7 @@ export function inferenceBackends(platform: string, arch: string): InferenceBack
 export function defaultPreferences() {
   return {
     view: { sync: true, newlines: true, lineNumbers: false, wrap: true, font: 'default', fontSize: 15 } as ViewOptions,
-    inference: { provider: 'auto' },
+    inference: { provider: 'auto', label: '' },
     updates: { automatic: true, lastAttempt: 0 },
     usage: {
       sidebarCollapsed: false, mappingScope: 'all' as MappingScope, section: 'habits' as SettingsSection,
@@ -78,8 +75,9 @@ export function normalizePreferences(value: Record<string, unknown>) {
   for (const key of viewKeys) if (typeof view?.[key] === 'boolean') result.view[key] = view[key];
   if (typeof view?.font === 'string' && Object.hasOwn(fontLabels, view.font)) result.view.font = view.font as ReadingFont;
   if (typeof view?.fontSize === 'number' && fontSizes.includes(view.fontSize)) result.view.fontSize = view.fontSize;
-  if (typeof inference?.provider === 'string' && /^(auto|[a-z][a-z0-9_-]*)$/iu.test(inference.provider)) {
+  if (typeof inference?.provider === 'string' && /^[a-z][a-z0-9_-]*(?::[a-z0-9_-]+)?$/iu.test(inference.provider)) {
     result.inference.provider = inference.provider;
+    if (typeof inference.label === 'string') result.inference.label = inference.label;
   }
   if (typeof updates?.automatic === 'boolean') result.updates.automatic = updates.automatic;
   if (typeof updates?.lastAttempt === 'number' && Number.isSafeInteger(updates.lastAttempt) && updates.lastAttempt >= 0) {

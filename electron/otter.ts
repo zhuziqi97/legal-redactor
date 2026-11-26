@@ -21,10 +21,10 @@ class NativeOtter {
     this.padding = this.tokenizer.tokenToId('<pad>') ?? 0;
   }
 
-  static async load(directory: string, provider: string) {
+  static async load(directory: string, device: import('../engine/inference-devices.js').InferenceDevice) {
     const options: import('onnxruntime-node').InferenceSession.SessionOptions = { intraOpNumThreads: 4, interOpNumThreads: 1 };
-    if (provider !== 'auto') options.executionProviders = [provider];
-    if (provider === 'dml') {
+    options.executionProviders = [device.index === undefined ? device.backend : { name: device.backend, deviceId: device.index }];
+    if (device.backend === 'dml') {
       options.enableMemPattern = false;
       options.executionMode = 'sequential';
     }

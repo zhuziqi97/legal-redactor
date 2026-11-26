@@ -1,14 +1,14 @@
-const { NativeOtter } = require('./otter.cjs');
+type InferenceDevice = import('../engine/inference-devices.js').InferenceDevice;
 
-type InferenceRequest = {
-  id: number; op: 'prepare' | 'predict'; directory: string; provider: string;
+type InferenceRequest = { id: number; op: 'discover' } | {
+  id: number; op: 'prepare' | 'predict'; directory: string; device: InferenceDevice;
   texts?: string[]; labels?: string[];
 };
-type Route = { provider: string; fallbackReason?: string; reusedSession: boolean; loadMs: number };
 
 type Session = {
-  directory: string; requested: string; provider: string; fallbackReason?: string;
-  model: InstanceType<typeof NativeOtter>;
+  directory: string;
+  device: string;
+  model: { release(): Promise<void>; predict(texts: string[], labels: string[]): Promise<unknown> };
 };
 let loaded: Session | undefined;
 
@@ -16,35 +16,21 @@ function explain(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
 
-async function ensureSession(request: InferenceRequest, send: (message: object) => void): Promise<Route> {
-  const {directory, provider} = request;
-  const mayFallback = provider === 'auto' && request.op !== 'predict';
+async function ensureSession(request: Exclude<InferenceRequest, {op: 'discover'}>, send: (message: object) => void) {
+  const {directory, device} = request;
   const existing = loaded;
-  if (existing?.directory === directory && (existing.provider === provider || (mayFallback && existing.requested === provider))) {
-    return {provider: existing.provider, fallbackReason: mayFallback ? existing.fallbackReason : undefined, reusedSession: true, loadMs: 0};
-  }
+  if (existing?.directory === directory && existing.device === device.id) return {reusedSession: true, loadMs: 0};
   send({phase: '正在加载模型'});
   const start = performance.now();
   loaded = undefined;
   await existing?.model.release();
-  try {
-    const model = await NativeOtter.load(directory, provider);
-    loaded = {directory, requested: provider, provider, model};
-  } catch (error) {
-    if (!mayFallback) throw error;
-    const fallbackReason = explain(error);
-    send({phase: '正在加载模型 · 自动初始化失败，正在尝试 cpu'});
-    try {
-      const model = await NativeOtter.load(directory, 'cpu');
-      loaded = {directory, requested: provider, provider: 'cpu', fallbackReason, model};
-    } catch (cpuError) {
-      throw new Error(`自动初始化失败：${fallbackReason}。尝试 cpu 失败：${explain(cpuError)}`);
-    }
-  }
-  return {provider: loaded.provider, fallbackReason: loaded.fallbackReason, reusedSession: false, loadMs: performance.now() - start};
+  const { NativeOtter } = require('./otter.cjs');
+  loaded = {directory, device: device.id, model: await NativeOtter.load(directory, device)};
+  return {reusedSession: false, loadMs: performance.now() - start};
 }
 
 async function dispatch(request: InferenceRequest, send: (message: object) => void) {
+  if (request.op === 'discover') return require('./inference-environment.cjs').discoverInferenceEnvironment();
   const route = await ensureSession(request, send);
   if (request.op === 'prepare') return route;
   return loaded!.model.predict(request.texts!, request.labels!);

@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, shallowRef } from 'vue';
-import { defaultPreferences, editableSettings, fontLabels, fontSizes, inferenceBackendLabels, isSettingsSection, sections,
-  viewKeys, viewLabels, type InferenceBackend, type PreferenceSnapshot, type SettingsChanges, type SettingsSection,
+import { defaultPreferences, editableSettings, fontLabels, fontSizes, isSettingsSection, sections,
+  viewKeys, viewLabels, type PreferenceSnapshot, type SettingsChanges, type SettingsSection,
   type UpdateStatus } from '../../engine/preferences';
+import type { InferenceStatus } from '../../engine/inference-devices';
 import { prettyError } from '../model';
 
 const api = window.redaction;
@@ -21,9 +22,7 @@ const ready = ref(false);
 const saving = ref(false);
 const error = ref('');
 const message = ref('');
-const backends = shallowRef<InferenceBackend[]>([]);
-const previousBackend = computed(() => backends.value.some(backend => backend === baseline.value.provider)
-  ? undefined : baseline.value.provider);
+const inference = shallowRef<InferenceStatus>();
 const version = ref('');
 const update = shallowRef<UpdateStatus>({ kind: 'idle' });
 const license = ref('');
@@ -52,6 +51,7 @@ function apply(snapshot: PreferenceSnapshot) {
 api.onPreferencesChanged(apply);
 api.onSettingsSection(next => { section.value = next; });
 api.onUpdateStatus(status => { update.value = status; });
+api.onInferenceStatus(status => { inference.value = status; });
 onMounted(async () => {
   window.addEventListener('beforeunload', confirmClose);
   try {
@@ -59,7 +59,7 @@ onMounted(async () => {
     apply(snapshot);
     version.value = info.version;
     update.value = info.update;
-    backends.value = info.backends;
+    inference.value ??= info.inference;
     if (!target && section.value === defaults.usage.section) section.value = snapshot.settings.usage.section;
     ready.value = true;
   } catch (failure) { error.value = prettyError(failure); }
@@ -170,12 +170,13 @@ function showLicense() {
           </div>
         </fieldset>
         <fieldset v-else-if="section === 'inference'" :disabled="!ready || saving">
-          <label class="settings-select-row">推理后端
+          <label class="settings-select-row">推理设备
             <select :value="draft.provider" @change="edit('provider', $event)">
-              <option v-for="backend in backends" :key="backend" :value="backend">{{ inferenceBackendLabels[backend] }}</option>
-              <option v-if="previousBackend" :value="previousBackend">{{ previousBackend }}（上次选择）</option>
+              <option v-for="option in inference?.options" :key="option.id" :value="option.id">{{ option.label }}</option>
             </select>
           </label>
+          <p v-if="inference?.active" class="settings-hint">当前使用 {{ inference.active }}</p>
+          <p v-else-if="inference?.selected" class="settings-hint">已选设备 {{ inference.selected }}</p>
         </fieldset>
         <fieldset v-else-if="section === 'updates'" :disabled="!ready || saving">
           <label class="settings-toggle">

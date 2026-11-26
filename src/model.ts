@@ -1,4 +1,5 @@
-import type { InferenceBackend, PreferencePatch, PreferenceSnapshot, SettingsChanges, SettingsSection, UpdateStatus } from '../engine/preferences';
+import type { PreferencePatch, PreferenceSnapshot, SettingsChanges, SettingsSection, UpdateStatus } from '../engine/preferences';
+import type { Backend, InferenceStatus } from '../engine/inference-devices';
 export type { ViewOptions } from '../engine/preferences';
 
 export type Span = { start: number; end: number };
@@ -66,7 +67,8 @@ declare global {
       onPreferencesChanged: (callback: (snapshot: PreferenceSnapshot, reset: boolean) => void) => void;
       openSettings: (section?: SettingsSection) => Promise<void>;
       onSettingsSection: (callback: (section: SettingsSection) => void) => void;
-      settingsInfo: () => Promise<{ version: string; update: UpdateStatus; backends: InferenceBackend[] }>;
+      settingsInfo: () => Promise<{ version: string; update: UpdateStatus; backends: (Backend | 'auto')[]; inference: InferenceStatus }>;
+      onInferenceStatus: (callback: (status: InferenceStatus) => void) => void;
       checkUpdates: () => Promise<void>;
       onUpdateStatus: (callback: (status: UpdateStatus) => void) => void;
       openProductLink: (target: 'homepage' | 'release' | 'download') => Promise<void>;

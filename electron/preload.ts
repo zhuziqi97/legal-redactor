@@ -17,6 +17,9 @@ contextBridge.exposeInMainWorld('redaction', {
     ipcRenderer.on('redaction:settings-section', (_event: unknown, section) => callback(section));
   },
   settingsInfo: () => ipcRenderer.invoke('redaction:settings-info'),
+  onInferenceStatus: (callback: (status: import('../engine/inference-devices.js').InferenceStatus) => void) => {
+    ipcRenderer.on('redaction:inference-status', (_event: unknown, status) => callback(status));
+  },
   checkUpdates: () => ipcRenderer.invoke('redaction:check-updates'),
   onUpdateStatus: (callback: (status: import('../engine/preferences.js').UpdateStatus) => void) => {
     ipcRenderer.on('redaction:update-status', (_event: unknown, status) => callback(status));

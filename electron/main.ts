@@ -12,6 +12,8 @@ const { createPreferences } = require('./preferences.cjs');
 const { createUpdates } = require('./updates.cjs');
 const { defaultPreferences, inferenceBackends, isSettingsSection, viewKeys, viewLabels } =
   require('./engine/preferences.js') as typeof import('../engine/preferences.js');
+const { cpuDevice, deviceOption, previousDeviceLabel, selectDevice } =
+  require('./engine/inference-devices.js') as typeof import('../engine/inference-devices.js');
 const { basename, dirname, extname, join, resolve } = require('node:path');
 type Workspace = import('../engine/workspace-types.js').Workspace;
 type Request = import('../engine/workspace-types.js').Request;
@@ -21,6 +23,8 @@ type SettingsChanges = import('../engine/preferences.js').SettingsChanges;
 type SettingsSection = import('../engine/preferences.js').SettingsSection;
 type FolderKind = import('../engine/preferences.js').FolderKind;
 type ViewSwitch = import('../engine/preferences.js').ViewSwitch;
+type InferenceDevice = import('../engine/inference-devices.js').InferenceDevice;
+type InferenceStatus = import('../engine/inference-devices.js').InferenceStatus;
 type ProjectCommand = 'open' | 'save' | 'saveAs' | 'password';
 export type ProjectDestination = { name: string; directory: string };
 type ProjectProtection = import('./project-file.js').ProjectProtection;
@@ -31,7 +35,8 @@ type Pending = {
   resolve: (result: unknown) => void;
   reject: (error: Error) => void;
   progress: (phase: string) => void;
-  provider: string;
+  device: InferenceDevice;
+  inferenceError?: Error;
   started: number;
 };
 
@@ -69,6 +74,7 @@ function syncViewMenu() {
 
 async function changePreferences(change: (next: Preferences) => Preferences | void, reset = false) {
   const before = preferences.value.updates.automatic;
+  const previousChoice = preferences.value.inference.provider;
   let saved: boolean;
   try { saved = await preferences.update(change, reset); }
   catch (error) {
@@ -79,6 +85,10 @@ async function changePreferences(change: (next: Preferences) => Preferences | vo
   if (saved) {
     syncViewMenu();
     broadcast('redaction:preferences-changed', preferences.snapshot(), reset);
+    if (reset || previousChoice !== preferences.value.inference.provider) {
+      activeDevice = '';
+      publishInferenceStatus();
+    }
     if (!preferences.value.updates.automatic) updates.stopAutomatic();
     else if (!before || reset) void automaticCheck();
   }
@@ -129,20 +139,61 @@ function rememberProject(path: string, rememberDirectory = true) {
   }).catch(() => {});
 }
 
-type InferenceRoute = {provider: string; fallbackReason?: string; reusedSession: boolean; loadMs: number};
+type InferenceRoute = {reusedSession: boolean; loadMs: number};
 type InferencePending = {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
   progress?: (phase: string) => void;
 };
 
-function fallbackNotice(route: InferenceRoute) {
-  return route.fallbackReason ? `自动初始化失败，已改用 ${route.provider}。原因：${route.fallbackReason}` : '';
+class InferenceError extends Error {}
+
+let detectedDevices: InferenceDevice[] = [];
+let environmentReady = Promise.resolve();
+let environmentDetected = false;
+let autoUsesCpu = false;
+let activeDevice = '';
+
+function selectedDevice(choice = preferences.value.inference.provider) {
+  return choice === 'auto' && autoUsesCpu ? cpuDevice : selectDevice(detectedDevices, choice);
 }
+
+function inferenceStatus(): InferenceStatus {
+  const options = [{id: 'auto', label: '自动'}, deviceOption(cpuDevice), ...detectedDevices.map(deviceOption)];
+  const {provider, label} = preferences.value.inference;
+  const selected = selectedDevice();
+  if (!selected) options.push({id: provider, label: previousDeviceLabel(provider, label) + (environmentDetected ? '（不可用）' : '')});
+  return {options, selected: environmentDetected ? selected?.name ?? '' : '', active: activeDevice};
+}
+
+function publishInferenceStatus() {
+  broadcast('redaction:inference-status', inferenceStatus());
+}
+
+async function detectEnvironment(window: InstanceType<typeof BrowserWindow>) {
+  const started = performance.now();
+  const allowed = new Set(inferenceBackends(process.platform, process.arch));
+  try {
+    const { devices, backends } = await infer('discover') as {devices: InferenceDevice[]; backends: string[]};
+    detectedDevices = devices.filter(device => allowed.has(device.backend));
+    diagnose({stage: 'inference-environment', backends, options: detectedDevices.map(device => device.backend),
+      elapsedMs: performance.now() - started});
+  } catch (error) {
+    diagnose({stage: 'inference-environment', error: String(error), elapsedMs: performance.now() - started});
+  }
+  environmentDetected = true;
+  publishInferenceStatus();
+  if (!selectedDevice() && !window.isDestroyed()) {
+    void dialog.showMessageBox(window, {
+      type: 'warning', message: '所选推理设备不可用', buttons: ['重新选择', '稍后'], defaultId: 0, cancelId: 1,
+    }).then(({ response }) => { if (response === 0) openSettings('inference'); });
+  }
+}
+
 const inferencePending = new Map<number, InferencePending>();
 let nativeWorker: ReturnType<typeof utilityProcess.fork> | undefined;
 let inferenceId = 0;
-function infer(op: 'prepare' | 'predict', ep: string, input?: { texts: string[]; labels: string[] },
+function infer(op: 'discover' | 'prepare' | 'predict', device?: InferenceDevice, input?: { texts: string[]; labels: string[] },
   progress?: (phase: string) => void) {
   if (!nativeWorker) {
     const child = utilityProcess.fork(join(__dirname, 'inference-worker.cjs'), [], { serviceName: 'Otter ONNX Runtime' });
@@ -154,13 +205,13 @@ function infer(op: 'prepare' | 'predict', ep: string, input?: { texts: string[];
         return;
       }
       inferencePending.delete(message.id);
-      if (message.error) waiter.reject(new Error(message.error));
+      if (message.error) waiter.reject(new InferenceError(message.error));
       else waiter.resolve(message.result);
     });
     child.on('exit', () => {
       if (nativeWorker !== child) return;
       nativeWorker = undefined;
-      for (const waiter of inferencePending.values()) waiter.reject(new Error('ONNX Runtime 进程已经退出。'));
+      for (const waiter of inferencePending.values()) waiter.reject(new InferenceError('ONNX Runtime 进程已经退出。'));
       inferencePending.clear();
     });
     nativeWorker = child;
@@ -168,7 +219,7 @@ function infer(op: 'prepare' | 'predict', ep: string, input?: { texts: string[];
   const id = ++inferenceId;
   return new Promise((resolve, reject) => {
     inferencePending.set(id, { resolve, reject, progress });
-    nativeWorker.postMessage({ id, op, directory: nativeModel, provider: ep, ...input });
+    nativeWorker.postMessage(op === 'discover' ? { id, op } : { id, op, directory: nativeModel, device, ...input });
   });
 }
 
@@ -240,10 +291,17 @@ function startWorker(session: Session) {
       const reply = (value: object) => {
         if (session.worker === child && session.pending === pending) child.postMessage({id: pending.id, ...value});
       };
-      infer('predict', pending.provider, message.inference, pending.progress).then(
-        predictions => reply({predictions}),
-        error => reply({inferenceError: `ONNX Runtime（${pending.provider}）运行失败。${error.message}`}),
-      );
+      infer('predict', pending.device, message.inference, pending.progress).then(predictions => {
+        if (session.worker === child && session.pending === pending &&
+            selectedDevice()?.id === pending.device.id && activeDevice !== pending.device.name) {
+          activeDevice = pending.device.name;
+          publishInferenceStatus();
+        }
+        reply({predictions});
+      }, error => {
+        pending.inferenceError = error;
+        reply({inferenceError: error.message});
+      });
 
       return;
     }
@@ -256,20 +314,20 @@ function startWorker(session: Session) {
       return;
     }
     session.pending = undefined;
-    if (message.error) pending.reject(new Error(message.error));
+    if (message.error) pending.reject(pending.inferenceError ?? new Error(message.error));
     else pending.resolve(message.result);
   });
   child.on('exit', () => finishWorker(session, child, '本地脱敏引擎已退出，请重试。'));
   return child;
 }
 
-async function runEngine(session: Session, request: Request, progress: (phase: string) => void, ep = preferences.value.inference.provider) {
+async function runEngine(session: Session, request: Request, progress: (phase: string) => void, device = cpuDevice) {
   if (session.pending) throw new Error('请等待当前操作完成。');
   const child = session.worker ?? startWorker(session);
   const result = await new Promise<unknown>((resolve, reject) => {
     const id = ++session.nextId;
-    session.pending = {id, resolve, reject, progress, provider: ep, started: performance.now()};
-    child.postMessage({id, state: session.state, request, provider: ep, rulesOnly});
+    session.pending = {id, resolve, reject, progress, device, started: performance.now()};
+    child.postMessage({id, state: session.state, request, provider: device.id, rulesOnly});
   });
   if (typeof result === 'object' && result !== null && 'state' in result) {
     const {state, ...payload} = result;
@@ -318,25 +376,13 @@ async function analyze(session: WindowSession, input: Extract<Request, {op: 'sca
     firstFeedbackMs ??= performance.now() - started;
     progress(message);
   };
-  try {
+  async function recognize(device: InferenceDevice, usedFallback: boolean) {
+    const route = rulesOnly ? undefined : await infer('prepare', device, undefined, phase) as InferenceRoute;
     assertCurrent();
-    let route: InferenceRoute | undefined;
-    if (!rulesOnly) {
-      try {
-        route = await infer('prepare', preferredEP, undefined, phase) as InferenceRoute;
-      } catch (error) {
-        assertCurrent();
-        throw new Error(`ONNX Runtime（${preferredEP}）无法初始化模型。${error instanceof Error ? error.message : String(error)}`);
-      }
-    }
-    assertCurrent();
-    const ep = route?.provider ?? preferredEP;
-    const notice = route ? fallbackNotice(route) : '';
-    const showPhase = (value: string) => phase(notice ? `${value} · ${notice}` : value);
     for (;;) {
       const base = await serialize(session, () => { assertCurrent(); return session.state; });
       analysis.state = base;
-      await runEngine(analysis, input, showPhase, ep);
+      await runEngine(analysis, input, phase, device);
       const result = await serialize(session, async () => {
         assertCurrent();
         if (session.state.revision !== base.revision) return null;
@@ -348,17 +394,46 @@ async function analyze(session: WindowSession, input: Extract<Request, {op: 'sca
         }
         analysis.state.activeId = session.state.activeId;
         const previewStart = performance.now();
-        const view = await runEngine(analysis, { op: 'view' }, showPhase) as object;
+        const view = await runEngine(analysis, { op: 'view' }, phase) as object;
         assertCurrent();
         session.state = analysis.state;
         if (session.state.revision !== base.revision) projectChanged(session);
-        diagnose({stage: 'analysis-view', preferredEP, provider: route?.provider, usedFallback: !!route?.fallbackReason,
+        diagnose({stage: 'analysis-view', preferredEP, provider: route && device.backend,
+          device: route && device.name, deviceIndex: route && device.index, usedFallback,
           reusedSession: route?.reusedSession, modelLoadMs: route?.loadMs, queueMs: input.queueMs ?? 0, firstFeedbackMs,
           previewMs: performance.now() - previewStart, elapsedMs: performance.now() - started});
-        return {...view, inferenceNotice: notice};
+        return view;
       });
       if (result) return result;
-      showPhase('工作区已有更新，正在重新整理映射');
+      phase('工作区已有更新，正在重新整理映射');
+    }
+  }
+  try {
+    await environmentReady;
+    assertCurrent();
+    let device = rulesOnly ? cpuDevice : selectedDevice(preferredEP);
+    if (!device) throw new Error('所选推理设备不可用。请在设置中重新选择。');
+    let usedFallback = false;
+    for (;;) {
+      try { return await recognize(device, usedFallback); }
+      catch (failure) {
+        assertCurrent();
+        if (!(failure instanceof InferenceError)) throw failure;
+        diagnose({stage: 'inference-error', preferredEP, provider: device.backend, message: failure.message});
+        if (preferredEP === 'auto' && device.backend !== 'cpu') {
+          autoUsesCpu = true;
+          if (preferences.value.inference.provider === 'auto') activeDevice = '';
+          publishInferenceStatus();
+          device = cpuDevice;
+          usedFallback = true;
+          continue;
+        }
+        if (selectedDevice()?.id === device.id) {
+          activeDevice = '';
+          publishInferenceStatus();
+        }
+        throw new Error(preferredEP === 'auto' ? '识别失败，请重试。' : '所选设备无法完成识别。请在设置中重新选择或重试。');
+      }
     }
   } finally {
     session.scan = undefined;
@@ -629,7 +704,11 @@ ipcMain.handle('redaction:apply-settings', async (_event, changes: SettingsChang
   return changePreferences(current => {
     const next = reset ? defaultPreferences() : current;
     next.view = { ...next.view, ...view };
-    if (provider) next.inference.provider = provider;
+    if (provider && provider !== next.inference.provider) {
+      const device = selectDevice(detectedDevices, provider);
+      if (!device) throw new Error('所选推理设备不可用。请重新选择。');
+      next.inference = {provider, label: provider === 'auto' ? '' : deviceOption(device).label};
+    }
     if (automaticUpdates !== undefined && automaticUpdates !== next.updates.automatic) {
       next.updates = { automatic: automaticUpdates, lastAttempt: 0 };
     }
@@ -651,7 +730,7 @@ ipcMain.handle('redaction:apply-settings', async (_event, changes: SettingsChang
 });
 ipcMain.handle('redaction:open-settings', (_event, section?: SettingsSection) => openSettings(isSettingsSection(section) ? section : undefined));
 ipcMain.handle('redaction:settings-info', () => ({
-  version: app.getVersion(), update: updates.status, backends: inferenceBackends(process.platform, process.arch),
+  version: app.getVersion(), update: updates.status, backends: inferenceBackends(process.platform, process.arch), inference: inferenceStatus(),
 }));
 ipcMain.handle('redaction:check-updates', () => updates.check(true));
 ipcMain.handle('redaction:open-product-link', (_event, target: 'homepage' | 'release' | 'download') => {
@@ -834,6 +913,7 @@ function openWindow(initial?: { state: Workspace; file: ProjectFile; view: unkno
     trackLayout(session);
   });
   window.loadFile(appPage);
+  return window;
 }
 
 function openSettings(section?: SettingsSection) {
@@ -910,7 +990,8 @@ if (app.requestSingleInstanceLock()) {
         { label: '关于 LegalRedactor', click: () => openSettings('about') },
       ] },
     ]));
-    openWindow(undefined, true);
+    const workspace = openWindow(undefined, true);
+    environmentReady = detectEnvironment(workspace);
     app.on('browser-window-focus', () => { void automaticCheck(); });
     void automaticCheck();
   });

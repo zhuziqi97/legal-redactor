@@ -6,6 +6,7 @@ const test = require('node:test');
 const { createPreferences } = require('../build/preferences.cjs');
 const { createUpdates, describeRelease } = require('../build/updates.cjs');
 const { defaultPreferences, inferenceBackends } = require('../build/engine/preferences.js');
+const { selectDevice, deviceOption } = require('../build/engine/inference-devices.js');
 
 async function profile(t) {
   const directory = await mkdtemp(join(tmpdir(), 'redactor-preferences-'));
@@ -17,6 +18,23 @@ test('正式发行目标使用预置后端选项', () => {
   assert.deepEqual(inferenceBackends('win32', 'x64'), ['auto', 'cpu', 'dml', 'webgpu']);
   assert.deepEqual(inferenceBackends('linux', 'x64'), ['auto', 'cpu', 'webgpu', 'cuda', 'tensorrt']);
   assert.deepEqual(inferenceBackends('darwin', 'arm64'), ['auto', 'cpu', 'coreml', 'webgpu']);
+});
+
+test('自动优先使用探测到的 GPU，手动选择保持设备和后端', async t => {
+  const {directory} = await profile(t);
+  const cuda = { id: 'cuda:test-gpu', name: 'NVIDIA GPU', backend: 'cuda', index: 1 };
+  const trt = { ...cuda, id: 'tensorrt:test-gpu', backend: 'tensorrt' };
+  assert.equal(selectDevice([cuda, trt], 'auto'), cuda);
+  assert.equal(selectDevice([], 'auto').backend, 'cpu');
+  assert.equal(selectDevice([cuda, trt], trt.id), trt);
+  assert.equal(selectDevice([cuda], trt.id), undefined);
+  assert.equal(deviceOption(trt).label, 'NVIDIA GPU · TensorRT');
+  const store = createPreferences(directory);
+  await store.load();
+  await store.update(next => { next.inference = { provider: trt.id, label: deviceOption(trt).label }; });
+  const reopened = createPreferences(directory);
+  await reopened.load();
+  assert.deepEqual(reopened.value.inference, { provider: trt.id, label: 'NVIDIA GPU · TensorRT' });
 });
 
 test('迁移旧配置并保存不同窗口的改动，恢复默认后重启不再读取旧值', async t => {

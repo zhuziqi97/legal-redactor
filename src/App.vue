@@ -49,7 +49,6 @@ const queued = ref<string[]>([]);
 const queuedAt = new Map<string, number>();
 const scanPhases = reactive<Record<string, string>>({});
 const scanErrors = reactive<Record<string, string>>({});
-const scanNotices = reactive<Record<string, string>>({});
 const selected = ref<number | null>(null);
 const clicked = ref<number | null>(null);
 const selection = ref<Span | null>(null);
@@ -609,7 +608,6 @@ async function applyMaterial() {
       queuedAt.delete(id);
       delete scanErrors[id];
       delete scanPhases[id];
-      delete scanNotices[id];
     }
     materialDialog.value?.close();
   } catch (error) {
@@ -665,12 +663,11 @@ async function applySourceEdit() {
   sourceError.value = '';
   announce();
   try {
-    const result = await run<{view: Workspace; inferenceNotice?: string}>({op: 'reviseMaterial', materialId: id, revision, text});
+    const result = await run<{view: Workspace}>({op: 'reviseMaterial', materialId: id, revision, text});
     adopt(result.view, true);
     delete scanErrors[id];
-    delete scanNotices[id];
     endSourceEdit();
-    announce(result.inferenceNotice || '已应用原文修改', false, true);
+    announce('已应用原文修改', false, true);
   } catch (error) {
     const message = prettyError(error);
     sourceError.value = message.includes('已取消') ? '已取消识别，可继续编辑或重新提交。' : message;
@@ -687,7 +684,6 @@ function identify(id = material.value?.id) {
   if (!doc || doc.status === 'ready' || queued.value.includes(doc.id)) return;
   if (scanning.value === id && !scanPhases[doc.id]?.startsWith('正在取消')) return;
   delete scanErrors[doc.id];
-  delete scanNotices[doc.id];
   queuedAt.set(doc.id, performance.now());
   queued.value.push(doc.id);
   void startNextAnalysis();
@@ -705,11 +701,10 @@ async function startNextAnalysis() {
   scanning.value = id;
   scanPhases[id] = '正在分析';
   try {
-    const result = await api.engine<{ view: Workspace; inferenceNotice?: string }>({ op: 'scan', materialId: id, revision: doc.revision, queueMs });
+    const result = await api.engine<{ view: Workspace }>({ op: 'scan', materialId: id, revision: doc.revision, queueMs });
     if (result.view.revision >= workspace.value.revision) {
       const renderStart = performance.now();
       adopt(result.view);
-      if (result.inferenceNotice) scanNotices[id] = result.inferenceNotice;
       if (material.value?.id === id) {
         requestAnimationFrame(() => requestAnimationFrame(() => api.recordRender(performance.now() - renderStart)));
       }
@@ -1122,10 +1117,10 @@ function showEvidence(link: Evidence) {
         </button>
       </div>
       <section v-show="mode === 'redact'" id="redact-panel" class="workspace-main" role="tabpanel" aria-labelledby="redact-tab">
-        <div v-if="notice.text || (material && (!ready || scanning === material.id || scanNotices[material.id]))" class="notice"
+        <div v-if="notice.text || (material && (!ready || scanning === material.id))" class="notice"
           :class="{ error: notice.error || !!scanErrors[material?.id || ''] }" role="status">
           <span>{{ material && (scanPhases[material.id] || scanErrors[material.id] || (queued.includes(material.id) ? '排队中' : '')) ||
-            notice.text || (material && scanNotices[material.id]) || '当前材料尚未识别' }}</span>
+            notice.text || '当前材料尚未识别' }}</span>
           <button v-if="scanning === material?.id" class="button small" @click="cancelScan">取消识别</button>
           <button v-else-if="material && !ready && !queued.includes(material.id) && !sourceEdit" class="button small" :disabled="busy" @click="identify()">重新识别</button>
         </div>

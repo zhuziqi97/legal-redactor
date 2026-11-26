@@ -47,7 +47,7 @@ async function dispatch(job: Job) {
   phase('正在分析');
   const result = await runWorkspace(state, request, rulesOnly ? undefined : async (text, free, known) => {
     const hits = await scanCandidates(text, free, known, predict, (done, total) => {
-      phase(`已分析 ${done} / ${total} 段 · 首选 EP ${provider} · 复用 ${reused} 段 · 重算 ${evaluated} 段`);
+      phase(`已分析 ${done} / ${total} 段`);
     });
     phase('正在更新映射');
     return hits;

@@ -4,7 +4,10 @@ const { join } = require('node:path');
 const { runInNewContext } = require('node:vm');
 
 const requests = [];
-const blocked = new Set(['auto', 'cuda']);
+const blocked = new Set(['cuda:unavailable']);
+const gpu = { id: 'cuda:first', backend: 'cuda', name: '测试 GPU', index: 0 };
+const secondGpu = { id: 'cuda:second', backend: 'cuda', name: '另一张 GPU', index: 1 };
+const cpu = { id: 'cpu', backend: 'cpu', name: 'CPU' };
 let receive;
 let response;
 let phases = [];
@@ -16,46 +19,39 @@ const parentPort = {
   },
 };
 const NativeOtter = {
-  async load(directory, provider) {
-    requests.push([directory, provider]);
-    if (blocked.has(provider)) throw new Error(`${provider} 无法初始化`);
-    return { release() {}, predict: async () => [[provider]] };
+  async load(directory, device) {
+    requests.push([directory, device.id]);
+    if (blocked.has(device.id)) throw new Error(`${device.id} 无法初始化`);
+    return { release() {}, predict: async () => [[device.id]] };
   },
 };
 runInNewContext(readFileSync(join(__dirname, '../build/inference-worker.cjs'), 'utf8'),
-  { require: () => ({ NativeOtter }), Error, String,
+  { require: file => file === './otter.cjs' ? { NativeOtter }
+    : { discoverInferenceEnvironment: async () => ({ devices: [gpu], backends: ['cuda', 'cpu'] }) }, Error, String,
     performance, process: {parentPort} });
 
 let nextId = 0;
-async function request(op, provider, directory = '本机模型') {
+async function request(op, device, directory = '本机模型') {
   phases = [];
   const message = await new Promise(resolve => {
     response = resolve;
-    receive({data: {id: ++nextId, op, provider, directory, texts: [''], labels: []}});
+    receive({data: {id: ++nextId, op, device, directory, texts: [''], labels: []}});
   });
   assert.equal(message.id, nextId);
   return message;
 }
 (async () => {
-  const fallback = (await request('prepare', 'auto')).result;
-  assert.equal(fallback.provider, 'cpu');
-  assert.equal(fallback.fallbackReason, 'auto 无法初始化');
-  assert.equal(fallback.reusedSession, false);
-  assert.ok(fallback.loadMs >= 0);
-  assert.deepEqual(phases, ['正在加载模型', '正在加载模型 · 自动初始化失败，正在尝试 cpu']);
-  assert.deepEqual((await request('predict', fallback.provider)).result, [['cpu']]);
-  assert.equal((await request('prepare', 'auto')).result.reusedSession, true);
-  assert.equal((await request('prepare', 'cpu')).result.fallbackReason, undefined);
-  assert.deepEqual(requests, [['本机模型', 'auto'], ['本机模型', 'cpu']]);
-  assert.equal((await request('prepare', 'cuda')).error, 'cuda 无法初始化');
-  assert.deepEqual(requests.at(-1), ['本机模型', 'cuda']);
-  blocked.add('cpu');
-  assert.match((await request('prepare', 'auto')).error, /自动初始化失败.*尝试 cpu 失败/);
-  blocked.delete('auto');
-  assert.equal((await request('prepare', 'auto')).result.provider, 'auto');
-  assert.equal((await request('prepare', 'auto')).result.reusedSession, true);
-  blocked.add('auto');
-  assert.equal((await request('predict', 'auto', '不同模型')).error, 'auto 无法初始化');
-  assert.deepEqual(requests.at(-1), ['不同模型', 'auto']);
-  console.log('模型加载、自动回退、预热复用、显式失败及预测路由均通过');
+  assert.deepEqual((await request('discover')).result.devices, [gpu]);
+  assert.deepEqual(requests, []);
+  assert.deepEqual(phases, []);
+  assert.equal((await request('prepare', gpu)).result.reusedSession, false);
+  assert.deepEqual(phases, ['正在加载模型']);
+  assert.deepEqual((await request('predict', gpu)).result, [[gpu.id]]);
+  assert.equal((await request('prepare', gpu)).result.reusedSession, true);
+  assert.equal((await request('prepare', secondGpu)).result.reusedSession, false);
+  assert.deepEqual((await request('predict', secondGpu)).result, [[secondGpu.id]]);
+  assert.equal((await request('prepare', { ...gpu, id: 'cuda:unavailable' })).error, 'cuda:unavailable 无法初始化');
+  assert.deepEqual(requests, [['本机模型', gpu.id], ['本机模型', secondGpu.id], ['本机模型', 'cuda:unavailable']]);
+  assert.deepEqual((await request('predict', cpu)).result, [['cpu']]);
+  console.log('无模型环境探测、按设备复用会话、显式失败及预测路由均通过');
 })().catch(error => { console.error(error); process.exitCode = 1; });
