@@ -1,28 +1,29 @@
 <script setup lang="ts">
 import { computed, nextTick, ref } from 'vue';
+import type { MappingScope } from '../../engine/preferences';
 import { categoryColor, type Group, type Issue, type Material, type Occurrence } from '../model';
 import MappingMenu from './MappingMenu.vue';
 import OccurrenceRow from './OccurrenceRow.vue';
 
 const props = defineProps<{
   material: Material | null; groups: Group[]; pending: Occurrence[]; issues: Issue[];
-  selected: number | null; locked: boolean; canUndo: boolean;
+  selected: number | null; locked: boolean; canUndo: boolean; scope: MappingScope;
 }>();
 const emit = defineEmits<{
   jump: [row: Occurrence]; issue: [issue: Issue]; undo: []; create: [];
   group: [action: 'edit' | 'add' | 'merge' | 'delete', group: Group];
   term: [action: 'edit' | 'remove' | 'primary', group: Group, rows: Occurrence[]];
+  scope: [scope: MappingScope, remember: boolean];
 }>();
 
 const query = ref('');
-const scope = ref<'all' | 'current'>('all');
 const showPending = ref(false);
 const groupId = ref<string | null>(null);
 const termFilter = ref('');
 const list = ref<HTMLElement>();
 const positionList = ref<HTMLElement>();
 const search = computed(() => query.value.trim().toLocaleLowerCase());
-const belongs = (row: Occurrence) => scope.value === 'all' || row.materialId === props.material?.id;
+const belongs = (row: Occurrence) => props.scope === 'all' || row.materialId === props.material?.id;
 const isCurrent = (row: Occurrence) => row.materialId === props.material?.id && row.itemId === props.selected;
 
 function terms(group: Group) {
@@ -71,9 +72,15 @@ async function reveal() {
   positionList.value?.querySelector('.occurrence.current')?.scrollIntoView({ block: 'nearest' });
 }
 function showCurrent() {
-  scope.value = 'all';
+  emit('scope', 'all', false);
   query.value = '';
   void reveal();
+}
+function chooseScope(event: Event) {
+  const input = event.currentTarget as HTMLSelectElement;
+  const scope = input.value as MappingScope;
+  input.value = props.scope;
+  emit('scope', scope, true);
 }
 defineExpose({ selectGroup, reveal });
 </script>
@@ -86,7 +93,7 @@ defineExpose({ selectGroup, reveal });
     </div>
     <div class="mapping-filters">
       <input v-model="query" type="search" aria-label="搜索映射" placeholder="搜索原词、别称或代号">
-      <select v-model="scope" aria-label="映射材料范围">
+      <select :value="scope" aria-label="映射材料范围" @change="chooseScope">
         <option value="all">全部材料</option><option value="current">本份材料</option>
       </select>
     </div>

@@ -255,7 +255,8 @@ defineExpose({ reveal, selectSpan, anchorItem, highlightSpan, clearHighlight });
 </script>
 
 <template>
-  <section ref="reader" class="reader" aria-label="材料正文">
+  <section ref="reader" class="reader" aria-label="材料正文" :data-reading-font="viewOptions?.font"
+    :style="{ '--reading-size': (viewOptions?.fontSize ?? 15) + 'px' }">
     <div v-if="showQuick" class="quick-actions" role="group" aria-label="原文快捷操作"
       :style="{ '--quick-left': quickAnchor.left + 'px', '--quick-top': quickAnchor.top + 'px' }">
       <slot name="quick" />

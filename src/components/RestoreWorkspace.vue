@@ -169,7 +169,8 @@ async function output(kind: 'copy' | 'file') {
 </script>
 
 <template>
-  <section class="workspace-main restore-workspace">
+  <section class="workspace-main restore-workspace" :data-reading-font="viewOptions?.font"
+    :style="{ '--reading-size': (viewOptions?.fontSize ?? 15) + 'px' }">
     <div v-if="notice.text" class="notice" :class="{ error: notice.error }" role="status">{{ notice.text }}</div>
     <div v-if="encodingTitle" class="notice" role="status">
       <span>「{{ encodingTitle }}」需要选择编码</span>

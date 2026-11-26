@@ -261,7 +261,8 @@ export function useComparison(
 
   watch(options, async (next, before) => {
     if (!next) return;
-    const reflow = next.wrap !== before?.wrap || next.lineNumbers !== before?.lineNumbers;
+    const reflow = next.wrap !== before?.wrap || next.lineNumbers !== before?.lineNumbers
+      || next.font !== before?.font || next.fontSize !== before?.fontSize;
     if (reflow) {
       const left = position(0);
       const right = position(1);

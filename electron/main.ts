@@ -1,16 +1,26 @@
 // Prefer Simplified Chinese glyphs in the native Linux menus.
 if (process.platform === 'linux') process.env.FC_LANG ||= 'zh-cn';
 
-const { app, BrowserWindow, Menu, clipboard, dialog, ipcMain, utilityProcess } = require('electron');
-const { existsSync, mkdirSync, readFileSync, writeFileSync } = require('node:fs');
+const { app, BrowserWindow, Menu, clipboard, dialog, ipcMain, net, screen, shell, utilityProcess } = require('electron');
+const { existsSync, mkdirSync, statSync } = require('node:fs');
 const { appendFile, readFile, writeFile, realpath, mkdtemp, rename, rm, stat } = require('node:fs/promises');
 const { Worker } = require('node:worker_threads') as typeof import('node:worker_threads');
 const { decodeInput } = require('./text-input.cjs');
 const { findOriginal } = require('./text-engine.cjs');
 const { projectProtection, readProject, writeProject } = require('./project-file.cjs');
+const { createPreferences } = require('./preferences.cjs');
+const { createUpdates } = require('./updates.cjs');
+const { defaultPreferences, inferenceBackends, isSettingsSection, viewKeys, viewLabels } =
+  require('./engine/preferences.js') as typeof import('../engine/preferences.js');
 const { basename, dirname, extname, join, resolve } = require('node:path');
 type Workspace = import('../engine/workspace-types.js').Workspace;
 type Request = import('../engine/workspace-types.js').Request;
+type Preferences = import('../engine/preferences.js').Preferences;
+type PreferencePatch = import('../engine/preferences.js').PreferencePatch;
+type SettingsChanges = import('../engine/preferences.js').SettingsChanges;
+type SettingsSection = import('../engine/preferences.js').SettingsSection;
+type FolderKind = import('../engine/preferences.js').FolderKind;
+type ViewSwitch = import('../engine/preferences.js').ViewSwitch;
 type ProjectCommand = 'open' | 'save' | 'saveAs' | 'password';
 export type ProjectDestination = { name: string; directory: string };
 type ProjectProtection = import('./project-file.js').ProjectProtection;
@@ -26,6 +36,7 @@ type Pending = {
 };
 
 const project = resolve(__dirname, '..');
+const appPage = join(project, 'dist', 'index.html');
 const applicationIcon = join(project, 'dist', process.platform === 'win32' ? 'legal-redactor-icon.ico' : 'legal-redactor-icon.png');
 const bundledModel = join(process.resourcesPath, 'otter');
 const nativeModel = app.isPackaged ? bundledModel : process.env.REDACTOR_ONNX_DIR;
@@ -37,26 +48,85 @@ if (userData) {
 
 const nativeEnabled = !!nativeModel && existsSync(join(nativeModel, 'otter.onnx'));
 const rulesOnly = !app.isPackaged && process.env.REDACTOR_RULES_ONLY === '1';
-const settingsPath = join(app.getPath('userData'), 'inference-settings.json');
-const viewSettingsPath = join(app.getPath('userData'), 'view-settings.json');
-type ViewOptions = import('../src/model').ViewOptions;
-const viewOptions: ViewOptions = { sync: true, newlines: true, lineNumbers: false, wrap: true };
-const viewLabels: Record<keyof ViewOptions, string> = {
-  sync: '同步滚动', newlines: '显示换行符', lineNumbers: '显示行号', wrap: '自动换行',
-};
-const viewKeys = Object.keys(viewLabels) as (keyof ViewOptions)[];
-try {
-  const saved = JSON.parse(readFileSync(viewSettingsPath, 'utf8'));
-  for (const key of viewKeys) if (typeof saved?.[key] === 'boolean') viewOptions[key] = saved[key];
-} catch {
-  // Use the comparison view defaults.
+const preferences = createPreferences(app.getPath('userData'));
+let settingsWindow: InstanceType<typeof BrowserWindow> | undefined;
+let settingsTarget: SettingsSection | undefined;
+let lastProjectPath: string | undefined;
+let lastWorkspaceId: number | undefined;
+
+function broadcast(channel: string, ...args: unknown[]) {
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.webContents.isDestroyed()) window.webContents.send(channel, ...args);
+  }
 }
-let provider = 'auto';
-try {
-  const saved = JSON.parse(readFileSync(settingsPath, 'utf8'));
-  if (typeof saved.provider === 'string') provider = saved.provider;
-} catch {
-  // Default to the Runtime's automatic selection on a new installation.
+
+function syncViewMenu() {
+  for (const key of viewKeys) {
+    const item = Menu.getApplicationMenu()?.getMenuItemById('view-' + key);
+    if (item) item.checked = preferences.value.view[key];
+  }
+}
+
+async function changePreferences(change: (next: Preferences) => Preferences | void, reset = false) {
+  const before = preferences.value.updates.automatic;
+  let saved: boolean;
+  try { saved = await preferences.update(change, reset); }
+  catch (error) {
+    syncViewMenu();
+    broadcast('redaction:preferences-changed', preferences.snapshot(), false);
+    throw error;
+  }
+  if (saved) {
+    syncViewMenu();
+    broadcast('redaction:preferences-changed', preferences.snapshot(), reset);
+    if (!preferences.value.updates.automatic) updates.stopAutomatic();
+    else if (!before || reset) void automaticCheck();
+  }
+  return preferences.snapshot();
+}
+
+const updates = createUpdates((url: string, options: RequestInit) => net.fetch(url, options), app.getVersion(),
+  (status: unknown) => broadcast('redaction:update-status', status));
+let schedulingUpdate = false;
+async function automaticCheck() {
+  const now = Date.now();
+  const { automatic, lastAttempt } = preferences.value.updates;
+  if (!automatic || schedulingUpdate || (lastAttempt <= now && now - lastAttempt < 86_400_000)) return;
+  schedulingUpdate = true;
+  try {
+    await changePreferences(next => { if (next.updates.automatic) next.updates.lastAttempt = now; });
+    if (preferences.value.updates.automatic) await updates.check(false);
+  } catch {
+    // The preference warning is shown in Settings. A failed write must not trigger repeated checks.
+  } finally {
+    schedulingUpdate = false;
+  }
+}
+
+function directoryExists(path?: string) {
+  return !!path && statSync(path, { throwIfNoEntry: false })?.isDirectory();
+}
+
+function preferredDirectory(kind: FolderKind) {
+  const remembered: string | undefined = preferences.value.usage.folders[kind];
+  try { if (remembered && directoryExists(remembered)) return remembered; } catch { /* Use the system directory. */ }
+  const documents: string = app.getPath('documents');
+  return existsSync(documents) ? documents : app.getPath('home');
+}
+
+function rememberFolder(kind: FolderKind, file: string) {
+  if (!preferences.value.usage.rememberFolders) return;
+  void changePreferences(next => { if (next.usage.rememberFolders) next.usage.folders[kind] = dirname(file); }).catch(() => {});
+}
+
+function rememberProject(path: string, rememberDirectory = true) {
+  lastProjectPath = path;
+  const { startupProject, rememberFolders } = preferences.value.usage;
+  if (startupProject !== 'last' && !(rememberDirectory && rememberFolders)) return;
+  void changePreferences(next => {
+    if (next.usage.startupProject === 'last') next.usage.lastProject = path;
+    if (rememberDirectory && next.usage.rememberFolders) next.usage.folders.project = dirname(path);
+  }).catch(() => {});
 }
 
 type InferenceRoute = {provider: string; fallbackReason?: string; reusedSession: boolean; loadMs: number};
@@ -72,7 +142,7 @@ function fallbackNotice(route: InferenceRoute) {
 const inferencePending = new Map<number, InferencePending>();
 let nativeWorker: ReturnType<typeof utilityProcess.fork> | undefined;
 let inferenceId = 0;
-function infer(op: 'providers' | 'prepare' | 'probe' | 'predict', ep: string, input?: { texts: string[]; labels: string[] },
+function infer(op: 'prepare' | 'predict', ep: string, input?: { texts: string[]; labels: string[] },
   progress?: (phase: string) => void) {
   if (!nativeWorker) {
     const child = utilityProcess.fork(join(__dirname, 'inference-worker.cjs'), [], { serviceName: 'Otter ONNX Runtime' });
@@ -121,6 +191,7 @@ type WindowSession = Session & {
   window: InstanceType<typeof BrowserWindow>;
   file?: ProjectFile;
   initialView?: unknown;
+  resumeOnStartup?: boolean;
   fileOperation?: boolean;
   savingTo?: string;
   changeSeq: number;
@@ -129,6 +200,7 @@ type WindowSession = Session & {
   protection?: ProjectProtection;
   unlockPath?: string;
   cancelWordImport?: () => void;
+  layoutSave?: { timer: ReturnType<typeof setTimeout>; layout: Preferences['usage']['window'] };
 };
 
 const sessions = new Map<number, WindowSession>();
@@ -191,7 +263,7 @@ function startWorker(session: Session) {
   return child;
 }
 
-async function runEngine(session: Session, request: Request, progress: (phase: string) => void, ep = provider) {
+async function runEngine(session: Session, request: Request, progress: (phase: string) => void, ep = preferences.value.inference.provider) {
   if (session.pending) throw new Error('请等待当前操作完成。');
   const child = session.worker ?? startWorker(session);
   const result = await new Promise<unknown>((resolve, reject) => {
@@ -231,7 +303,7 @@ async function analyze(session: WindowSession, input: Extract<Request, {op: 'sca
   if (session.scan) throw new Error('当前工作区已有分析任务。');
   if (!nativeEnabled && !rulesOnly) throw new Error('找不到本地 ONNX 模型，请检查发行包资源或开发环境的 REDACTOR_ONNX_DIR。');
   const job = { materialId: input.materialId, cancelled: false };
-  const preferredEP = provider;
+  const preferredEP = preferences.value.inference.provider;
   const started = performance.now();
   session.scan = job;
   const analysis = session.analysis ??= { state: session.state, nextId: 0 };
@@ -324,7 +396,7 @@ function focusProject(session: WindowSession) {
   return null;
 }
 
-async function openProject(session: WindowSession, password?: string | null) {
+async function openProject(session: WindowSession, password?: string | null, resume = false) {
   if (password === null) {
     session.unlockPath = undefined;
     return null;
@@ -332,16 +404,23 @@ async function openProject(session: WindowSession, password?: string | null) {
   let path = session.unlockPath;
   if (password === undefined) {
     session.unlockPath = undefined;
-    const choice = await dialog.showOpenDialog(session.window, {
-      title: '打开项目', properties: ['openFile'], filters: [projectFilter],
-    });
-    if (choice.canceled || !choice.filePaths.length) return null;
-    path = await realpath(choice.filePaths[0]);
+    if (resume) {
+      const previous = preferences.value.usage.lastProject;
+      if (!previous) return null;
+      path = await realpath(previous);
+    } else {
+      const choice = await dialog.showOpenDialog(session.window, {
+        title: '打开项目', defaultPath: preferredDirectory('project'), properties: ['openFile'], filters: [projectFilter],
+      });
+      if (choice.canceled || !choice.filePaths.length) return null;
+      path = await realpath(choice.filePaths[0]);
+    }
   }
   if (!path) return null;
   const existing = findProjectWindow(path);
   if (existing) {
     session.unlockPath = undefined;
+    rememberProject(path);
     return focusProject(existing);
   }
   if (isSavingTo(path)) throw new Error('项目正在保存，请稍后再打开。');
@@ -359,6 +438,7 @@ async function openProject(session: WindowSession, password?: string | null) {
     const other = findProjectWindow(path);
     if (other) return focusProject(other);
     if (isSavingTo(path)) throw new Error('项目正在保存，请稍后再打开。');
+    rememberProject(path);
     if (session.file || session.state.materials.length || session.scan) {
       openWindow({ state, file, view, protection });
       return null;
@@ -371,7 +451,7 @@ async function openProject(session: WindowSession, password?: string | null) {
 
 function projectSaveDefaults(session: WindowSession) {
   const current = session.file?.path;
-  const location = current ? dirname(current) : app.getPath('documents');
+  const location = current ? dirname(current) : preferredDirectory('project');
   return {
     hasFile: !!current,
     protected: !!session.protection,
@@ -422,6 +502,7 @@ async function saveProject(session: WindowSession, password?: string | null, des
     session.protection = protection;
     session.savedSeq = changeSeq;
     updateProjectTitle(session);
+    rememberProject(path, !!destination);
     return { dirty: projectDirty(session) };
   } finally {
     session.savingTo = undefined;
@@ -462,6 +543,7 @@ function decodeImport(session: Session, restoring: boolean, encoding?: 'gb18030'
   diagnose({ stage: 'import', bytes: source.bytes.length, readMs: source.readMs, decodeMs: performance.now() - started,
     encoding: result.encoding, characters: Array.from(result.text).length });
   session[slot] = undefined;
+  rememberFolder('import', source.path);
   return { path: source.path, title: source.title, ...result };
 }
 
@@ -490,7 +572,7 @@ ipcMain.handle('redaction:open', async (event, mode = 'redact') => {
   const owner = BrowserWindow.fromWebContents(event.sender);
   const restoring = mode === 'restore';
   const choice = await dialog.showOpenDialog(owner, {
-    title: restoring ? '打开 TXT' : '打开文件', properties: ['openFile'],
+    title: restoring ? '打开 TXT' : '打开文件', defaultPath: preferredDirectory('import'), properties: ['openFile'],
     filters: restoring ? [{ name: '纯文本', extensions: ['txt'] }]
       : [{ name: '文本和 Word 文档', extensions: ['txt', 'docx'] }],
   });
@@ -522,6 +604,7 @@ ipcMain.handle('redaction:open', async (event, mode = 'redact') => {
       if (text === null) return null;
       diagnose({ stage: 'import', format, bytes: bytes.length, readMs, decodeMs: performance.now() - extraction,
         characters: Array.from(text).length });
+      rememberFolder('import', sourcePath);
       return { path: sourcePath, title, text, encoding: format };
     } catch (error) {
       diagnose({ stage: 'import', format, status: 'decode-error', bytes: bytes.length, readMs,
@@ -534,25 +617,51 @@ ipcMain.handle('redaction:open', async (event, mode = 'redact') => {
 });
 ipcMain.on('redaction:cancel-word-import', event => sessions.get(event.sender.id)?.cancelWordImport?.());
 ipcMain.handle('redaction:decode-gb18030', (event, mode = 'redact') => decodeImport(windowSession(event.sender), mode === 'restore', 'gb18030'));
-ipcMain.handle('redaction:view-options', () => viewOptions);
-ipcMain.handle('redaction:inference-settings', async () => ({
-  enabled: nativeEnabled, provider, providers: nativeEnabled ? await infer('providers', 'auto') : [],
+ipcMain.handle('redaction:preferences', () => preferences.snapshot());
+ipcMain.handle('redaction:change-preferences', (_event, patch: PreferencePatch) => changePreferences(next => {
+  if (typeof patch.sidebarCollapsed === 'boolean') next.usage.sidebarCollapsed = patch.sidebarCollapsed;
+  if (patch.mappingScope) next.usage.mappingScope = patch.mappingScope;
+  if (isSettingsSection(patch.section)) next.usage.section = patch.section;
 }));
-ipcMain.handle('redaction:set-provider', async (_event, choice: string) => {
-  const available = await infer('providers', 'auto') as { name: string; bundled: boolean }[];
-  if (!nativeEnabled || (choice !== 'auto' && !available.some(ep => ep.name === choice))) {
-    throw new Error('此执行提供程序在当前发行包中不可用。');
-  }
-  let route: InferenceRoute;
-  try {
-    route = await infer('probe', choice) as InferenceRoute;
-  } catch (error) {
-    throw new Error(`无法使用 ${choice} 运行本地模型。${error instanceof Error ? error.message : String(error)}`);
-  }
-  await mkdirSync(app.getPath('userData'), { recursive: true });
-  await writeFile(settingsPath, JSON.stringify({ provider: choice }), 'utf8');
-  provider = choice;
-  return fallbackNotice(route);
+ipcMain.handle('redaction:apply-settings', async (_event, changes: SettingsChanges, reset = false) => {
+  const { provider, automaticUpdates, rememberFolders, rememberWindowPosition, startupProject, ...view } = changes;
+  if (reset) for (const session of sessions.values()) cancelLayoutSave(session);
+  return changePreferences(current => {
+    const next = reset ? defaultPreferences() : current;
+    next.view = { ...next.view, ...view };
+    if (provider) next.inference.provider = provider;
+    if (automaticUpdates !== undefined && automaticUpdates !== next.updates.automatic) {
+      next.updates = { automatic: automaticUpdates, lastAttempt: 0 };
+    }
+    if (rememberFolders !== undefined) next.usage.rememberFolders = rememberFolders;
+    if (rememberWindowPosition !== undefined) {
+      next.usage.rememberWindowPosition = rememberWindowPosition;
+      const window = lastWorkspaceId !== undefined ? sessions.get(lastWorkspaceId)?.window : undefined;
+      if (rememberWindowPosition && window && !window.isDestroyed()) {
+        const { x, y } = window.getNormalBounds();
+        next.usage.window.position = { x, y };
+      }
+    }
+    if (startupProject !== undefined) {
+      next.usage.startupProject = startupProject;
+      if (startupProject === 'last' && lastProjectPath) next.usage.lastProject = lastProjectPath;
+    }
+    return next;
+  }, reset);
+});
+ipcMain.handle('redaction:open-settings', (_event, section?: SettingsSection) => openSettings(isSettingsSection(section) ? section : undefined));
+ipcMain.handle('redaction:settings-info', () => ({
+  version: app.getVersion(), update: updates.status, backends: inferenceBackends(process.platform, process.arch),
+}));
+ipcMain.handle('redaction:check-updates', () => updates.check(true));
+ipcMain.handle('redaction:open-product-link', (_event, target: 'homepage' | 'release' | 'download') => {
+  const url = updates.url(target);
+  if (url) return shell.openExternal(url);
+});
+ipcMain.handle('redaction:read-product-license', async () => {
+  const [license, notice] = await Promise.all(['LICENSE', 'NOTICE'].map(name =>
+    readFile(app.isPackaged ? join(process.resourcesPath, 'legal-redactor-' + name) : join(project, name), 'utf8')));
+  return `${notice.trim()}\n\n${license}`;
 });
 ipcMain.handle('redaction:engine', (event, request) => {
   const session = windowSession(event.sender);
@@ -570,11 +679,15 @@ ipcMain.handle('redaction:engine', (event, request) => {
     return payload;
   });
 });
-ipcMain.handle('redaction:initial-project', event => {
+ipcMain.handle('redaction:initial-project', async event => {
   const session = windowSession(event.sender);
   const view = session.initialView;
   delete session.initialView;
-  return view ?? null;
+  if (view) return { view };
+  if (!session.resumeOnStartup || preferences.value.usage.startupProject !== 'last') return null;
+  delete session.resumeOnStartup;
+  try { return await projectOperation(session, () => openProject(session, undefined, true)); }
+  catch { return { warning: '未能打开上次的项目，已打开空项目。' }; }
 });
 ipcMain.handle('redaction:open-project', (event, password?: string | null) => {
   const session = windowSession(event.sender);
@@ -607,8 +720,9 @@ ipcMain.handle('redaction:copy', (_event, output: string) => clipboard.writeText
 ipcMain.handle('redaction:save', async (event, { output, sourcePaths, filename, mode }) => {
   const owner = BrowserWindow.fromWebContents(event.sender);
   const restoring = mode === 'restore';
+  const folder = restoring ? 'restoreExport' : 'redactExport';
   const choice = await dialog.showSaveDialog(owner, {
-    title: restoring ? '另存恢复文本' : '另存脱敏正文', defaultPath: join(app.getPath('documents'), filename),
+    title: restoring ? '另存恢复文本' : '另存脱敏正文', defaultPath: join(preferredDirectory(folder), filename),
     filters: [{ name: '纯文本', extensions: ['txt'] }],
   });
   if (choice.canceled || !choice.filePath) return null;
@@ -629,12 +743,57 @@ ipcMain.handle('redaction:save', async (event, { output, sourcePaths, filename, 
   } finally {
     await rm(staging, { recursive: true, force: true }).catch(() => {});
   }
+  rememberFolder(folder, path);
   return path;
 });
 
-function openWindow(initial?: { state: Workspace; file: ProjectFile; view: unknown; protection?: ProjectProtection }) {
+function cancelLayoutSave(session: WindowSession) {
+  const request = session.layoutSave;
+  if (request) clearTimeout(request.timer);
+  delete session.layoutSave;
+  return request;
+}
+
+function saveLayout(session: WindowSession) {
+  const request = cancelLayoutSave(session);
+  if (request) void changePreferences(next => { next.usage.window = request.layout; }).catch(() => {});
+}
+
+function trackLayout(session: WindowSession) {
+  const window = session.window;
+  const read = () => {
+    const { width, height, x, y } = window.getNormalBounds();
+    const position = preferences.value.usage.rememberWindowPosition ? { x, y } : null;
+    return { width, height, maximized: window.isMaximized(), position };
+  };
+  let previous = read();
+  function resized() {
+    const layout = read();
+    if (layout.width === previous.width && layout.height === previous.height && layout.maximized === previous.maximized
+      && layout.position?.x === previous.position?.x && layout.position?.y === previous.position?.y) return;
+    previous = layout;
+    cancelLayoutSave(session);
+    session.layoutSave = { layout, timer: setTimeout(() => saveLayout(session), 200) };
+  }
+  window.on('resize', resized).on('move', resized).on('maximize', resized).on('unmaximize', resized);
+}
+
+function openWindow(initial?: { state: Workspace; file: ProjectFile; view: unknown; protection?: ProjectProtection }, resume = false) {
+  const layout = preferences.value.usage.window;
+  const position = layout.position;
+  const savedDisplay = position && screen.getAllDisplays().find(({ workArea }) =>
+    position.x >= workArea.x && position.y >= workArea.y
+      && position.x < workArea.x + workArea.width && position.y < workArea.y + workArea.height);
+  const { workArea } = savedDisplay || screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+  const minWidth = Math.min(780, workArea.width);
+  const minHeight = Math.min(620, workArea.height);
+  const width = Math.max(minWidth, Math.min(layout.width, workArea.width));
+  const height = Math.max(minHeight, Math.min(layout.height, workArea.height));
+  const placement = savedDisplay && position ? {
+    x: Math.min(position.x, workArea.x + workArea.width - width), y: Math.min(position.y, workArea.y + workArea.height - height),
+  } : {};
   const window = new BrowserWindow({
-    width: 1450, height: 940, minWidth: 780, minHeight: 620,
+    ...placement, width, height, minWidth, minHeight,
     icon: applicationIcon,
     backgroundColor: '#f5f7fb',
     webPreferences: { preload: join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true },
@@ -642,9 +801,12 @@ function openWindow(initial?: { state: Workspace; file: ProjectFile; view: unkno
   const id = window.webContents.id;
   const session: WindowSession = {
     window, state: initial?.state ?? { materials: [], groups: {}, activeId: null, undo: null, revision: 0 },
-    file: initial?.file, protection: initial?.protection, initialView: initial?.view, nextId: 0, changeSeq: 0, savedSeq: 0,
+    file: initial?.file, protection: initial?.protection, initialView: initial?.view, resumeOnStartup: resume,
+    nextId: 0, changeSeq: 0, savedSeq: 0,
   };
   sessions.set(id, session);
+  lastWorkspaceId = id;
+  window.on('focus', () => { lastWorkspaceId = id; });
   updateProjectTitle(session);
   window.on('page-title-updated', event => event.preventDefault());
   window.on('close', (event: { preventDefault(): void }) => {
@@ -660,40 +822,72 @@ function openWindow(initial?: { state: Workspace; file: ProjectFile; view: unkno
     window.webContents.send('redaction:confirm-close');
   });
   window.on('closed', () => {
+    saveLayout(session);
     session.cancelWordImport?.();
     cancelAnalysis(session);
     if (session.analysis) stopWorker(session.analysis);
     stopWorker(session);
     sessions.delete(id);
   });
-  window.loadFile(join(project, 'dist', 'index.html'));
+  window.once('ready-to-show', () => {
+    if (layout.maximized) window.maximize();
+    trackLayout(session);
+  });
+  window.loadFile(appPage);
+}
+
+function openSettings(section?: SettingsSection) {
+  if (settingsWindow) {
+    if (section) {
+      settingsTarget = section;
+      if (!settingsWindow.webContents.isLoading()) settingsWindow.webContents.send('redaction:settings-section', section);
+    }
+    if (settingsWindow.isMinimized()) settingsWindow.restore();
+    settingsWindow.show();
+    settingsWindow.focus();
+    return;
+  }
+  settingsTarget = section;
+  const window = new BrowserWindow({
+    width: 780, height: 570, minWidth: 610, minHeight: 420, show: false, title: '设置 · LegalRedactor',
+    icon: applicationIcon, backgroundColor: '#fff',
+    webPreferences: { preload: join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true },
+  });
+  settingsWindow = window;
+  window.removeMenu();
+  window.on('page-title-updated', event => event.preventDefault());
+  window.webContents.on('will-prevent-unload', event => {
+    const choice = dialog.showMessageBoxSync(window, {
+      type: 'question', message: '要放弃未应用的设置吗？', buttons: ['继续编辑', '放弃修改'], defaultId: 0, cancelId: 0,
+    });
+    if (choice === 1) event.preventDefault();
+  });
+  window.once('ready-to-show', () => {
+    if (settingsTarget) window.webContents.send('redaction:settings-section', settingsTarget);
+    window.show();
+  });
+  window.on('closed', () => { settingsWindow = undefined; settingsTarget = undefined; });
+  window.loadFile(appPage, { query: { settings: '1', section: section ?? '' } });
 }
 
 function projectMenu(label: string, accelerator: string | undefined, command: ProjectCommand) {
   return { label, accelerator, click: (_item, window) => window?.webContents.send('redaction:project-command', command) };
 }
 
-function viewMenu(key: keyof ViewOptions) {
+function viewMenu(key: ViewSwitch) {
   return {
-    id: 'view-' + key, label: viewLabels[key], type: 'checkbox', checked: viewOptions[key],
+    id: 'view-' + key, label: viewLabels[key], type: 'checkbox', checked: preferences.value.view[key],
     click(item: { checked: boolean }) {
-      try {
-        mkdirSync(app.getPath('userData'), { recursive: true });
-        writeFileSync(viewSettingsPath, JSON.stringify({ ...viewOptions, [key]: item.checked }), 'utf8');
-      } catch {
-        item.checked = viewOptions[key];
-        dialog.showErrorBox('视图设置', '无法保存视图设置。');
-        return;
-      }
-      viewOptions[key] = item.checked;
-      for (const window of BrowserWindow.getAllWindows()) window.webContents.send('redaction:view-options-changed', viewOptions);
+      const checked = item.checked;
+      void changePreferences(next => { next.view[key] = checked; }).catch(() => dialog.showErrorBox('视图设置', '无法保存视图设置。'));
     },
   };
 }
 
 if (app.requestSingleInstanceLock()) {
-  app.on('second-instance', () => openWindow());
-  app.whenReady().then(() => {
+  const ready = app.whenReady().then(() => preferences.load());
+  app.on('second-instance', () => { void ready.then(() => openWindow()); });
+  void ready.then(() => {
     app.dock?.setIcon(applicationIcon);
     Menu.setApplicationMenu(Menu.buildFromTemplate([
       { label: '文件', submenu: [
@@ -710,11 +904,19 @@ if (app.requestSingleInstanceLock()) {
         { role: 'paste', label: '粘贴' }, { role: 'selectAll', label: '全选' },
       ] },
       { label: '视图', submenu: viewKeys.map(viewMenu) },
-      { label: '设置', submenu: [{ label: '推理设置…', click: (_item, window) => window?.webContents.send('redaction:open-settings') }] },
+      { label: '设置', submenu: [
+        { label: '设置…', accelerator: 'CmdOrCtrl+,', click: () => openSettings() },
+        { label: '检查更新…', click: () => openSettings('updates') },
+        { label: '关于 LegalRedactor', click: () => openSettings('about') },
+      ] },
     ]));
-    openWindow();
+    openWindow(undefined, true);
+    app.on('browser-window-focus', () => { void automaticCheck(); });
+    void automaticCheck();
   });
 } else {
   app.quit();
 }
-app.on('window-all-closed', () => app.quit());
+app.on('window-all-closed', () => {
+  void preferences.flush().then(() => { if (!BrowserWindow.getAllWindows().length) app.quit(); });
+});

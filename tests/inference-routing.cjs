@@ -23,7 +23,7 @@ const NativeOtter = {
   },
 };
 runInNewContext(readFileSync(join(__dirname, '../build/inference-worker.cjs'), 'utf8'),
-  { require: () => ({ NativeOtter, availableProviders: () => [{name: 'cuda'}, {name: 'cpu'}] }), Error, String,
+  { require: () => ({ NativeOtter }), Error, String,
     performance, process: {parentPort} });
 
 let nextId = 0;
@@ -37,7 +37,6 @@ async function request(op, provider, directory = '本机模型') {
   return message;
 }
 (async () => {
-  assert.deepEqual((await request('providers', 'auto')).result.map(item => item.name), ['cuda', 'cpu']);
   const fallback = (await request('prepare', 'auto')).result;
   assert.equal(fallback.provider, 'cpu');
   assert.equal(fallback.fallbackReason, 'auto 无法初始化');
@@ -48,7 +47,7 @@ async function request(op, provider, directory = '本机模型') {
   assert.equal((await request('prepare', 'auto')).result.reusedSession, true);
   assert.equal((await request('prepare', 'cpu')).result.fallbackReason, undefined);
   assert.deepEqual(requests, [['本机模型', 'auto'], ['本机模型', 'cpu']]);
-  assert.equal((await request('probe', 'cuda')).error, 'cuda 无法初始化');
+  assert.equal((await request('prepare', 'cuda')).error, 'cuda 无法初始化');
   assert.deepEqual(requests.at(-1), ['本机模型', 'cuda']);
   blocked.add('cpu');
   assert.match((await request('prepare', 'auto')).error, /自动初始化失败.*尝试 cpu 失败/);

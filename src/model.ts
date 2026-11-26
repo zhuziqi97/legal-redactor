@@ -1,5 +1,7 @@
+import type { InferenceBackend, PreferencePatch, PreferenceSnapshot, SettingsChanges, SettingsSection, UpdateStatus } from '../engine/preferences';
+export type { ViewOptions } from '../engine/preferences';
+
 export type Span = { start: number; end: number };
-export type ViewOptions = { sync: boolean; newlines: boolean; lineNumbers: boolean; wrap: boolean };
 export type Action = 'replace' | 'keep' | 'review';
 export const labels = {
   person: '人员', organization: '单位', address: '地址', id_card: '证件', mobile: '电话',
@@ -21,7 +23,6 @@ export type MaterialSummary = {
 export type Material = MaterialSummary & { text: string; output: string; items: Item[]; evidence: Evidence[]; previousOutput?: string | null };
 export type SourceFile = { path: string; title: string; text: string; encoding: string };
 export type ImportSelection = SourceFile | { requiresEncoding: true; title: string };
-export type InferenceSettings = { enabled: boolean; provider: string; providers: { name: string; bundled: boolean }[] };
 export type Term = { original: string };
 export type Occurrence = Span & Term & {
   materialId: string; itemId: number | null; title: string; line: number; before: string; after: string;
@@ -33,6 +34,7 @@ export type Group = {
 export type Workspace = {
   documents: MaterialSummary[]; current: Material | null; groups: Group[]; pending: Occurrence[]; canUndo: boolean; revision: number;
 };
+export type ProjectOpening = { view: Workspace } | { locked: true; title: string } | null;
 export type MergeConflict = {
   reason: 'code' | 'range' | 'value';
   groups: string[]; canRetain: boolean; codeChoices: boolean;
@@ -58,17 +60,23 @@ export type OutputResult = { output: string; sourcePaths: string[]; filename: st
 declare global {
   interface Window {
     redaction: {
-      viewOptions(): Promise<ViewOptions>;
-      onViewOptions(callback: (options: ViewOptions) => void): void;
+      preferences: () => Promise<PreferenceSnapshot>;
+      changePreferences: (patch: PreferencePatch) => Promise<PreferenceSnapshot>;
+      applySettings: (changes: SettingsChanges, reset: boolean) => Promise<PreferenceSnapshot>;
+      onPreferencesChanged: (callback: (snapshot: PreferenceSnapshot, reset: boolean) => void) => void;
+      openSettings: (section?: SettingsSection) => Promise<void>;
+      onSettingsSection: (callback: (section: SettingsSection) => void) => void;
+      settingsInfo: () => Promise<{ version: string; update: UpdateStatus; backends: InferenceBackend[] }>;
+      checkUpdates: () => Promise<void>;
+      onUpdateStatus: (callback: (status: UpdateStatus) => void) => void;
+      openProductLink: (target: 'homepage' | 'release' | 'download') => Promise<void>;
+      readProductLicense: () => Promise<string>;
       open: (mode?: 'restore') => Promise<ImportSelection | null>;
       onWordExtracting: (callback: () => void) => void;
       cancelWordImport: () => void;
       decodeImport: (mode?: 'restore') => Promise<SourceFile>;
-      inferenceSettings: () => Promise<InferenceSettings>;
-      setProvider: (provider: string) => Promise<string>;
-      onOpenSettings: (callback: () => void) => void;
-      initialProject: () => Promise<Workspace | null>;
-      openProject: (password?: string | null) => Promise<{view: Workspace} | {locked: true; title: string} | null>;
+      initialProject: () => Promise<ProjectOpening | { warning: string }>;
+      openProject: (password?: string | null) => Promise<ProjectOpening>;
       saveProject: (password?: string | null, destination?: {name: string; directory: string}) => Promise<{ dirty: boolean } | null>;
       projectSaveStatus: () => Promise<{hasFile: boolean; protected: boolean; name: string; directory: string}>;
       pickProjectDirectory: (directory: string) => Promise<string | null>;

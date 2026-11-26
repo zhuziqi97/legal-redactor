@@ -103,4 +103,4 @@ class NativeOtter {
   }
 }
 
-module.exports = { NativeOtter, availableProviders: () => ort.listSupportedBackends() };
+module.exports = { NativeOtter };

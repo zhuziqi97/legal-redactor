@@ -5,8 +5,9 @@ import DocumentReader from './components/DocumentReader.vue';
 import MaterialSidebar from './components/MaterialSidebar.vue';
 import ReviewPanel from './components/ReviewPanel.vue';
 import RestoreWorkspace from './components/RestoreWorkspace.vue';
+import type { MappingScope, Preferences, SettingsSection, UpdateStatus } from '../engine/preferences';
 import { positionKey, prettyError, samePersonKind, type Adjustment, type AdjustmentPreviewResult, type Evidence,
-  type Group, type InferenceSettings, type Issue, type Occurrence, type OutputResult, type RangeSuggestion, type SourceChange, type Span, type Term,
+  type Group, type Issue, type Occurrence, type OutputResult, type RangeSuggestion, type SourceChange, type Span, type Term,
   type SourceFile, type ViewOptions, type Workspace, type WorkspaceResult } from './model';
 import { indexText } from './positions';
 
@@ -16,10 +17,25 @@ const workspaceTabs = [{ id: 'redact', label: '脱敏' }, { id: 'restore', label
 type WorkspaceMode = (typeof workspaceTabs)[number]['id'];
 const mode = ref<WorkspaceMode>('redact');
 const viewOptions = shallowRef<ViewOptions>();
-api.onViewOptions(options => { viewOptions.value = options; });
+const updateVersion = ref('');
+function applyUpdate(status: UpdateStatus) {
+  if (status.kind === 'available') updateVersion.value = status.version;
+  else if (status.kind === 'current' || status.kind === 'unavailable') updateVersion.value = '';
+}
+api.onUpdateStatus(applyUpdate);
+void api.settingsInfo().then(({ update }) => applyUpdate(update)).catch(() => {});
 const material = computed(() => workspace.value.current);
 const ready = computed(() => material.value?.status === 'ready');
 const collapsed = ref(false);
+const mappingScope = ref<MappingScope>('all');
+function applyPreferences(settings: Preferences, reset: boolean) {
+  if (reset || !viewOptions.value) {
+    collapsed.value = settings.usage.sidebarCollapsed;
+    mappingScope.value = settings.usage.mappingScope;
+  }
+  viewOptions.value = settings.view;
+}
+api.onPreferencesChanged(({ settings }, reset) => applyPreferences(settings, reset));
 const busy = ref(true);
 const sourceEdit = ref<{ id: string; revision: number; base: string; text: string } | null>(null);
 const sourceDirty = computed(() => !!sourceEdit.value && sourceEdit.value.text !== sourceEdit.value.base);
@@ -151,11 +167,6 @@ const passwordTitle = computed(() => {
   if (prompt?.kind === 'save') return prompt.saveAs ? '项目另存为' : '保存项目';
   return prompt?.protected ? '修改项目密码' : '设置项目密码';
 });
-const settingsDialog = ref<HTMLDialogElement>();
-const settings = shallowRef<InferenceSettings>();
-const preferredEP = ref('auto');
-const settingsBusy = ref(false);
-const settingsError = ref('');
 const materialDialog = ref<HTMLDialogElement>();
 const materialEdit = reactive({ action: 'rename' as 'rename' | 'delete', id: '', title: '', error: '' });
 const materialImpact = computed(() => {
@@ -223,9 +234,11 @@ function adopt(result: Workspace, reset = false) {
 
 onMounted(async () => {
   try {
-    const [view, options] = await Promise.all([api.initialProject(), api.viewOptions()]);
-    viewOptions.value ??= options;
-    if (view) adopt(view, true);
+    const [project, { settings }] = await Promise.all([api.initialProject(), api.preferences()]);
+    if (!viewOptions.value) applyPreferences(settings, false);
+    if (project && 'view' in project) adopt(project.view, true);
+    else if (project && 'locked' in project) await showPasswordPrompt({ kind: 'unlock', title: project.title });
+    else if (project) announce(project.warning, true);
   } catch (error) {
     announce(prettyError(error), true);
   } finally {
@@ -509,44 +522,29 @@ function adoptImport({ title, text, path }: SourceFile) {
   importEncodingTitle.value = '';
 }
 
-async function openSettings() {
-  if (settingsBusy.value || settingsDialog.value?.open) return;
-  settings.value = undefined;
-  settingsError.value = '';
-  settingsDialog.value?.showModal();
-  settingsBusy.value = true;
+async function toggleSidebar() {
   try {
-    settings.value = await api.inferenceSettings();
-    preferredEP.value = settings.value.provider;
-  } catch (error) {
-    settingsError.value = prettyError(error);
-  } finally {
-    settingsBusy.value = false;
-  }
+    const { settings } = await api.changePreferences({ sidebarCollapsed: !collapsed.value });
+    collapsed.value = settings.usage.sidebarCollapsed;
+  } catch (error) { announce(prettyError(error), true); }
 }
 
-api.onOpenSettings(openSettings);
+async function changeMappingScope(scope: MappingScope, remember: boolean) {
+  try {
+    const saved = remember ? await api.changePreferences({ mappingScope: scope }) : null;
+    mappingScope.value = saved?.settings.usage.mappingScope ?? scope;
+  } catch (error) { announce(prettyError(error), true); }
+}
+
+function openSettings(section?: SettingsSection) {
+  void api.openSettings(section).catch(error => announce(prettyError(error), true));
+}
+
 api.onWordExtracting(() => {
   if (!openingImport.value) return;
   importEncodingTitle.value = '';
   extractingWord.value = true;
 });
-
-async function saveSettings() {
-  if (!settings.value?.enabled || settingsBusy.value) return;
-  settingsError.value = '';
-  if (preferredEP.value === settings.value.provider) { settingsDialog.value?.close(); return; }
-  settingsBusy.value = true;
-  try {
-    const message = await api.setProvider(preferredEP.value);
-    settingsDialog.value?.close();
-    if (message) announce(message);
-  } catch (error) {
-    settingsError.value = prettyError(error);
-  } finally {
-    settingsBusy.value = false;
-  }
-}
 
 async function pickFile() {
   if (busy.value) return;
@@ -1110,13 +1108,18 @@ function showEvidence(link: Evidence) {
   <div class="desktop-body">
     <MaterialSidebar :documents="workspace.documents" :current="material?.id" :collapsed="collapsed" :locked="busy" :scanning="scanning"
       :queued="queued" :phases="scanPhases" :errors="scanErrors" :revision="workspace.revision" :find-project="findProject"
-      @toggle="collapsed = !collapsed" @add="showImport" @open="selectMaterial" @locate="jump($event, true)"
+      @toggle="toggleSidebar" @add="showImport" @open="selectMaterial" @locate="jump($event, true)"
       @manage="manageMaterial" @settings="openSettings" />
     <main class="workspace">
-      <div class="workspace-tabs" role="tablist" aria-label="工作区" @keydown="moveWorkspaceTab">
-        <button v-for="tab in workspaceTabs" :id="`${tab.id}-tab`" :key="tab.id" type="button" role="tab"
-          :aria-selected="mode === tab.id" :aria-controls="`${tab.id}-panel`" :tabindex="mode === tab.id ? 0 : -1"
-          @click="mode = tab.id">{{ tab.label }}</button>
+      <div class="workspace-header">
+        <div class="workspace-tabs" role="tablist" aria-label="工作区" @keydown="moveWorkspaceTab">
+          <button v-for="tab in workspaceTabs" :id="`${tab.id}-tab`" :key="tab.id" type="button" role="tab"
+            :aria-selected="mode === tab.id" :aria-controls="`${tab.id}-panel`" :tabindex="mode === tab.id ? 0 : -1"
+            @click="mode = tab.id">{{ tab.label }}</button>
+        </div>
+        <button v-if="updateVersion" class="button small quiet workspace-update" @click="openSettings('updates')">
+          发现新版 {{ updateVersion }}
+        </button>
       </div>
       <section v-show="mode === 'redact'" id="redact-panel" class="workspace-main" role="tabpanel" aria-labelledby="redact-tab">
         <div v-if="notice.text || (material && (!ready || scanning === material.id || scanNotices[material.id]))" class="notice"
@@ -1178,7 +1181,8 @@ function showEvidence(link: Evidence) {
             @cancel="draft = null; rangeFor = null; clearQuick()" @search="searchDraft" @jump="jump($event, true)" @reselect="chooseRange"
             @issue="locate" @apply="applyDraft" @add="addToAlias" @remove="removeFromAlias" />
           <ReviewPanel v-show="!draft" ref="review" :material="material" :groups="workspace.groups" :pending="workspace.pending"
-            :issues="issues" :selected="selected" :locked="busy || !!sourceEdit" :can-undo="workspace.canUndo" @jump="jump" @issue="locate"
+            :issues="issues" :selected="selected" :locked="busy || !!sourceEdit" :can-undo="workspace.canUndo"
+            :scope="mappingScope" @scope="changeMappingScope" @jump="jump" @issue="locate"
             @create="makeDraft('create'); clearQuick()" @group="openGroupAction" @term="termAction" @undo="undo" />
         </div>
       </section>
@@ -1323,25 +1327,6 @@ function showEvidence(link: Evidence) {
         <button class="button primary" :disabled="busy || (materialEdit.action === 'rename' && !materialEdit.title.trim())">
           {{ materialEdit.action === 'rename' ? '保存名称' : '确认删除' }}
         </button>
-      </div>
-    </form>
-  </dialog>
-
-  <dialog ref="settingsDialog" aria-labelledby="settings-title" @cancel.prevent="!settingsBusy && settingsDialog?.close()">
-    <form class="dialog-form" @submit.prevent="saveSettings">
-      <div class="dialog-heading"><h2 id="settings-title">推理设置</h2></div>
-      <label v-if="settings?.enabled">ONNX Runtime 执行提供程序
-        <select v-model="preferredEP" aria-label="ONNX Runtime 执行提供程序" :disabled="settingsBusy">
-          <option value="auto">自动</option>
-          <option v-for="ep in settings.providers" :key="ep.name" :value="ep.name">{{ ep.name }}</option>
-        </select>
-      </label>
-      <p v-if="settings && !settings.enabled" class="count">当前找不到本地 ONNX 模型。</p>
-      <p v-if="settingsBusy" role="status" class="count">正在检查本地推理环境…</p>
-      <p v-if="settingsError" role="alert" class="form-error">{{ settingsError }}</p>
-      <div class="dialog-actions">
-        <button type="button" class="button" :disabled="settingsBusy" @click="settingsDialog?.close()">关闭</button>
-        <button v-if="settings?.enabled" class="button primary" :disabled="settingsBusy">保存</button>
       </div>
     </form>
   </dialog>

@@ -125,9 +125,9 @@ watch(() => props.documents.length, count => { if (!count) searching.value = fal
       </MappingMenu>
       </div>
     </div>
-    <button class="button small quiet inference-settings" aria-label="推理设置" title="推理设置" @click="emit('settings')">
+    <button class="button small quiet sidebar-settings" aria-label="设置" title="设置" @click="emit('settings')">
       <svg viewBox="0 0 20 20" width="15" height="15" fill="none" stroke="currentColor" aria-hidden="true"><path d="M3 5h14M3 10h14M3 15h14M7 2v6m6-1v6m-5-1v6"/></svg>
-      <span v-if="!collapsed">推理设置</span>
+      <span v-if="!collapsed">设置</span>
     </button>
   </nav>
 </template>

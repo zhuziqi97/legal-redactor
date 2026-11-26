@@ -1,7 +1,7 @@
-const { NativeOtter, availableProviders } = require('./otter.cjs');
+const { NativeOtter } = require('./otter.cjs');
 
 type InferenceRequest = {
-  id: number; op: 'providers' | 'prepare' | 'probe' | 'predict'; directory: string; provider: string;
+  id: number; op: 'prepare' | 'predict'; directory: string; provider: string;
   texts?: string[]; labels?: string[];
 };
 type Route = { provider: string; fallbackReason?: string; reusedSession: boolean; loadMs: number };
@@ -45,13 +45,8 @@ async function ensureSession(request: InferenceRequest, send: (message: object) 
 }
 
 async function dispatch(request: InferenceRequest, send: (message: object) => void) {
-  if (request.op === 'providers') return availableProviders();
   const route = await ensureSession(request, send);
   if (request.op === 'prepare') return route;
-  if (request.op === 'probe') {
-    await loaded!.model.predict(['证人张甲已到场。'], ['person', 'organization', 'location']);
-    return route;
-  }
   return loaded!.model.predict(request.texts!, request.labels!);
 }
 

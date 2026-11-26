@@ -1,5 +1,5 @@
 const assert = require('node:assert/strict');
-const {mkdtemp, readFile, rm, writeFile} = require('node:fs/promises');
+const {access, mkdir, mkdtemp, readFile, rm, writeFile} = require('node:fs/promises');
 const {tmpdir} = require('node:os');
 const {join, resolve} = require('node:path');
 const {_electron} = require('playwright');
@@ -13,15 +13,31 @@ async function main(executable, version) {
   delete env.REDACTOR_ONNX_DIR;
   let desktop;
   try {
-    await writeFile(join(profile, 'inference-settings.json'), '{"provider":"cpu"}');
+    await mkdir(join(profile, 'preferences'));
+    await writeFile(join(profile, 'preferences', 'settings.json'), JSON.stringify({
+      inference: {provider:'cpu'}, updates: {automatic:false},
+    }));
     desktop = await _electron.launch({
       executablePath:resolve(executable), env, timeout:60000,
       args:process.platform === 'linux' ? ['--no-sandbox'] : [],
     });
-    const info = await desktop.evaluate(({app}) => ({packaged:app.isPackaged, version:app.getVersion()}));
+    const {resources, ...info} = await desktop.evaluate(({app}) => ({
+      packaged:app.isPackaged, version:app.getVersion(), resources:process.resourcesPath,
+    }));
     assert.deepEqual(info, {packaged:true, version});
     const page = await desktop.firstWindow();
     page.setDefaultTimeout(90000);
+    const runtime = join(resources, 'app', 'node_modules', 'onnxruntime-node');
+    const {requirements, manifests} = require(join(runtime, 'script', 'install-metadata.js'));
+    const target = `${process.platform}/${process.arch}`;
+    const binaryDirectory = join(runtime, 'bin', 'napi-v6', target);
+    for (const installation of requirements[target] ?? []) {
+      const files = Object.keys(manifests[`${target}:${installation}`]);
+      await Promise.all(files.map(file => access(join(binaryDirectory, file))));
+    }
+    const expectedBackends = require(runtime).listSupportedBackends().map(backend => backend.name).sort();
+    const settingsBackends = await page.evaluate(async () => (await window.redaction.settingsInfo()).backends);
+    assert.deepEqual(settingsBackends.filter(backend => backend !== 'auto').sort(), expectedBackends);
     const pageErrors = [];
     page.on('pageerror', error => pageErrors.push(error.message));
     const sourcePath = join(profile, '离线测试.docx');
@@ -56,7 +72,7 @@ async function main(executable, version) {
     const diagnostics = (await readFile(join(profile, 'diagnostics.jsonl'), 'utf8')).trim().split('\n').map(JSON.parse);
     assert.ok(diagnostics.some(row => row.stage === 'analysis' && row.native && row.evaluated > 0));
     assert.deepEqual(pageErrors, []);
-    console.log(`LegalRedactor ${version} · ${process.platform} ${process.arch} · DOCX import, bundled CPU inference and actual TXT export passed.`);
+    console.log(`LegalRedactor ${version} · ${process.platform} ${process.arch} · backend bundle, DOCX import, CPU inference and TXT export passed.`);
   } catch (error) {
     const page = desktop?.windows()[0];
     if (page) console.error(await page.locator('#redact-panel').getByRole('status').allTextContents().catch(() => []));
