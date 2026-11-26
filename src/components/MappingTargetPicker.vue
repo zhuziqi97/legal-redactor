@@ -1,20 +1,19 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
-import { matchMapping } from '../mapping-search';
+import { computed, onMounted, ref, useId, watch } from 'vue';
+import { mappingTarget, rankMappingTargets } from '../mapping-search';
 import type { Group } from '../model';
 
-const props = defineProps<{groups: Group[]; disabled?: boolean; autofocus?: boolean}>();
+const props = defineProps<{groups: Group[]; references?: string[]; disabled?: boolean; autofocus?: boolean}>();
 const selectedId = defineModel<string>({required: true});
+const searchId = useId();
 const query = ref('');
 const input = ref<HTMLInputElement>();
 const list = ref<HTMLDivElement>();
-const results = computed(() => {
-  if (!query.value.trim()) return props.groups;
-  const matches = props.groups.map(group => ({group, ...matchMapping(group, query.value)})).filter(match => match.found);
-  return matches.sort((left, right) => Number(right.exact) - Number(left.exact)).map(match => match.group);
-});
+const targets = computed(() => props.groups.map(mappingTarget));
+const results = computed(() => rankMappingTargets(targets.value, query.value, props.references ?? []));
 const selected = computed(() => props.groups.find(group => group.id === selectedId.value));
-const hiddenSelection = computed(() => selected.value && !results.value.some(group => group.id === selectedId.value));
+const hiddenSelection = computed(() => selected.value && !results.value.some(({group}) => group.id === selectedId.value));
+watch(query, () => { if (list.value) list.value.scrollTop = 0; });
 
 function focusResult(event: KeyboardEvent, offset: number) {
   if (event.isComposing || props.disabled) return;
@@ -35,16 +34,20 @@ onMounted(() => { if (props.autofocus) input.value?.focus(); });
 
 <template>
   <div class="mapping-target-picker">
-    <label>搜索目标映射
-      <input ref="input" v-model="query" type="search" :autofocus="autofocus" placeholder="原词、别称或代号" :disabled="disabled"
-        @keydown.down="focusResult($event, 1)" @keydown.enter="!$event.isComposing && $event.preventDefault()">
-    </label>
+    <div class="mapping-target-heading">
+      <label :for="searchId">搜索目标映射</label>
+      <small v-if="results.length">共 {{ results.length }} 项</small>
+    </div>
+    <input :id="searchId" ref="input" v-model="query" type="search" :autofocus="autofocus" placeholder="原词、别称或代号" :disabled="disabled"
+      @keydown.down="focusResult($event, 1)" @keydown.enter="!$event.isComposing && $event.preventDefault()">
     <p v-if="hiddenSelection && selected" class="mapping-target-current">已选 {{ selected.primary }} → {{ selected.code }}</p>
     <div ref="list" class="mapping-target-results" role="group" aria-label="目标映射"
       @keydown.down="focusResult($event, 1)" @keydown.up="focusResult($event, -1)">
-      <button v-for="group in results" :key="group.id" type="button" class="mapping-target-option" :disabled="disabled"
+      <button v-for="{group} in results" :key="group.id" type="button" class="mapping-target-option" :disabled="disabled"
+        :aria-label="`${group.primary} → ${group.code} ${group.occurrences.length} 处`"
         :aria-pressed="group.id === selectedId" @click="selectedId = group.id">
-        <span>{{ group.primary }} → {{ group.code }}</span><small>{{ group.occurrences.length }} 处</small>
+        <span>{{ group.primary }} → {{ group.code }}</span>
+        <small>{{ group.occurrences.length }} 处</small>
       </button>
       <p v-if="!results.length" class="muted-empty">{{ groups.length ? '没有匹配的映射' : '暂无可选映射' }}</p>
     </div>
@@ -54,6 +57,8 @@ onMounted(() => { if (props.autofocus) input.value?.focus(); });
 <style scoped>
 .mapping-target-picker { display: grid; gap: 6px; min-width: 0; }
 .mapping-target-picker input { width: 100%; }
+.mapping-target-heading { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.mapping-target-heading small { color: var(--muted); }
 .mapping-target-results { max-height: min(170px, 28vh); overflow: auto; padding: 3px; border: 1px solid var(--edge); border-radius: 7px; }
 .mapping-target-option {
   display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; width: 100%;
