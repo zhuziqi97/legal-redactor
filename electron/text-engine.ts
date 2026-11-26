@@ -27,4 +27,4 @@ function findOriginal(sources: Source[], word: string) {
   });
 }
 
-module.exports = { findOriginal };
+export = { findOriginal };

@@ -71,4 +71,4 @@ async function linuxProviderAvailable(binding: string, name: string) {
   return !!libraries && !/not found|not a dynamic executable/u.test(libraries);
 }
 
-module.exports = { discoverInferenceEnvironment };
+export = { discoverInferenceEnvironment };

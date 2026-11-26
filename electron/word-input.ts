@@ -87,4 +87,4 @@ async function readWordInput(bytes: Buffer) {
   return text;
 }
 
-module.exports = { readWordInput };
+export = { readWordInput };

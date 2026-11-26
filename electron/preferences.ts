@@ -69,4 +69,4 @@ function createPreferences(profile: string) {
   return { get value() { return value; }, snapshot: () => ({ settings: value, warning }), load, update, flush: () => pending };
 }
 
-module.exports = { createPreferences };
+export = { createPreferences };

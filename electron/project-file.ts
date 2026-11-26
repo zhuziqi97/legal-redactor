@@ -1,11 +1,11 @@
-const { createCipheriv, createDecipheriv, randomBytes, scrypt } = require('node:crypto');
-const { mkdtemp, readFile, rename, rm, stat, writeFile } = require('node:fs/promises');
-const { dirname, join } = require('node:path');
-const { ZipReader, ZipWriter, Uint8ArrayReader, Uint8ArrayWriter, TextReader } = require('@zip.js/zip.js');
+const { createCipheriv, createDecipheriv, randomBytes, scrypt } = require('node:crypto') as typeof import('node:crypto');
+const { mkdtemp, readFile, rename, rm, stat, writeFile } = require('node:fs/promises') as typeof import('node:fs/promises');
+const { dirname, join } = require('node:path') as typeof import('node:path');
+const { ZipReader, ZipWriter, Uint8ArrayReader, Uint8ArrayWriter, TextReader } = require('@zip.js/zip.js') as typeof import('@zip.js/zip.js');
 
-const stateFormat = import('./engine/project-state.js');
+const stateFormat = (import('./engine/project-state.js' as string) as Promise<typeof import('../engine/project-state.js')>);
 type Workspace = import('../engine/workspace-types.js').Workspace;
-export type ProjectProtection = { salt: Buffer; key: Buffer };
+type ProjectProtection = import('./contract.js').ProjectProtection;
 type ProjectRead = { locked: true } | { state: Workspace; protection?: ProjectProtection };
 
 const marker = Buffer.from('LRPROJ-ENC', 'ascii');
@@ -61,7 +61,7 @@ async function readProject(path: string, password?: string): Promise<ProjectRead
   let value: unknown;
   try {
     const entries = await reader.getEntries();
-    const metadata = entries.filter(entry => entry.filename === 'project.json' && !entry.directory);
+    const metadata = entries.filter(entry => !entry.directory).filter(entry => entry.filename === 'project.json');
     if (metadata.length !== 1) throw new Error('项目数据入口缺失或重复。');
     const data = await metadata[0].getData(new Uint8ArrayWriter(), { checkCrc32: true });
     value = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(data));
@@ -91,4 +91,4 @@ async function writeProject(path: string, state: Workspace, protection?: Project
   }
 }
 
-module.exports = { projectProtection, readProject, writeProject };
+export = { projectProtection, readProject, writeProject };

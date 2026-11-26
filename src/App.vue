@@ -7,9 +7,11 @@ import ReviewPanel from './components/ReviewPanel.vue';
 import RestoreWorkspace from './components/RestoreWorkspace.vue';
 import type { MappingScope, Preferences, SettingsSection, UpdateStatus } from '../engine/preferences';
 import { positionKey, prettyError, samePersonKind, type Adjustment, type AdjustmentPreviewResult, type Evidence,
-  type Group, type Issue, type Occurrence, type OutputResult, type RangeSuggestion, type SourceChange, type Span, type Term,
-  type SourceFile, type ViewOptions, type Workspace, type WorkspaceResult } from './model';
+  type Group, type Issue, type Occurrence, type RangeSuggestion, type SourceChange, type Span, type Term,
+  type SourceFile, type ViewOptions, type Workspace } from './model';
 import { indexText } from './positions';
+import type { EngineRequest } from '../electron/contract';
+import type { Change as EngineChange } from '../engine/workspace-types';
 
 const api = window.redaction;
 const workspace = shallowRef<Workspace>({ documents: [], groups: [], current: null, pending: [], canUndo: false, revision: 0 });
@@ -111,7 +113,7 @@ const draftChange = computed<Change | null>(() => {
       ...(rebindPositions.length ? { rebindPositions } : {}),
       ...(active.resolution ? { resolution: { ...active.resolution } } : {}) };
   }
-  if (!active || !picked.value.length || (active.mode === 'bind' && !active.groupId)) return null;
+  if (!active || active.mode === 'alias' || !picked.value.length || (active.mode === 'bind' && !active.groupId)) return null;
   const mode = active.mode === 'remove' ? active.keep ? 'keep' : 'review' : active.mode;
   const primaries: Record<string, Term> = {};
   for (const { group, terms } of sourceChanges.value) {
@@ -207,10 +209,10 @@ function announce(text = '', error = false, brief = false) {
   if (brief) timer = setTimeout(() => { notice.value.text = ''; }, 2600);
 }
 
-async function run<T>(request: { op: string } & Record<string, unknown>) {
+async function run<R extends EngineRequest>(request: R) {
   busy.value = true;
   try {
-    return await api.engine<T>(request);
+    return await api.engine(request);
   } finally {
     busy.value = false;
   }
@@ -444,7 +446,7 @@ async function openMaterial(id: string) {
   if (id !== material.value?.id) {
     if (!confirmSourceSwitch()) return false;
     try {
-      const result = await run<{ view: Workspace }>({ op: 'open', materialId: id });
+      const result = await run({ op: 'open', materialId: id });
       endSourceEdit();
       adopt(result.view);
       rangeFor.value = null;
@@ -598,8 +600,8 @@ async function applyMaterial() {
   if (busy.value || !id) return;
   materialEdit.error = '';
   try {
-    const op = action === 'rename' ? 'renameMaterial' : 'deleteMaterial';
-    const result = await run<{ view: Workspace }>({ op, materialId: id, title });
+    const result = await run(action === 'rename' ? { op: 'renameMaterial', materialId: id, title }
+      : { op: 'deleteMaterial', materialId: id });
     adopt(result.view, action !== 'rename');
     if (action !== 'rename') { draft.value = null; rangeFor.value = null; }
     if (action === 'delete') {
@@ -616,13 +618,13 @@ async function applyMaterial() {
 }
 
 function findProject(text: string) {
-  return api.engine<Occurrence[]>({ op: 'findOriginal', text });
+  return api.engine({ op: 'findOriginal', text });
 }
 async function addMaterial() {
   if (busy.value || importEncodingTitle.value || !input.text.trim()) return;
   if (!confirmSourceSwitch()) return;
   try {
-    const result = await run<{ view: Workspace }>({ op: 'add', text: input.text, title: input.title, sourcePath: input.path });
+    const result = await run({ op: 'add', text: input.text, title: input.title, sourcePath: input.path ?? undefined });
     endSourceEdit();
     adopt(result.view, true);
     mode.value = 'redact';
@@ -663,7 +665,7 @@ async function applySourceEdit() {
   sourceError.value = '';
   announce();
   try {
-    const result = await run<{view: Workspace}>({op: 'reviseMaterial', materialId: id, revision, text});
+    const result = await run({op: 'reviseMaterial', materialId: id, revision, text});
     adopt(result.view, true);
     delete scanErrors[id];
     endSourceEdit();
@@ -701,7 +703,7 @@ async function startNextAnalysis() {
   scanning.value = id;
   scanPhases[id] = '正在分析';
   try {
-    const result = await api.engine<{ view: Workspace }>({ op: 'scan', materialId: id, revision: doc.revision, queueMs });
+    const result = await api.engine({ op: 'scan', materialId: id, revision: doc.revision, queueMs });
     if (result.view.revision >= workspace.value.revision) {
       const renderStart = performance.now();
       adopt(result.view);
@@ -786,7 +788,7 @@ async function getSelection(): Promise<Occurrence | null> {
   if (!material.value) return null;
   const span = selection.value || quickItem.value || selectedItem.value;
   if (!span) return null;
-  return run<Occurrence>({ op: 'candidate', materialId: material.value.id, start: span.start, end: span.end });
+  return run({ op: 'candidate', materialId: material.value.id, start: span.start, end: span.end });
 }
 async function fromSelection(mode: 'create' | 'bind') {
   if (busy.value) return;
@@ -816,7 +818,7 @@ async function searchDraft() {
   if (!active || busy.value || !active.query.trim()) return;
   active.error = '';
   try {
-    const rows = await run<Occurrence[]>({ op: 'search', text: active.query,
+    const rows = await run({ op: 'search', text: active.query,
       materialId: active.scope === 'current' ? material.value?.id : null });
     active.rows = active.rows.filter(row => active.chosen.has(positionKey(row)));
     active.searchKeys = new Set(rows.map(positionKey));
@@ -892,13 +894,13 @@ async function keepSelection() {
   if (row) await commit({ mode: 'keep', positions: [row] });
 }
 
-type Change = Record<string, unknown> & { positions?: Occurrence[]; rebindPositions?: Occurrence[]; term?: Term };
+type Change = Omit<EngineChange, 'positions' | 'rebindPositions'> & { positions?: Occurrence[]; rebindPositions?: Occurrence[]; term?: Term };
 
 function positionPayload({ materialId, itemId, start, end }: Occurrence) {
   return { materialId, itemId, start, end };
 }
 
-function changePayload(change: Change): Record<string, unknown> {
+function changePayload(change: Change): EngineChange {
   const { positions, rebindPositions, term, ...details } = change;
   return {
     ...details,
@@ -913,10 +915,10 @@ watch([suggestionsKey, busy], ([key, locked], _, onCleanup) => {
   const timer = setTimeout(async () => {
     const active = draft.value;
     const edit = active?.originalEdit;
-    if (!active || !edit || busy.value || suggestionsKey.value !== key || suggestionReply.value?.key === key) return;
+    if (!active?.groupId || !edit || busy.value || suggestionsKey.value !== key || suggestionReply.value?.key === key) return;
     suggesting.value = true;
     try {
-      const rows = await run<RangeSuggestion[]>({ op: 'editSuggestions', groupId: active.groupId, text: edit.value,
+      const rows = await run({ op: 'editSuggestions', groupId: active.groupId, text: edit.value,
         original: edit.base, ...(edit.origin ? { origin: positionPayload(edit.origin) } : {}) });
       if (suggestionsKey.value !== key) return;
       suggestionReply.value = { key, rows };
@@ -943,7 +945,7 @@ watch([previewKey, busy], ([key, locked], _, onCleanup) => {
     previewing.value = true;
     busy.value = true;
     try {
-      const result = await api.engine<AdjustmentPreviewResult>({ op: 'previewAdjustment', change: changePayload(change) });
+      const result = await api.engine({ op: 'previewAdjustment', change: changePayload(change) });
       previewReply.value = { key, result };
       if ('issue' in result && result.issue.merge) mergeReply.value = { key: conflictKey, issue: result.issue };
     } catch (error) {
@@ -959,7 +961,7 @@ watch([previewKey, busy], ([key, locked], _, onCleanup) => {
 async function commit(change: Change, report = (message: string, _issue?: Issue) => announce(message, true), expectedRevision?: number) {
   if (busy.value) return false;
   try {
-    const result = await run<WorkspaceResult>({ op: 'apply', change: changePayload(change), expectedRevision });
+    const result = await run({ op: 'apply', change: changePayload(change), expectedRevision });
     if ('issue' in result) {
       report(result.issue.message, result.issue);
       return false;
@@ -990,7 +992,7 @@ async function applyDraft() {
     if (active.mode === 'edit' || active.resolution?.targetId) review.value?.selectGroup(destination);
   }
   else if (draft.value?.issue?.stalePreview) {
-    const current = await run<{ view: Workspace }>({ op: 'view' }).catch(() => null);
+    const current = await run({ op: 'view' }).catch(() => null);
     if (current) adopt(current.view);
   }
 }
@@ -1051,7 +1053,7 @@ async function applyGroup(keep = false) {
     active.resolution = { mode: 'whole', targetId: target.id };
     return;
   }
-  const change = groupAction.value === 'remove'
+  const change: Change = groupAction.value === 'remove'
     ? { mode: keep ? 'keep' : 'review', positions: groupRows.value }
     : { mode: groupAction.value, groupId: group.value.id, targetId: targetId.value, keep };
   if (await commit(change, message => { groupError.value = message; })) groupDialog.value?.close();
@@ -1060,7 +1062,7 @@ async function applyGroup(keep = false) {
 async function undo() {
   if (busy.value) return;
   try {
-    const result = await run<{ view: Workspace }>({ op: 'undo' });
+    const result = await run({ op: 'undo' });
     adopt(result.view, true);
     announce('已撤销上次订正', false, true);
   } catch (error) {
@@ -1072,7 +1074,7 @@ async function output(kind: 'copy' | 'file') {
   const id = material.value.id;
   busy.value = true;
   try {
-    const result = await api.engine<OutputResult>({ op: 'output', materialId: id });
+    const result = await api.engine({ op: 'output', materialId: id });
     issues.value = 'issues' in result ? result.issues.map(issue => ({ ...issue, materialId: id })) : [];
     if ('issues' in result) {
       if (draft.value) announce('当前材料还有待处理的位置，请先完成调整。', true);
@@ -1082,7 +1084,7 @@ async function output(kind: 'copy' | 'file') {
     } else {
       const path = await api.save(result.output, result.sourcePaths, result.filename);
       if (path) {
-        const saved = await api.engine<{ view: Workspace }>({ op: 'markExported', materialId: id, text: result.output });
+        const saved = await api.engine({ op: 'markExported', materialId: id, text: result.output });
         adopt(saved.view);
         announce('已导出 TXT', false, true);
       }

@@ -24,19 +24,19 @@ async function ensureSession(request: Exclude<InferenceRequest, {op: 'discover'}
   const start = performance.now();
   loaded = undefined;
   await existing?.model.release();
-  const { NativeOtter } = require('./otter.cjs');
+  const { NativeOtter } = require('./otter.cjs') as typeof import('./otter.js');
   loaded = {directory, device: device.id, model: await NativeOtter.load(directory, device)};
   return {reusedSession: false, loadMs: performance.now() - start};
 }
 
 async function dispatch(request: InferenceRequest, send: (message: object) => void) {
-  if (request.op === 'discover') return require('./inference-environment.cjs').discoverInferenceEnvironment();
+  if (request.op === 'discover') return (require('./inference-environment.cjs') as typeof import('./inference-environment.js')).discoverInferenceEnvironment();
   const route = await ensureSession(request, send);
   if (request.op === 'prepare') return route;
   return loaded!.model.predict(request.texts!, request.labels!);
 }
 
-const parentPort = (process as NodeJS.Process & { parentPort: { on: Function; postMessage: Function } }).parentPort;
+const parentPort = (process as NodeJS.Process & {parentPort: Electron.ParentPort}).parentPort;
 let queue = Promise.resolve();
 parentPort.on('message', (event: { data: InferenceRequest }) => {
   const request = event.data;

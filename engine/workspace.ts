@@ -93,8 +93,8 @@ function workspaceView(state: Workspace) {
       } else if (row.group) groups[row.group].occurrences.push(occurrence(doc, row));
     }
     const summary = {id: doc.id, title: doc.title, revision: doc.revision ?? 1,
-      status: doc.decisions ? 'ready' : 'unrecognized', pending: count,
-      exportState: doc.exported == null ? null : doc.exported === result.output ? 'current' : 'changed'};
+      status: doc.decisions ? 'ready' as const : 'unrecognized' as const, pending: count,
+      exportState: doc.exported == null ? null : doc.exported === result.output ? 'current' as const : 'changed' as const};
     documents.push(summary);
     if (doc.id === state.activeId) current = {...summary, text: doc.text, ...result, previousOutput: doc.previousOutput ?? null};
   }
@@ -920,8 +920,27 @@ function previewAdjustment(state: Workspace, change: Change, newId: NewId) {
   return {preview: {revision: state.revision, code: group.code, materials, primary: group.primary}};
 }
 
+export type WorkspaceView = ReturnType<typeof workspaceView>;
+type ViewResult = {view: WorkspaceView};
+type AdjustmentReply = (ViewResult & Adjustment) | {issue: Issue};
+type Output = {output: string; sourcePaths: string[]; filename: string} | {issues: Issue[]};
+export type WorkspaceReplies = {
+  view: ViewResult;
+  search: ReturnType<typeof search>;
+  editSuggestions: ReturnType<typeof editSuggestions>;
+  candidate: ReturnType<typeof candidate>;
+  previewAdjustment: ReturnType<typeof previewAdjustment>;
+  suggest: string;
+  output: Output | {decisions: Row[]; sourcePaths: string[]; filename: string};
+  apply: AdjustmentReply;
+} & Record<'undo' | 'add' | 'renameMaterial' | 'editMaterial' | 'markExported' | 'deleteMaterial' | 'open' | 'scan' | 'reviseMaterial', ViewResult>;
+type WithState<T> = T extends ViewResult ? T & {state?: Workspace} : T;
+export type WorkspaceWorkerReply = WithState<WorkspaceReplies[Request['op']]>;
+
+export function runWorkspace<R extends Request>(state: Workspace, request: R, scan?: Scan, newId?: NewId):
+  Promise<WithState<WorkspaceReplies[R['op']]>>;
 export async function runWorkspace(state: Workspace, request: Request, scan?: Scan,
-  newId: NewId = () => crypto.randomUUID().replaceAll('-', '')) {
+  newId: NewId = () => crypto.randomUUID().replaceAll('-', '')): Promise<WorkspaceWorkerReply> {
   // The caller owns the committed snapshot. Only a returned state may replace it.
   const op = request.op;
   if (op === 'search') return search(state, request);

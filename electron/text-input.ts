@@ -16,4 +16,4 @@ function decodeInput(bytes: Uint8Array, requested?: 'gb18030', preserveLineEndin
   return { text: preserveLineEndings ? text : text.replace(/\r\n?/g, '\n'), encoding };
 }
 
-module.exports = { decodeInput };
+export = { decodeInput };

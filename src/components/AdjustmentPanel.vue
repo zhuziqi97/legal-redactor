@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
-import { labels, positionKey, type Adjustment, type AdjustmentPreviewResult, type Group, type Issue, type Occurrence,
+import { kindLabel, labels, positionKey, type Adjustment, type AdjustmentPreviewResult, type Group, type Issue, type Occurrence,
   type RangeCandidate, type RangeSuggestion, type SourceChange } from '../model';
 
 const props = defineProps<{
@@ -280,7 +280,7 @@ function resolve(mode: 'whole' | 'selected' | 'retain', targetId?: string) {
           <p>{{ mergePrompt?.message }}</p>
           <p v-if="codeRebind && !selectedRows.length">勾选位置后，可仅改绑这些位置。</p>
           <div v-for="group in conflictGroups" :key="group.id" class="edit-conflict-target">
-            <span><strong>{{ group.primary }} → {{ group.code }}</strong> · {{ labels[group.type] }} · {{ group.occurrences.length }} 处</span>
+            <span><strong>{{ group.primary }} → {{ group.code }}</strong> · {{ kindLabel(group.type) }} · {{ group.occurrences.length }} 处</span>
             <div v-if="occupiedCodes(group).length" class="conflict-locations">
               <button v-for="item in occupiedCodes(group)" :key="item.code" class="button small quiet" :disabled="locked"
                 @click="locateCode(group, item.code)">{{ item.kind === 'alias' ? '派生代号' : '主代号' }} {{ item.code }} · 定位原文</button>

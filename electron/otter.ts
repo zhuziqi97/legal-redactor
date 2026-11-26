@@ -1,7 +1,7 @@
 const ort = require('onnxruntime-node') as typeof import('onnxruntime-node');
 const { Tokenizer } = require('tokenizers') as typeof import('tokenizers');
-const { readFileSync } = require('node:fs');
-const { join } = require('node:path');
+const { readFileSync } = require('node:fs') as typeof import('node:fs');
+const { join } = require('node:path') as typeof import('node:path');
 
 type TokenSpan = [start: number, end: number];
 type Prediction = { start: number; end: number; label: string; score: number };
@@ -103,4 +103,4 @@ class NativeOtter {
   }
 }
 
-module.exports = { NativeOtter };
+export = { NativeOtter };

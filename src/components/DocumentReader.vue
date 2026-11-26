@@ -2,7 +2,7 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import TextLines from './TextLines.vue';
 import { correspondingSpans, useComparison } from '../comparison';
-import { categoryColor, labels, type Item, type Material, type Span, type ViewOptions } from '../model';
+import { categoryColor, kindLabel, type Item, type Material, type Span, type ViewOptions } from '../model';
 import { copyTextSelection, indexText, rangePoint, selectedSpan, textPieces } from '../positions';
 
 const props = defineProps<{
@@ -55,7 +55,7 @@ function classes(item: Item) {
 }
 
 function itemLabel(item: Item, text: string) {
-  return `${text}，${labels[item.type]}，第 ${index.value.lines[item.start]} 行`;
+  return `${text}，${kindLabel(item.type)}，第 ${index.value.lines[item.start]} 行`;
 }
 
 function placeQuick(rect: DOMRect) {

@@ -31,7 +31,7 @@ function describeRelease(release: { tag_name?: string; assets?: { name: string; 
   };
 }
 
-function createUpdates(fetchRelease: typeof fetch, current: string, notify: (status: UpdateStatus) => void) {
+function createUpdates(fetchRelease: (url: string, options: RequestInit) => Promise<Response>, current: string, notify: (status: UpdateStatus) => void) {
   let result: ReturnType<typeof describeRelease> = { status: { kind: 'idle' } };
   let pending: { controller: AbortController; manual: boolean; task: Promise<void> } | undefined;
 
@@ -71,4 +71,4 @@ function createUpdates(fetchRelease: typeof fetch, current: string, notify: (sta
   };
 }
 
-module.exports = { createUpdates, describeRelease };
+export = { createUpdates, describeRelease };

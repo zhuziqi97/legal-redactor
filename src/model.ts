@@ -1,51 +1,23 @@
-import type { PreferencePatch, PreferenceSnapshot, SettingsChanges, SettingsSection, UpdateStatus } from '../engine/preferences';
-import type { Backend, InferenceStatus } from '../engine/inference-devices';
+import type { RedactionAPI } from '../electron/contract';
+import type { Issue, Occurrence } from '../engine/workspace-types';
+import type { WorkspaceView } from '../engine/workspace';
+export type { SourceFile } from '../electron/contract';
 export type { ViewOptions } from '../engine/preferences';
-
+export type { Issue, Occurrence } from '../engine/workspace-types';
+export type Workspace = WorkspaceView;
+export type Material = NonNullable<WorkspaceView['current']>;
+export type MaterialSummary = WorkspaceView['documents'][number];
+export type Group = WorkspaceView['groups'][number];
 export type Span = { start: number; end: number };
-export type Action = 'replace' | 'keep' | 'review';
+export type Item = Material['items'][number];
+export type Evidence = Material['evidence'][number];
 export const labels = {
   person: '人员', organization: '单位', address: '地址', id_card: '证件', mobile: '电话',
   bank_account: '账号', tail: '尾号', number: '号码', case_number: '案号', social: '社交账号',
   nickname: '昵称', email: '邮箱', uscc: '信用代码',
 };
-export type Kind = keyof typeof labels;
-export type Item = Span & {
-  id: number; type: Kind; action: Action; original: string; reason: string; replacement: string;
-  group: string | null; output_start: number; output_end: number; definitions?: number[]; sourceDefinitions?: number[];
-};
-export type Evidence = Span & {
-  type: string; subject_start: number; object_start: number; statement_start?: number; statement_end?: number;
-};
-export type MaterialSummary = {
-  id: string; title: string; revision: number; status: 'unrecognized' | 'ready'; pending: number;
-  exportState: 'current' | 'changed' | null;
-};
-export type Material = MaterialSummary & { text: string; output: string; items: Item[]; evidence: Evidence[]; previousOutput?: string | null };
-export type SourceFile = { path: string; title: string; text: string; encoding: string };
-export type ImportSelection = SourceFile | { requiresEncoding: true; title: string };
+export function kindLabel(kind: string) { return labels[kind as keyof typeof labels]; }
 export type Term = { original: string };
-export type Occurrence = Span & Term & {
-  materialId: string; itemId: number | null; title: string; line: number; before: string; after: string;
-  replacement: string; group: string | null; action: Action | null; conflict?: string;
-};
-export type Group = {
-  id: string; code: string; type: Kind; primary: string; occurrences: Occurrence[];
-};
-export type Workspace = {
-  documents: MaterialSummary[]; current: Material | null; groups: Group[]; pending: Occurrence[]; canUndo: boolean; revision: number;
-};
-export type ProjectOpening = { view: Workspace } | { locked: true; title: string } | null;
-export type MergeConflict = {
-  reason: 'code' | 'range' | 'value';
-  groups: string[]; canRetain: boolean; codeChoices: boolean;
-  options: { groupId: string; whole: boolean; selected: boolean }[];
-  occupants?: {groupId: string; code: string; kind: 'primary' | 'alias'}[];
-};
-export type Issue = Partial<Span> & {
-  message: string; materialId?: string; itemId?: number; positions?: Occurrence[]; stalePreview?: boolean; merge?: MergeConflict;
-};
-export type WorkspaceResult = { view: Workspace; focus?: Occurrence } | { issue: Issue };
 export type AdjustmentImpact = Span & { line: number; before: string; after: { text: string; restored?: boolean }[] };
 export type AdjustmentPreview = {
   revision: number; code: string; primary: string;
@@ -56,47 +28,9 @@ export type RangeCandidate = { position: Occurrence; clear: boolean; overlap: bo
 export type RangeSuggestion = { original: Occurrence; candidates: RangeCandidate[] };
 export type OriginalEdit = { base: string; value: string; origin?: Occurrence; manual: Record<string, Occurrence> };
 export type SourceChange = { group: Group; moved: Occurrence[]; rest: Occurrence[]; terms: Occurrence[] };
-export type OutputResult = { output: string; sourcePaths: string[]; filename: string } | { issues: Issue[] };
+declare global { interface Window { redaction: RedactionAPI } }
 
-declare global {
-  interface Window {
-    redaction: {
-      preferences: () => Promise<PreferenceSnapshot>;
-      changePreferences: (patch: PreferencePatch) => Promise<PreferenceSnapshot>;
-      applySettings: (changes: SettingsChanges, reset: boolean) => Promise<PreferenceSnapshot>;
-      onPreferencesChanged: (callback: (snapshot: PreferenceSnapshot, reset: boolean) => void) => void;
-      openSettings: (section?: SettingsSection) => Promise<void>;
-      onSettingsSection: (callback: (section: SettingsSection) => void) => void;
-      settingsInfo: () => Promise<{ version: string; update: UpdateStatus; backends: (Backend | 'auto')[]; inference: InferenceStatus }>;
-      onInferenceStatus: (callback: (status: InferenceStatus) => void) => void;
-      checkUpdates: () => Promise<void>;
-      onUpdateStatus: (callback: (status: UpdateStatus) => void) => void;
-      openProductLink: (target: 'homepage' | 'release' | 'download') => Promise<void>;
-      readProductLicense: () => Promise<string>;
-      open: (mode?: 'restore') => Promise<ImportSelection | null>;
-      onWordExtracting: (callback: () => void) => void;
-      cancelWordImport: () => void;
-      decodeImport: (mode?: 'restore') => Promise<SourceFile>;
-      initialProject: () => Promise<ProjectOpening | { warning: string }>;
-      openProject: (password?: string | null) => Promise<ProjectOpening>;
-      saveProject: (password?: string | null, destination?: {name: string; directory: string}) => Promise<{ dirty: boolean } | null>;
-      projectSaveStatus: () => Promise<{hasFile: boolean; protected: boolean; name: string; directory: string}>;
-      pickProjectDirectory: (directory: string) => Promise<string | null>;
-      onProjectCommand: (callback: (command: 'open' | 'save' | 'saveAs' | 'password') => void) => void;
-      engine: <T>(request: { op: string } & Record<string, unknown>) => Promise<T>;
-      cancel: () => Promise<void>;
-      setDraftDirty: (dirty: boolean) => void;
-      recordRender: (milliseconds: number) => void;
-      closeWorkspace: (discard: boolean) => Promise<void>;
-      copy: (text: string) => Promise<void>;
-      save: (output: string, sourcePaths: string[], filename: string, mode?: 'restore') => Promise<string | null>;
-      onProgress: (callback: (message: string) => void) => void;
-      onConfirmClose: (callback: () => void) => void;
-    };
-  }
-}
-
-export function categoryColor(kind: Kind) {
+export function categoryColor(kind: string) {
   switch (kind) {
     case 'person': case 'nickname': return 'color-person';
     case 'organization': return 'color-unit';
@@ -109,7 +43,7 @@ export function positionKey(position: Span & { materialId: string }) {
   return `${position.materialId}:${position.start}:${position.end}`;
 }
 
-export function samePersonKind(left: Kind, right: Kind) {
+export function samePersonKind(left: string, right: string) {
   return left === right || (['person', 'nickname'].includes(left) && ['person', 'nickname'].includes(right));
 }
 
@@ -122,7 +56,7 @@ export type Adjustment = {
   title: string;
   groupId: string;
   fixedTarget: boolean;
-  type: Kind;
+  type: string;
   code: string;
   query: string;
   scope: 'current' | 'all';

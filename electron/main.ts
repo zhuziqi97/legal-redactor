@@ -1,20 +1,21 @@
+import type { EngineReply, EngineRequest, ImportSelection, ProjectCommand, ProjectDestination, ProjectOpening, ProjectProtection, ProjectSaveResult, ProjectSaveStatus, RedactionAPI } from './contract.js';
 // Prefer Simplified Chinese glyphs in the native Linux menus.
 if (process.platform === 'linux') process.env.FC_LANG ||= 'zh-cn';
 
-const { app, BrowserWindow, Menu, clipboard, dialog, ipcMain, net, screen, shell, utilityProcess } = require('electron');
-const { existsSync, mkdirSync, statSync } = require('node:fs');
-const { appendFile, readFile, writeFile, realpath, mkdtemp, rename, rm, stat } = require('node:fs/promises');
+const { app, BrowserWindow, Menu, clipboard, dialog, ipcMain, net, screen, shell, utilityProcess } = require('electron') as typeof import('electron');
+const { existsSync, mkdirSync, statSync } = require('node:fs') as typeof import('node:fs');
+const { appendFile, readFile, writeFile, realpath, mkdtemp, rename, rm, stat } = require('node:fs/promises') as typeof import('node:fs/promises');
 const { Worker } = require('node:worker_threads') as typeof import('node:worker_threads');
-const { decodeInput } = require('./text-input.cjs');
-const { findOriginal } = require('./text-engine.cjs');
-const { projectProtection, readProject, writeProject } = require('./project-file.cjs');
-const { createPreferences } = require('./preferences.cjs');
-const { createUpdates } = require('./updates.cjs');
+const { decodeInput } = require('./text-input.cjs') as typeof import('./text-input.js');
+const { findOriginal } = require('./text-engine.cjs') as typeof import('./text-engine.js');
+const { projectProtection, readProject, writeProject } = require('./project-file.cjs') as typeof import('./project-file.js');
+const { createPreferences } = require('./preferences.cjs') as typeof import('./preferences.js');
+const { createUpdates } = require('./updates.cjs') as typeof import('./updates.js');
 const { defaultPreferences, inferenceBackends, isSettingsSection, viewKeys, viewLabels } =
   require('./engine/preferences.js') as typeof import('../engine/preferences.js');
 const { cpuDevice, deviceOption, previousDeviceLabel, selectDevice } =
   require('./engine/inference-devices.js') as typeof import('../engine/inference-devices.js');
-const { basename, dirname, extname, join, resolve } = require('node:path');
+const { basename, dirname, extname, join, resolve } = require('node:path') as typeof import('node:path');
 type Workspace = import('../engine/workspace-types.js').Workspace;
 type Request = import('../engine/workspace-types.js').Request;
 type Preferences = import('../engine/preferences.js').Preferences;
@@ -25,14 +26,15 @@ type FolderKind = import('../engine/preferences.js').FolderKind;
 type ViewSwitch = import('../engine/preferences.js').ViewSwitch;
 type InferenceDevice = import('../engine/inference-devices.js').InferenceDevice;
 type InferenceStatus = import('../engine/inference-devices.js').InferenceStatus;
-type ProjectCommand = 'open' | 'save' | 'saveAs' | 'password';
-export type ProjectDestination = { name: string; directory: string };
-type ProjectProtection = import('./project-file.js').ProjectProtection;
+type WorkspaceWorkerReply = import('../engine/workspace.js').WorkspaceWorkerReply;
+type Prediction = import('../engine/model.js').Prediction;
+type WorkspaceWorkerMessage = import('./contract.js').WorkspaceWorkerMessage;
+type WorkspaceView = import('../engine/workspace.js').WorkspaceView;
 type ProjectFile = { path: string; mtimeMs: number; size: number };
 
 type Pending = {
   id: number;
-  resolve: (result: unknown) => void;
+  resolve: (result: WorkspaceWorkerReply) => void;
   reject: (error: Error) => void;
   progress: (phase: string) => void;
   device: InferenceDevice;
@@ -95,8 +97,7 @@ async function changePreferences(change: (next: Preferences) => Preferences | vo
   return preferences.snapshot();
 }
 
-const updates = createUpdates((url: string, options: RequestInit) => net.fetch(url, options), app.getVersion(),
-  (status: unknown) => broadcast('redaction:update-status', status));
+const updates = createUpdates((url, options) => net.fetch(url, options), app.getVersion(), status => broadcast('redaction:update-status', status));
 let schedulingUpdate = false;
 async function automaticCheck() {
   const now = Date.now();
@@ -200,7 +201,7 @@ function infer(op: 'discover' | 'prepare' | 'predict', device?: InferenceDevice,
     child.on('message', (message: { id: number; result?: unknown; error?: string; phase?: string }) => {
       const waiter = inferencePending.get(message.id);
       if (!waiter) return;
-      if (message.phase) {
+      if (message.phase !== undefined) {
         waiter.progress?.(message.phase);
         return;
       }
@@ -217,9 +218,10 @@ function infer(op: 'discover' | 'prepare' | 'predict', device?: InferenceDevice,
     nativeWorker = child;
   }
   const id = ++inferenceId;
+  const worker = nativeWorker;
   return new Promise((resolve, reject) => {
     inferencePending.set(id, { resolve, reject, progress });
-    nativeWorker.postMessage(op === 'discover' ? { id, op } : { id, op, directory: nativeModel, device, ...input });
+    worker.postMessage(op === 'discover' ? { id, op } : { id, op, directory: nativeModel, device, ...input });
   });
 }
 
@@ -241,7 +243,7 @@ type Session = {
 type WindowSession = Session & {
   window: InstanceType<typeof BrowserWindow>;
   file?: ProjectFile;
-  initialView?: unknown;
+  initialView?: WorkspaceView;
   resumeOnStartup?: boolean;
   fileOperation?: boolean;
   savingTo?: string;
@@ -284,20 +286,20 @@ function finishWorker(session: Session, child: ReturnType<typeof utilityProcess.
 function startWorker(session: Session) {
   const child = utilityProcess.fork(join(__dirname, 'workspace-worker.cjs'), [], { serviceName: '脱敏引擎' });
   session.worker = child;
-  child.on('message', message => {
+  child.on('message', (message: WorkspaceWorkerMessage) => {
     const pending = session.pending;
     if (session.worker !== child || !pending || message.id !== pending.id) return;
-    if (message.inference) {
+    if ('inference' in message) {
       const reply = (value: object) => {
         if (session.worker === child && session.pending === pending) child.postMessage({id: pending.id, ...value});
       };
-      infer('predict', pending.device, message.inference, pending.progress).then(predictions => {
+      infer('predict', pending.device, message.inference, pending.progress).then(result => {
         if (session.worker === child && session.pending === pending &&
             selectedDevice()?.id === pending.device.id && activeDevice !== pending.device.name) {
           activeDevice = pending.device.name;
           publishInferenceStatus();
         }
-        reply({predictions});
+        reply({predictions: result as Prediction[][]});
       }, error => {
         pending.inferenceError = error;
         reply({inferenceError: error.message});
@@ -305,36 +307,37 @@ function startWorker(session: Session) {
 
       return;
     }
-    if (message.diagnostic) {
+    if ('diagnostic' in message) {
       diagnose({...message.diagnostic, elapsedMs: performance.now() - pending.started});
       return;
     }
-    if (message.phase) {
+    if ('phase' in message) {
       pending.progress(message.phase);
       return;
     }
     session.pending = undefined;
-    if (message.error) pending.reject(pending.inferenceError ?? new Error(message.error));
+    if ('error' in message) pending.reject(pending.inferenceError ?? new Error(message.error));
     else pending.resolve(message.result);
   });
   child.on('exit', () => finishWorker(session, child, '本地脱敏引擎已退出，请重试。'));
   return child;
 }
 
-async function runEngine(session: Session, request: Request, progress: (phase: string) => void, device = cpuDevice) {
+async function runEngine<R extends Exclude<EngineRequest, {op: 'findOriginal'}>>(session: Session, request: R,
+  progress: (phase: string) => void, device = cpuDevice): Promise<EngineReply<R>> {
   if (session.pending) throw new Error('请等待当前操作完成。');
   const child = session.worker ?? startWorker(session);
-  const result = await new Promise<unknown>((resolve, reject) => {
+  const result = await new Promise<WorkspaceWorkerReply>((resolve, reject) => {
     const id = ++session.nextId;
     session.pending = {id, resolve, reject, progress, device, started: performance.now()};
     child.postMessage({id, state: session.state, request, provider: device.id, rulesOnly});
   });
-  if (typeof result === 'object' && result !== null && 'state' in result) {
+  if (typeof result === 'object' && 'state' in result) {
     const {state, ...payload} = result;
-    session.state = state as Workspace;
-    return payload;
+    if (state) session.state = state;
+    return payload as EngineReply<R>;
   }
-  return result;
+  return result as EngineReply<R>;
 }
 
 function stopWorker(session: Session) {
@@ -394,7 +397,7 @@ async function analyze(session: WindowSession, input: Extract<Request, {op: 'sca
         }
         analysis.state.activeId = session.state.activeId;
         const previewStart = performance.now();
-        const view = await runEngine(analysis, { op: 'view' }, phase) as object;
+        const view = await runEngine(analysis, { op: 'view' }, phase);
         assertCurrent();
         session.state = analysis.state;
         if (session.state.revision !== base.revision) projectChanged(session);
@@ -471,7 +474,7 @@ function focusProject(session: WindowSession) {
   return null;
 }
 
-async function openProject(session: WindowSession, password?: string | null, resume = false) {
+async function openProject(session: WindowSession, password?: string | null, resume = false): Promise<ProjectOpening> {
   if (password === null) {
     session.unlockPath = undefined;
     return null;
@@ -501,13 +504,13 @@ async function openProject(session: WindowSession, password?: string | null, res
   if (isSavingTo(path)) throw new Error('项目正在保存，请稍后再打开。');
   const { mtimeMs, size } = await stat(path);
   const opened = await readProject(path, password);
-  if (opened.locked) {
+  if ('locked' in opened) {
     session.unlockPath = path;
     return { locked: true, title: basename(path, extname(path)) };
   }
   session.unlockPath = undefined;
   const { state, protection } = opened;
-  const { view } = await (await import('./engine/workspace.js')).runWorkspace(state, { op: 'view' }) as { view: unknown };
+  const { view } = await (await (import('./engine/workspace.js' as string) as Promise<typeof import('../engine/workspace.js')>)).runWorkspace(state, { op: 'view' });
   const file = { path, mtimeMs, size };
   return serialize(session, () => {
     const other = findProjectWindow(path);
@@ -524,7 +527,7 @@ async function openProject(session: WindowSession, password?: string | null, res
   });
 }
 
-function projectSaveDefaults(session: WindowSession) {
+function projectSaveDefaults(session: WindowSession): ProjectSaveStatus {
   const current = session.file?.path;
   const location = current ? dirname(current) : preferredDirectory('project');
   return {
@@ -535,7 +538,7 @@ function projectSaveDefaults(session: WindowSession) {
   };
 }
 
-async function saveProject(session: WindowSession, password?: string | null, destination?: ProjectDestination) {
+async function saveProject(session: WindowSession, password?: string | null, destination?: ProjectDestination): Promise<ProjectSaveResult> {
   if (session.editingDraft) throw new Error('请先应用或取消原文修改，再保存项目。');
   let path = session.file?.path;
   if (destination) {
@@ -598,7 +601,7 @@ function diagnose(record: Record<string, unknown>) {
   void appendFile(join(app.getPath('userData'), 'diagnostics.jsonl'), `${JSON.stringify(record)}\n`, 'utf8').catch(() => {});
 }
 
-function decodeImport(session: Session, restoring: boolean, encoding?: 'gb18030') {
+function decodeImport(session: Session, restoring: boolean, encoding?: 'gb18030'): ImportSelection {
   const slot = restoring ? 'restoreInput' : 'importInput';
   const source = session[slot];
   if (!source) throw new Error('请先打开 TXT 文件。');
@@ -643,8 +646,8 @@ async function extractWord(session: WindowSession, bytes: Buffer) {
   }
 }
 
-ipcMain.handle('redaction:open', async (event, mode = 'redact') => {
-  const owner = BrowserWindow.fromWebContents(event.sender);
+ipcMain.handle('redaction:open', async (event, mode = 'redact'): ReturnType<RedactionAPI['open']> => {
+  const owner = windowSession(event.sender).window;
   const restoring = mode === 'restore';
   const choice = await dialog.showOpenDialog(owner, {
     title: restoring ? '打开 TXT' : '打开文件', defaultPath: preferredDirectory('import'), properties: ['openFile'],
@@ -729,7 +732,7 @@ ipcMain.handle('redaction:apply-settings', async (_event, changes: SettingsChang
   }, reset);
 });
 ipcMain.handle('redaction:open-settings', (_event, section?: SettingsSection) => openSettings(isSettingsSection(section) ? section : undefined));
-ipcMain.handle('redaction:settings-info', () => ({
+ipcMain.handle('redaction:settings-info', (): Awaited<ReturnType<RedactionAPI['settingsInfo']>> => ({
   version: app.getVersion(), update: updates.status, backends: inferenceBackends(process.platform, process.arch), inference: inferenceStatus(),
 }));
 ipcMain.handle('redaction:check-updates', () => updates.check(true));
@@ -742,13 +745,13 @@ ipcMain.handle('redaction:read-product-license', async () => {
     readFile(app.isPackaged ? join(process.resourcesPath, 'legal-redactor-' + name) : join(project, name), 'utf8')));
   return `${notice.trim()}\n\n${license}`;
 });
-ipcMain.handle('redaction:engine', (event, request) => {
+ipcMain.handle('redaction:engine', (event, request: EngineRequest): Promise<EngineReply<EngineRequest>> => {
   const session = windowSession(event.sender);
   const progress = (phase: string) => {
     if (!event.sender.isDestroyed()) event.sender.send('redaction:progress', phase);
   };
   if (request.op === 'scan' || request.op === 'reviseMaterial') return analyze(session, request, progress);
-  if (['editMaterial', 'deleteMaterial'].includes(request.op) && request.materialId === session.scan?.materialId) cancelAnalysis(session);
+  if ((request.op === 'editMaterial' || request.op === 'deleteMaterial') && request.materialId === session.scan?.materialId) cancelAnalysis(session);
   if (request.op === 'findOriginal') return serialize(session, () => findOriginal(session.state.materials, request.text));
   return serialize(session, async () => {
     const revision = session.state.revision;
@@ -758,7 +761,7 @@ ipcMain.handle('redaction:engine', (event, request) => {
     return payload;
   });
 });
-ipcMain.handle('redaction:initial-project', async event => {
+ipcMain.handle('redaction:initial-project', async (event): ReturnType<RedactionAPI['initialProject']> => {
   const session = windowSession(event.sender);
   const view = session.initialView;
   delete session.initialView;
@@ -797,7 +800,7 @@ ipcMain.handle('redaction:close', (event, discard: boolean) => {
 });
 ipcMain.handle('redaction:copy', (_event, output: string) => clipboard.writeText(output));
 ipcMain.handle('redaction:save', async (event, { output, sourcePaths, filename, mode }) => {
-  const owner = BrowserWindow.fromWebContents(event.sender);
+  const owner = windowSession(event.sender).window;
   const restoring = mode === 'restore';
   const folder = restoring ? 'restoreExport' : 'redactExport';
   const choice = await dialog.showSaveDialog(owner, {
@@ -857,7 +860,7 @@ function trackLayout(session: WindowSession) {
   window.on('resize', resized).on('move', resized).on('maximize', resized).on('unmaximize', resized);
 }
 
-function openWindow(initial?: { state: Workspace; file: ProjectFile; view: unknown; protection?: ProjectProtection }, resume = false) {
+function openWindow(initial?: { state: Workspace; file: ProjectFile; view: WorkspaceView; protection?: ProjectProtection }, resume = false) {
   const layout = preferences.value.usage.window;
   const position = layout.position;
   const savedDisplay = position && screen.getAllDisplays().find(({ workArea }) =>
@@ -950,11 +953,11 @@ function openSettings(section?: SettingsSection) {
   window.loadFile(appPage, { query: { settings: '1', section: section ?? '' } });
 }
 
-function projectMenu(label: string, accelerator: string | undefined, command: ProjectCommand) {
-  return { label, accelerator, click: (_item, window) => window?.webContents.send('redaction:project-command', command) };
+function projectMenu(label: string, accelerator: string | undefined, command: ProjectCommand): Electron.MenuItemConstructorOptions {
+  return { label, accelerator, click: (_item, window) => { if (window instanceof BrowserWindow) window.webContents.send('redaction:project-command', command); } };
 }
 
-function viewMenu(key: ViewSwitch) {
+function viewMenu(key: ViewSwitch): Electron.MenuItemConstructorOptions {
   return {
     id: 'view-' + key, label: viewLabels[key], type: 'checkbox', checked: preferences.value.view[key],
     click(item: { checked: boolean }) {
