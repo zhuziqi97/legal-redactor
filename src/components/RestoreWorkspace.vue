@@ -182,7 +182,7 @@ async function output(kind: 'copy' | 'file') {
           <article v-for="side in sides" :key="side" class="pane" :aria-label="side === 'input' ? '待恢复文本' : '恢复预览'">
             <div class="pane-title output-heading">
               <span v-if="side === 'input'">待恢复文本</span>
-              <span v-else>恢复预览 <small class="restore-source-note">按当前项目映射恢复</small></span>
+              <span v-else>恢复预览</span>
               <div v-if="side === 'input'" class="toolbar pane-output-actions">
                 <button class="button small" :disabled="busy" @click="openFile()">打开 TXT</button>
                 <button v-if="!editing" class="button small" :disabled="busy" @click="edit">编辑</button>
@@ -245,7 +245,6 @@ async function output(kind: 'copy' | 'file') {
 <style scoped>
 .restore-editor { flex: 1; min-height: 0; width: 100%; border: 0; border-radius: 0; resize: none; padding: 13px 17px; }
 .restore-editor:focus-visible { outline-offset: -2px; }
-.restore-source-note { margin-inline-start: 6px; color: var(--muted); font-size: 11px; font-weight: 400; }
 .restore-mapping { width: 100%; justify-content: space-between; }
 .restore-mapping .count { flex: none; }
 .restore-mapping .group-review { margin-inline-start: 6px; }
