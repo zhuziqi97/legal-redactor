@@ -1,10 +1,18 @@
-# <img src="public/legal-redactor-icon.png" width="36" height="36" alt=""> LegalRedactor
+<p align="center">
+  <img src="public/legal-redactor-icon.png" width="80" height="80" alt="">
+</p>
 
-**法律文档脱敏工具**
+<h1 align="center">LegalRedactor</h1>
+
+<p align="center">法律文档脱敏工具</p>
+
+<p align="center">
+  <strong><a href="https://github.com/zhuziqi97/legal-redactor/releases/latest">下载最新版</a></strong> ·
+  <a href="#从源码运行">从源码运行</a> ·
+  <a href="#反馈与贡献">反馈与贡献</a>
+</p>
 
 LegalRedactor 用于在共享或进一步处理法律文档前，识别和替换其中的敏感信息。识别、复核和导出均在本机离线完成。
-
-[下载最新版](https://github.com/zhuziqi97/legal-redactor/releases/latest) · [从源码运行](#从源码运行) · [反馈与贡献](#反馈与贡献)
 
 ## 主要功能
 
