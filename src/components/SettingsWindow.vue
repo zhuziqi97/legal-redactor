@@ -23,10 +23,42 @@ const saving = ref(false);
 const error = ref('');
 const message = ref('');
 const inference = shallowRef<InferenceStatus>();
+const inferenceLabel = computed(() => inference.value?.options.find(option => option.id === draft.value.provider)?.label);
+const inferenceDeviceStatus = computed(() => {
+  const { active, selected } = inference.value ?? {};
+  if (active) return '当前使用 ' + active;
+  return selected ? '已选设备 ' + selected : '';
+});
 const version = ref('');
 const update = shallowRef<UpdateStatus>({ kind: 'idle' });
 const license = ref('');
 const licenseDialog = ref<HTMLDialogElement>();
+const deviceTooltip = ref<HTMLElement>();
+let deviceTooltipTimer: number | undefined;
+
+function hideDeviceTooltip() {
+  window.clearTimeout(deviceTooltipTimer);
+  if (deviceTooltip.value?.matches(':popover-open')) deviceTooltip.value.hidePopover();
+}
+
+function showDeviceTooltip(event: PointerEvent, fullName: string | undefined) {
+  hideDeviceTooltip();
+  const anchor = event.currentTarget as HTMLElement;
+  const label = anchor.querySelector('.device-name') ?? anchor;
+  if (!fullName || label.scrollWidth <= label.clientWidth) return;
+  deviceTooltipTimer = window.setTimeout(() => {
+    const tooltip = deviceTooltip.value;
+    if (!tooltip || !anchor.matches(':hover') || anchor.matches('select:open')) return;
+    const bounds = anchor.getBoundingClientRect();
+    tooltip.textContent = fullName;
+    tooltip.style.left = bounds.left + 'px';
+    tooltip.style.maxWidth = Math.min(360, bounds.width, window.innerWidth - bounds.left - 8) + 'px';
+    tooltip.showPopover();
+    const below = bounds.bottom + 5;
+    tooltip.style.top = (below + tooltip.offsetHeight <= window.innerHeight - 8
+      ? below : Math.max(8, bounds.top - tooltip.offsetHeight - 5)) + 'px';
+  }, 450);
+}
 
 const updateText = computed(() => {
   switch (update.value.kind) {
@@ -54,6 +86,7 @@ api.onUpdateStatus(status => { update.value = status; });
 api.onInferenceStatus(status => { inference.value = status; });
 onMounted(async () => {
   window.addEventListener('beforeunload', confirmClose);
+  window.addEventListener('resize', hideDeviceTooltip);
   try {
     const [snapshot, info] = await Promise.all([api.preferences(), api.settingsInfo()]);
     apply(snapshot);
@@ -64,7 +97,11 @@ onMounted(async () => {
     ready.value = true;
   } catch (failure) { error.value = prettyError(failure); }
 });
-onUnmounted(() => window.removeEventListener('beforeunload', confirmClose));
+onUnmounted(() => {
+  window.removeEventListener('beforeunload', confirmClose);
+  window.removeEventListener('resize', hideDeviceTooltip);
+  hideDeviceTooltip();
+});
 
 function confirmClose(event: BeforeUnloadEvent) {
   if (!dirty.value || saving.value) return;
@@ -130,7 +167,7 @@ function showLicense() {
         :aria-current="key === section ? 'page' : undefined" @click="openSection(key)">{{ sections[key] }}</button>
     </nav>
     <div class="settings-main">
-      <section class="settings-content" :aria-label="sections[section]">
+      <section class="settings-content" :aria-label="sections[section]" @scroll.passive="hideDeviceTooltip">
         <h2>{{ sections[section] }}</h2>
         <fieldset v-if="section === 'reading'" :disabled="!ready || saving">
           <div class="settings-row reading-controls">
@@ -171,12 +208,19 @@ function showLicense() {
         </fieldset>
         <fieldset v-else-if="section === 'inference'" :disabled="!ready || saving">
           <label class="settings-select-row"><span>推理设备</span>
-            <select class="inference-select" :value="draft.provider" @change="edit('provider', $event)">
-              <option v-for="option in inference?.options" :key="option.id" :value="option.id">{{ option.label }}</option>
+            <select class="inference-select" :value="draft.provider" @change="edit('provider', $event)"
+              @pointerenter="showDeviceTooltip($event, inferenceLabel)" @pointerleave="hideDeviceTooltip"
+              @pointerdown="hideDeviceTooltip" @keydown="hideDeviceTooltip" @wheel.passive="hideDeviceTooltip">
+              <button type="button"><span class="device-name">{{ inferenceLabel }}</span></button>
+              <option v-for="option in inference?.options" :key="option.id" :value="option.id"
+                @pointerenter="showDeviceTooltip($event, option.label)" @pointerleave="hideDeviceTooltip">
+                <span class="device-name">{{ option.label }}</span>
+              </option>
             </select>
           </label>
-          <p v-if="inference?.active" class="settings-hint">当前使用 {{ inference.active }}</p>
-          <p v-else-if="inference?.selected" class="settings-hint">已选设备 {{ inference.selected }}</p>
+          <p v-if="inferenceDeviceStatus" class="settings-hint device-name" @pointerenter="showDeviceTooltip($event, inferenceDeviceStatus)"
+            @pointerleave="hideDeviceTooltip">{{ inferenceDeviceStatus }}</p>
+          <div ref="deviceTooltip" class="device-tooltip" popover="manual" aria-hidden="true"></div>
         </fieldset>
         <fieldset v-else-if="section === 'updates'" :disabled="!ready || saving">
           <label class="settings-toggle">

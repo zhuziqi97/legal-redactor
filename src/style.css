@@ -80,9 +80,16 @@ h1, h2, h3, p { margin: 0; }
 .settings-row label { display: grid; gap: 5px; font-size: 13px; }
 .settings-row select { width: 120px; }
 .settings-select-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 15px; }
-.settings-select-row > span { flex: none; }
+.settings-select-row > span:first-child { flex: none; }
 .settings-select-row select { width: 180px; }
 .settings-select-row .inference-select { width: 330px; }
+.device-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.device-tooltip {
+  position: fixed; inset: auto; margin: 0; width: max-content; padding: 7px 10px;
+  border: 1px solid var(--accent-edge); border-radius: 8px; background: var(--accent-soft);
+  box-shadow: 0 4px 14px #24355420; color: var(--ink); font-size: 12px; line-height: 1.5;
+  overflow-wrap: anywhere; pointer-events: none;
+}
 .settings-content select {
   min-width: 0; max-width: 100%; min-height: 36px; padding: 6px 10px;
   border: 1px solid var(--edge); border-radius: 8px; background: var(--paper);
@@ -109,7 +116,6 @@ h1, h2, h3, p { margin: 0; }
 .settings-content option:focus-visible { outline-offset: -2px; }
 .settings-content option:checked { color: var(--accent); background: var(--accent-soft); }
 .settings-content option::checkmark { order: 1; flex: none; margin-inline: auto 0; color: var(--accent); }
-.settings-content .settings-hint { overflow-wrap: anywhere; }
 .reading-preview {
   margin: 15px 0 13px; min-height: 76px; padding: 15px; display: flex; align-items: center;
   border: 1px solid var(--line); border-radius: 8px; background: var(--surface);
