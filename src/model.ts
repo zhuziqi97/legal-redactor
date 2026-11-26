@@ -1,5 +1,5 @@
 import type { RedactionAPI } from '../electron/contract';
-import type { Issue, Occurrence } from '../engine/workspace-types';
+import type { AliasTarget, Issue, Occurrence } from '../engine/workspace-types';
 import type { WorkspaceReplies, WorkspaceView } from '../engine/workspace';
 export type { SourceFile } from '../electron/contract';
 export type { ViewOptions } from '../engine/preferences';
@@ -44,10 +44,13 @@ export function prettyError(error: unknown) {
 }
 
 export type Adjustment = {
-  mode: 'create' | 'bind' | 'alias' | 'remove' | 'edit' | 'merge';
+  mode: 'create' | 'bind' | 'remove' | 'edit' | 'merge';
   title: string;
   groupId: string;
   fixedTarget: boolean;
+  alias?: AliasTarget;
+  rebindAlias?: string;
+  targetOriginal?: string;
   type: string;
   code: string;
   query: string;

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref } from 'vue';
-import { matchMapping } from '../mapping-search';
+import { mappingTerms, matchMapping } from '../mapping-search';
 import type { MappingScope } from '../../engine/preferences';
 import { categoryColor, type Group, type Issue, type Material, type Occurrence } from '../model';
 import MappingMenu from './MappingMenu.vue';
@@ -12,8 +12,7 @@ const props = defineProps<{
 }>();
 const emit = defineEmits<{
   jump: [row: Occurrence]; issue: [issue: Issue]; undo: []; create: [];
-  group: [action: 'edit' | 'add' | 'merge' | 'delete', group: Group];
-  term: [action: 'edit' | 'remove' | 'primary', group: Group, rows: Occurrence[]];
+  group: [action: 'edit' | 'aliases' | 'merge' | 'delete', group: Group];
   scope: [scope: MappingScope, remember: boolean];
 }>();
 
@@ -27,16 +26,6 @@ const search = computed(() => query.value.trim().toLocaleLowerCase());
 const belongs = (row: Occurrence) => props.scope === 'all' || row.materialId === props.material?.id;
 const isCurrent = (row: Occurrence) => row.materialId === props.material?.id && row.itemId === props.selected;
 
-function terms(group: Group) {
-  const all = new Map<string, Occurrence[]>();
-  for (const row of group.occurrences) {
-    if (!all.has(row.original)) all.set(row.original, []);
-    all.get(row.original)!.push(row);
-  }
-  return [...all].map(([original, rows]) => ({ original, rows, primary: original === group.primary }))
-    .sort((a, b) => Number(b.primary) - Number(a.primary));
-}
-
 const filtered = computed(() => props.groups.flatMap(group => {
   const scoped = group.occurrences.filter(belongs);
   if (!scoped.length) return [];
@@ -45,10 +34,10 @@ const filtered = computed(() => props.groups.flatMap(group => {
 }));
 const pending = computed(() => props.pending.filter(belongs));
 const mapping = computed(() => showPending.value ? null : props.groups.find(group => group.id === groupId.value));
-const options = computed(() => mapping.value ? terms(mapping.value) : []);
-const selectedTerm = computed(() => options.value.find(term => term.original === termFilter.value));
+const terms = computed(() => mapping.value ? mappingTerms(mapping.value) : new Map<string, Occurrence[]>());
+const options = computed(() => [...terms.value.keys()].sort((a, b) => Number(b === mapping.value?.primary) - Number(a === mapping.value?.primary)));
 const positions = computed(() => {
-  const rows = showPending.value ? pending.value : (selectedTerm.value?.rows || mapping.value?.occurrences || []).filter(belongs);
+  const rows = showPending.value ? pending.value : (terms.value.get(termFilter.value) || mapping.value?.occurrences || []).filter(belongs);
   return [...rows].sort((a, b) => Number(a.materialId) - Number(b.materialId) || a.start - b.start);
 });
 const activeIndex = computed(() => positions.value.findIndex(isCurrent));
@@ -124,7 +113,7 @@ defineExpose({ selectGroup, reveal, showGroup });
             <span v-if="count === group.occurrences.length" class="mapping-count">{{ count }} 处</span>
             <button class="button small quiet rename-button" :disabled="locked" @click="emit('group', 'edit', group)">修改映射</button>
             <MappingMenu :label="`${group.primary}的映射操作`" :disabled="locked">
-              <button @click="emit('group', 'add', group)">添加别称</button>
+              <button @click="emit('group', 'aliases', group)">管理别称</button>
               <button v-if="groups.length > 1" @click="emit('group', 'merge', group)">合并到其他映射</button>
               <button class="danger" @click="emit('group', 'delete', group)">删除映射</button>
             </MappingMenu>
@@ -142,13 +131,8 @@ defineExpose({ selectGroup, reveal, showGroup });
         <div v-if="mapping && options.length > 1" class="position-filter">
           <select v-model="termFilter" aria-label="按原词或别称筛选位置" @change="resetPositionScroll">
             <option value="">全部原词</option>
-            <option v-for="term in options" :key="term.original" :value="term.original">{{ term.original }}</option>
+            <option v-for="term in options" :key="term" :value="term">{{ term }}</option>
           </select>
-          <MappingMenu v-if="selectedTerm && !selectedTerm.primary" :label="`${selectedTerm.original}的别称操作`" :disabled="locked">
-            <button @click="emit('term', 'edit', mapping, selectedTerm.rows)">编辑别称</button>
-            <button @click="emit('term', 'primary', mapping, selectedTerm.rows)">设为主名</button>
-            <button class="danger" @click="emit('term', 'remove', mapping, selectedTerm.rows)">移除别称</button>
-          </MappingMenu>
         </div>
       </div>
       <div ref="positionList" class="position-list">

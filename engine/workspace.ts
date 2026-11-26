@@ -579,11 +579,12 @@ async function scanMaterial(state: Workspace, doc: Material, newId: NewId, scan?
   repairGroups(state, {});
 }
 
-function moveMembers(state: Workspace, rows: Iterable<Member>, target: Group, used: Set<string>, keepEvidence = false) {
+function moveMembers(state: Workspace, rows: Iterable<Member>, target: Group, used: Set<string>, keepEvidence = false,
+    alias?: Pick<Row, 'aliasType' | 'replacement'>) {
   const codes = new Set<string>();
   for (const [, row] of rows) {
-    const label = row.aliasType ?? '';
-    const code = aliasCode(state, target, row.original, label, used);
+    const label = (alias ? alias.aliasType : row.aliasType) ?? '';
+    const code = alias?.replacement ?? aliasCode(state, target, row.original, label, used);
     if (row.match && !compatible(row.match[0], target.type)) delete row.match;
     manual(row, target, code, 'replace', label, keepEvidence);
     codes.add(code);
@@ -811,6 +812,12 @@ function apply(state: Workspace, change: Change, newId: NewId, cover: boolean): 
   let kind = change.type;
   if (kind != null && !Object.hasOwn(labels, kind)) throw new Error('请选择有效的脱敏类别。');
   if (op === 'create' && !kind) throw new Error('请选择脱敏类别。');
+  let alias: Row | undefined;
+  if (op === 'bind' && change.alias) {
+    const {original, code} = change.alias;
+    alias = [...members(state, group!.id)].find(([, row]) => row.original === original && row.replacement === code)?.[1];
+    if (!alias || original === group!.primary) throw new Error('别称已变更，请重新选择。');
+  }
   const targetKind = kind || group?.type;
   let resolved: Member[];
   if (cover && ['create', 'bind', 'range'].includes(op)) {
@@ -847,6 +854,11 @@ function apply(state: Workspace, change: Change, newId: NewId, cover: boolean): 
     used.add(group.code);
   }
   if (op === 'bind') {
+    if (alias) {
+      const original = alias.original;
+      const different = resolved.find(([, row]) => row.original !== original);
+      if (different) return {issue: {message: '所选文字与别称不同。', positions: [occurrence(...different)]}};
+    }
     const issue = checkMove(group!, resolved.filter(([, row]) => row.group !== group!.id));
     if (issue) return issue;
   }
@@ -855,7 +867,7 @@ function apply(state: Workspace, change: Change, newId: NewId, cover: boolean): 
       if (op === 'create') row.aliasType = '';
       if (kind) row.type = kind;
     }
-    const issue = moveMembers(state, resolved, group!, used);
+    const issue = moveMembers(state, resolved, group!, used, false, alias);
     if (issue) return issue;
   } else {
     for (const [, row] of resolved) manual(row, null, '', op === 'keep' ? 'keep' : 'review');
@@ -975,7 +987,7 @@ function previewAdjustment(state: Workspace, change: Change, newId: NewId) {
     return impact.changes.length ? [impact] : [];
   });
   const group = findGroup(trial, result.groupId || result.focus?.group || undefined);
-  return {preview: {revision: state.revision, code: group.code, materials, primary: group.primary,
+  return {preview: {revision: state.revision, code: change.mode === 'bind' && change.alias ? change.alias.code : group.code, materials, primary: group.primary,
     sources: sourceImpacts(state, trial, group.id)}};
 }
 

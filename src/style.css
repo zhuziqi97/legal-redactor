@@ -497,6 +497,7 @@ dialog::backdrop { background: #17284a40; }
 /* Temporary position selection */
 .adjust-controls { padding: 4px 11px 8px; display: grid; gap: 8px; border-bottom: 1px solid var(--line); }
 .adjust-controls h3 { font-size: 13px; color: #395575; font-weight: 650; }
+.adjust-target { margin: 0; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
 .adjust-fields { display: grid; grid-template-columns: minmax(80px, 1fr) minmax(0, 2fr); gap: 7px; }
 .adjust-fields label { display: grid; gap: 3px; color: var(--muted); font-size: 12px; }
 .adjust-fields input, .group-preview { min-width: 0; overflow-wrap: anywhere; }

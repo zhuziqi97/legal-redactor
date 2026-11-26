@@ -22,6 +22,26 @@ function workspace(initial) {
   return {run, add, preview, apply, search, edit};
 }
 
+test('给已有别称补绑位置时，预览和确认都复用别称代号', async () => {
+  const w = workspace();
+  const first = await w.add('被询问人：张甲\n问：你以前叫什么？\n答：我以前叫小宁。');
+  const group = first.groups.find(item => item.primary === '张甲');
+  const alias = group.occurrences.find(row => row.original === '小宁');
+  assert.notEqual(alias.replacement, group.code);
+  await w.add('备注：小宁已提交回执。', '合成补录');
+  const positions = (await w.search('小宁')).filter(row => row.materialId === '2');
+  const change = {mode:'bind', groupId:group.id, alias:{original:alias.original, code:alias.replacement}, positions};
+  const result = await w.preview(change);
+  assert.equal(result.preview.code, alias.replacement);
+  assert.deepEqual(result.preview.materials[0].changes[0].after, [{text:alias.replacement}]);
+  const wrong = await w.preview({...change, positions:await w.search('回执')});
+  assert.match(wrong.issue.message, /所选文字与别称不同/);
+  const applied = await w.apply(change, result);
+  assert.deepEqual(applied.view.groups[0].occurrences.filter(row => row.original === alias.original).map(row => row.replacement),
+    [alias.replacement, alias.replacement]);
+  assert.equal((await w.run({op:'undo'})).view.groups[0].occurrences.filter(row => row.original === alias.original).length, 1);
+});
+
 test('同址不同写法可确认合并、保留目标代号并整批撤销', async () => {
   const w = workspace();
   await w.add('住址：北京市东城区和平路12号。', '询问笔录');

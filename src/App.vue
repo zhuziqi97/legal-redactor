@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, reactive, ref, shallowRef, watch } from 'vue';
 import AdjustmentPanel from './components/AdjustmentPanel.vue';
+import AliasPanel from './components/AliasPanel.vue';
 import DocumentReader from './components/DocumentReader.vue';
 import MaterialSidebar from './components/MaterialSidebar.vue';
 import ReviewPanel from './components/ReviewPanel.vue';
@@ -14,7 +15,7 @@ import { positionKey, prettyError, type Adjustment, type AdjustmentPreviewResult
   type SourceFile, type ViewOptions, type Workspace } from './model';
 import { indexText } from './positions';
 import type { EngineRequest } from '../electron/contract';
-import type { Change as EngineChange } from '../engine/workspace-types';
+import type { AliasTarget, Change as EngineChange } from '../engine/workspace-types';
 
 const api = window.redaction;
 const workspace = shallowRef<Workspace>({ documents: [], groups: [], current: null, pending: [], canUndo: false, revision: 0 });
@@ -110,13 +111,13 @@ const draftChange = computed<Change | null>(() => {
       ...(rebindPositions.length ? { rebindPositions } : {}),
       ...(active.resolution ? { resolution: { ...active.resolution } } : {}) };
   }
-  if (active.mode === 'alias' || !picked.value.length || (active.mode === 'bind' && !active.groupId)) return null;
+  if (!picked.value.length || (active.mode === 'bind' && !active.groupId)) return null;
   const mode = active.mode === 'remove' ? active.keep ? 'keep' : 'review' : active.mode;
   return {
     mode, positions: picked.value, primaries,
     ...(mode === 'create' ? { type: active.type, code: active.code,
       ...(active.resolution ? { resolution: { ...active.resolution } } : {}) } : {}),
-    ...(mode === 'bind' ? { groupId: active.groupId } : {}),
+    ...(mode === 'bind' ? { groupId: active.groupId, ...(active.alias ? {alias: active.alias} : {}) } : {}),
   };
 });
 const previewKey = computed(() => coverage.value && draftChange.value
@@ -168,9 +169,13 @@ const groupDialogKey = ref(0);
 const groupAction = ref<'merge' | 'delete' | 'remove'>('merge');
 const group = shallowRef<Group | null>(null);
 const groupRows = shallowRef<Occurrence[]>([]);
+const aliasGroupId = ref('');
+const aliasGroup = computed(() => workspace.value.groups.find(item => item.id === aliasGroupId.value));
 const targetId = ref('');
 const groupError = ref('');
 const groupTerm = computed(() => groupRows.value[0]?.original || '');
+const groupCodes = computed(() => groupAction.value === 'remove' ? [...new Set(groupRows.value.map(row => row.replacement))].join(' · ') : group.value?.code);
+const mergeReferences = computed(() => group.value ? [group.value.primary, ...new Set(group.value.occurrences.map(row => row.original))] : []);
 const mergeTargets = computed(() => workspace.value.groups.filter(candidate => candidate.id !== group.value?.id));
 const mergeTarget = computed(() => mergeTargets.value.find(candidate => candidate.id === targetId.value));
 const groupImpact = computed(() => `影响 ${new Set(groupRows.value.map(row => row.materialId)).size} 份材料、${groupRows.value.length} 处`);
@@ -202,6 +207,10 @@ function clearQuick() {
   reader.value?.clearHighlight();
 }
 function adopt(result: Workspace, reset = false) {
+  if (reset && aliasGroupId.value) {
+    aliasGroupId.value = '';
+    draft.value = null;
+  }
   if (reset || material.value?.id !== result.current?.id) {
     clearQuick();
     selected.value = null;
@@ -525,7 +534,7 @@ async function fromSelection(mode: 'create' | 'bind') {
   if (!first) return;
   const kind = material.value?.items.find(row => row.id === first.itemId)?.type || overlap.value[0]?.type;
   const active = makeDraft(mode, { title: mode === 'create' ? '新建映射' : '绑定到现有映射',
-    type: kind || 'person', query: first.original });
+    type: kind || 'person', query: first.original, targetOriginal: first.original });
   register(active, [first], true);
   clearQuick();
 }
@@ -535,6 +544,14 @@ async function addSelection() {
   try {
     const row = await getSelection();
     if (!row) return;
+    if (active.alias && row.original !== active.alias.original) {
+      active.error = '所选文字与别称不同。';
+      return;
+    }
+    if (alreadyBoundToAlias(active, row)) {
+      active.error = '这处已加入别称。';
+      return;
+    }
     register(active, [row], true);
     active.error = '';
     clearQuick();
@@ -542,13 +559,17 @@ async function addSelection() {
     active.error = prettyError(error);
   }
 }
+function alreadyBoundToAlias(active: Adjustment, row: Occurrence) {
+  return active.alias && row.group === active.groupId && row.replacement === active.alias.code;
+}
 async function searchDraft() {
   const active = draft.value;
   if (!active || busy.value || !active.query.trim()) return;
   active.error = '';
   try {
-    const rows = await run({ op: 'search', text: active.query,
+    const found = await run({ op: 'search', text: active.query,
       materialId: active.scope === 'current' ? material.value?.id : null });
+    const rows = active.alias ? found.filter(row => row.original === active.alias?.original && !alreadyBoundToAlias(active, row)) : found;
     active.rows = active.rows.filter(row => active.chosen.has(positionKey(row)));
     active.searchKeys = new Set(rows.map(positionKey));
     active.searched = true;
@@ -630,12 +651,13 @@ function positionPayload({ materialId, itemId, start, end }: Occurrence) {
 }
 
 function changePayload(change: Change): EngineChange {
-  const { positions, rebindPositions, term, ...details } = change;
+  const { positions, rebindPositions, term, alias, ...details } = change;
   return {
     ...details,
     ...(positions ? { positions: positions.map(positionPayload) } : {}),
     ...(rebindPositions ? { rebindPositions: rebindPositions.map(positionPayload) } : {}),
     ...(term ? { term: { original: term.original } } : {}),
+    ...(alias ? { alias: { original: alias.original, code: alias.code } } : {}),
   };
 }
 
@@ -719,24 +741,19 @@ async function applyDraft() {
   if (result) {
     const destination = active.resolution?.targetId || active.groupId;
     draft.value = null;
-    if (destination) await review.value?.showGroup(destination);
+    if (destination && !aliasGroup.value) await review.value?.showGroup(destination);
   }
   else if (draft.value?.issue?.stalePreview) {
     const current = await run({ op: 'view' }).catch(() => null);
     if (current) adopt(current.view);
   }
 }
-function addToAlias() {
-  const active = draft.value;
-  if (!active) return;
-  makeDraft('bind', { title: '为别称添加位置', groupId: active.groupId, fixedTarget: true, query: active.query });
-  void searchDraft();
-}
-function removeFromAlias() {
-  const active = draft.value;
-  if (!active) return;
-  active.mode = 'remove';
-  active.title = '移出别称位置';
+function addAlias(alias?: AliasTarget) {
+  const item = aliasGroup.value;
+  if (!item) return;
+  makeDraft('bind', {title: alias ? '添加别称位置' : '添加别称', groupId: item.id, fixedTarget: true,
+    alias, query: alias?.original || ''});
+  if (alias) void searchDraft();
 }
 
 function editMapping(item: Group, origin?: Occurrence) {
@@ -745,11 +762,12 @@ function editMapping(item: Group, origin?: Occurrence) {
     originalEdit: { base: value, value, origin, manual: {} } });
 }
 
-function openGroupAction(action: 'edit' | 'add' | 'merge' | 'delete' | 'remove', item: Group, rows = item.occurrences) {
+function openGroupAction(action: 'edit' | 'aliases' | 'merge' | 'delete' | 'remove', item: Group, rows = item.occurrences) {
   clearQuick();
   if (action === 'edit') { editMapping(item); return; }
-  if (action === 'add') {
-    makeDraft('bind', { title: `为「${item.primary}」添加别称`, groupId: item.id, fixedTarget: true });
+  if (action === 'aliases') {
+    review.value?.selectGroup(item.id);
+    aliasGroupId.value = item.id;
     return;
   }
   group.value = item;
@@ -760,16 +778,21 @@ function openGroupAction(action: 'edit' | 'add' | 'merge' | 'delete' | 'remove',
   groupError.value = '';
   void nextTick(() => groupDialog.value?.showModal());
 }
-function termAction(action: 'edit' | 'remove' | 'primary', item: Group, rows: Occurrence[]) {
+function termAction(action: 'rebind' | 'removePositions' | 'remove' | 'primary', rows: Occurrence[]) {
+  const item = aliasGroup.value;
+  if (!item) return;
   const term = rows[0]!;
   if (action === 'remove') { openGroupAction(action, item, rows); return; }
   if (action === 'primary') {
     void commit({ mode: 'primary', groupId: item.id, term });
     return;
   }
-  const active = makeDraft('alias', { title: `编辑别称「${term.original}」`, groupId: item.id,
-    query: term.original });
-  register(active, rows, true);
+  clearQuick();
+  if (action === 'rebind') {
+    makeDraft('bind', {title: '改绑别称位置', rows, rebindAlias: term.original, targetOriginal: term.original});
+  } else {
+    makeDraft('remove', {title: '移出别称位置', groupId: item.id, rows});
+  }
 }
 async function applyGroup(keep = false) {
   if (!group.value) return;
@@ -891,7 +914,8 @@ function showEvidence(link: Evidence) {
             :edit-text="sourceEdit?.text" :revising="revising" :edit-error="sourceError"
             :edit-disabled="busy || scanning === material.id || queued.includes(material.id) || !!draft || !!rangeFor"
             :apply-disabled="busy || !!scanning || !sourceDirty || !sourceEdit?.text.trim()"
-            :show-quick="!!readySelection && !rangeFor && !busy && !sourceEdit && draft?.mode !== 'edit'"
+            :show-quick="!!readySelection && !rangeFor && !busy && !sourceEdit && (!draft ||
+              (draft.mode === 'create' || draft.mode === 'bind') && !draft.rebindAlias)"
             @select="fromDocument" @selection="trackSelection" @output="output" @dismiss="clearQuick"
             @edit="beginSourceEdit" @update:edit-text="sourceEdit && (sourceEdit.text = $event)"
             @cancel-edit="endSourceEdit" @apply-edit="applySourceEdit">
@@ -917,11 +941,14 @@ function showEvidence(link: Evidence) {
             :merge-prompt="mergePrompt" :range-for="rangeFor"
             :suggestions="visibleSuggestions" @original="setOriginal"
             @cancel="draft = null; rangeFor = null; clearQuick()" @search="searchDraft" @jump="jump($event, true)" @reselect="chooseRange"
-            @issue="locate" @apply="applyDraft" @add="addToAlias" @remove="removeFromAlias" @choose-target="chooseMergeTarget" />
-          <ReviewPanel v-show="!draft" ref="review" :material="material" :groups="workspace.groups" :pending="workspace.pending"
+            @issue="locate" @apply="applyDraft" @choose-target="chooseMergeTarget" />
+          <AliasPanel v-if="aliasGroup" v-show="!draft" :key="aliasGroup.id" :group="aliasGroup" :material-id="material.id"
+            :selected="selected" :locked="busy || !!sourceEdit" @back="aliasGroupId = ''" @jump="jump"
+            @add="addAlias()" @add-positions="addAlias" @term="termAction" />
+          <ReviewPanel v-show="!draft && !aliasGroup" ref="review" :material="material" :groups="workspace.groups" :pending="workspace.pending"
             :issues="issues" :selected="selected" :locked="busy || !!sourceEdit" :can-undo="workspace.canUndo"
             :scope="mappingScope" @scope="changeMappingScope" @jump="jump" @issue="locate"
-            @create="makeDraft('create'); clearQuick()" @group="openGroupAction" @term="termAction" @undo="undo" />
+            @create="makeDraft('create'); clearQuick()" @group="openGroupAction" @undo="undo" />
         </div>
       </section>
       <RestoreWorkspace v-show="mode === 'restore'" id="restore-panel" role="tabpanel" aria-labelledby="restore-tab"
@@ -999,8 +1026,9 @@ function showEvidence(link: Evidence) {
         <h2 id="group-dialog-title">{{ {merge: '合并映射', delete: '删除映射', remove: '移除别称'}[groupAction] }}</h2>
         <button type="button" class="button quiet small close-dialog" aria-label="关闭映射操作" :disabled="busy" @click="groupDialog?.close()">×</button>
       </div>
-      <div class="group-preview"><strong>{{ groupAction === 'remove' ? groupTerm : group.primary }}</strong> → {{ group.code }}<span>{{ groupImpact }}</span></div>
-      <MappingTargetPicker v-if="groupAction === 'merge'" :key="groupDialogKey" v-model="targetId" :groups="mergeTargets" :disabled="busy" autofocus />
+      <div class="group-preview"><strong>{{ groupAction === 'remove' ? groupTerm : group.primary }}</strong> → {{ groupCodes }}<span>{{ groupImpact }}</span></div>
+      <MappingTargetPicker v-if="groupAction === 'merge'" :key="groupDialogKey" v-model="targetId" :groups="mergeTargets"
+        :references="mergeReferences" :disabled="busy" autofocus />
       <div v-if="['delete','remove'].includes(groupAction)" class="disposition-preview">
         <p v-if="groupAction === 'delete'" class="count">涉及 {{ new Set(groupRows.filter(row => row.original !== group?.primary).map(row => row.original)).size }} 个别称</p>
         <p>转待核后，处理完这些位置即可输出相应材料。</p>

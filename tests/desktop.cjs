@@ -238,7 +238,20 @@ test('搜索派生代号找到跨类别目标，预览三处后合并并撤销',
   const offset = original.text.lastIndexOf('\n', lastTwo[0].start - 1) + 1;
   state.materials.push({...original, id:'2', title:'补充材料', text:original.text.slice(offset),
     decisions:lastTwo.map(row => ({...row, start:row.start - offset, end:row.end - offset}))});
-  state.nextMaterialId = 3;
+  const extra = {...original, id:'3', title:'其他材料', text:'', decisions:[]};
+  const names = [...Array.from({length:20}, (_, index) => `模拟单位${index + 1}`), '柳明传'];
+  for (const [index, name] of names.entries()) {
+    const id = `extra-${index + 1}`;
+    const type = index === names.length - 1 ? 'person' : 'organization';
+    const code = type === 'person' ? '【柳某乙】' : `【单位${index + 1}】`;
+    const start = extra.text.length;
+    extra.text += name + '\n';
+    extra.decisions.push({...first, id:index + 1, original:name, start, end:start + name.length, group:id,
+      replacement:code, aliasType:'', match:undefined, name:null, type});
+    state.groups[id] = {id, type, primary:name, code};
+  }
+  state.materials.push(extra);
+  state.nextMaterialId = 4;
   original.text = original.text.slice(0, offset);
   await writeProject(path, state);
   await app.evaluate(({dialog}, path) => {
@@ -254,6 +267,15 @@ test('搜索派生代号找到跨类别目标，预览三处后合并并撤销',
   const dialog = role(page, '合并映射');
   const search = dialog.getByRole('searchbox', {name:'搜索目标映射'});
   assert.equal(await search.evaluate(input => document.activeElement === input), true);
+  const candidates = dialog.getByRole('group', {name:'目标映射'});
+  assert.deepEqual(await candidates.getByRole('button').evaluateAll(items => items.slice(0, 2).map(item => item.getAttribute('aria-label'))),
+    ['柳明川 → 【柳某甲】 99 处', '柳明传 → 【柳某乙】 1 处']);
+  assert.equal(await candidates.getByText('文字相近', {exact:true}).count(), 0);
+  await dialog.getByText('共 22 项', {exact:true}).waitFor();
+  assert.equal(await candidates.evaluate(list => list.clientHeight < list.scrollHeight), true);
+  await search.fill('柳明传');
+  assert.deepEqual(await candidates.getByRole('button').evaluateAll(items => items.map(item => item.getAttribute('aria-label'))),
+    ['柳明传 → 【柳某乙】 1 处', '柳明川 → 【柳某甲】 99 处']);
   await search.fill('L机构');
   await dialog.getByText('没有匹配的映射').waitFor();
   assert.equal(await channel(dialog, '查看合并').isDisabled(), true);
@@ -291,4 +313,63 @@ test('搜索派生代号找到跨类别目标，预览三处后合并并撤销',
   await channel(preview, '应用到所选 1 处').click();
   await merged.getByText('100 处', {exact:true}).waitFor();
   await source.getByText('2 处', {exact:true}).waitFor();
+});
+
+test('通过映射菜单管理别称，跨材料补位置沿用实际代号', async t => {
+  const {writeProject} = require('../build/project-file.cjs');
+  const {runWorkspace} = await import('../build/engine/workspace.js');
+  const {app, page, directory} = await open(t, {provider:'cpu', model:false});
+  let state = {materials:[], groups:{}, activeId:null, undo:null, revision:0};
+  for (const [title, text] of [
+    ['合成补录', '备注：小宁已提交回执。\n姓名：赵敏'],
+    ['合成笔录', '被询问人：张甲\n问：你以前叫什么？\n答：我以前叫小宁。'],
+  ]) {
+    state = (await runWorkspace(state, {op:'add', title, text})).state;
+    state = (await runWorkspace(state, {op:'scan', materialId:state.activeId})).state;
+  }
+  const path = join(directory, '别称管理.lrproj');
+  await writeProject(path, state);
+  await app.evaluate(({dialog}, path) => {
+    dialog.showOpenDialog = async () => ({canceled:false, filePaths:[path]});
+  }, path);
+  await channel(page.getByRole('tabpanel', {name:'脱敏'}), '打开项目').click();
+  const mappings = page.getByRole('region', {name:'映射清单'});
+  const mapping = mappings.locator('.mapping').filter({has:channel(page, '张甲 → 【张某】')});
+  await channel(mapping, '张甲 → 【张某】').click();
+  const positions = mappings.getByRole('region', {name:'出现位置'});
+  await positions.getByLabel('按原词或别称筛选位置').selectOption('小宁');
+  assert.equal(await positions.getByRole('button', {name:'小宁的别称操作'}).count(), 0);
+
+  await channel(mapping, '张甲的映射操作').click();
+  await channel(mapping, '管理别称').click();
+  const aliases = page.getByRole('region', {name:'管理别称'});
+  const term = aliases.locator('.alias-entry');
+  const aliasButton = term.getByRole('button', {name:/小宁.*曾用名1.*1 处/});
+  await aliasButton.click();
+  await aliases.getByRole('region', {name:'别称位置'}).getByText(/合成笔录/u).waitFor();
+  await channel(term, '小宁的别称操作').click();
+  await channel(term, '添加位置').click();
+  const adjust = page.getByRole('region', {name:'调整清单'});
+  await adjust.getByRole('checkbox', {name:/选择合成补录.*小宁/u}).check();
+  assert.equal(await adjust.getByRole('checkbox', {name:/选择合成笔录.*小宁/u}).count(), 0);
+  const locate = channel(adjust, '第 1 行 · 定位原文');
+  await locate.waitFor();
+  assert.deepEqual(await adjust.locator('.impact-entry dd').allTextContents(), ['小宁', '【张某-曾用名1】']);
+  await locate.click();
+  await page.locator('#source-text').getByText(/已提交回执/u).waitFor();
+  await channel(adjust, '应用到所选 1 处').click();
+  await term.getByText('2 处', {exact:true}).waitFor();
+  await output(page).getByText('【张某-曾用名1】', {exact:true}).waitFor();
+
+  await channel(term, '小宁的别称操作').click();
+  await channel(term, '改绑位置').click();
+  await channel(adjust, '赵敏 → 【赵某】 1 处').click();
+  await adjust.getByRole('checkbox', {name:/选择合成补录.*小宁/u}).check();
+  await channel(adjust, '改绑所选 1 处').click();
+  await term.getByText('1 处', {exact:true}).waitFor();
+  await output(page).getByText('【赵某-曾用名1】', {exact:true}).waitFor();
+  await channel(term, '小宁的别称操作').click();
+  await channel(term, '移除别称').click();
+  await channel(role(page, '移除别称'), '1 处转待核').click();
+  await aliases.getByText('暂无别称', {exact:true}).waitFor();
 });

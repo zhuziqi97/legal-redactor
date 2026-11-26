@@ -12,7 +12,7 @@ const props = defineProps<{
 }>();
 const emit = defineEmits<{
   cancel: []; search: []; apply: []; chooseTarget: [];
-  jump: [row: Pick<Occurrence, 'materialId' | 'itemId' | 'start' | 'end'>]; issue: [issue: Issue]; add: []; remove: [];
+  jump: [row: Pick<Occurrence, 'materialId' | 'itemId' | 'start' | 'end'>]; issue: [issue: Issue];
   reselect: [row: Occurrence]; original: [value: string];
 }>();
 const target = computed(() => props.groups.find(group => group.id === props.draft.groupId));
@@ -23,6 +23,12 @@ const error = computed(() => (props.impact && 'error' in props.impact ? props.im
 const editingLocked = computed(() => props.locked && !props.previewing);
 const selectedRows = computed(() => props.draft.rows.filter(row => props.draft.chosen.has(positionKey(row))));
 const selecting = computed(() => ['create', 'bind'].includes(props.draft.mode));
+const canSearch = computed(() => selecting.value && !props.draft.rebindAlias);
+const targetReferences = computed(() => props.draft.targetOriginal ? [props.draft.targetOriginal] : []);
+const targetGroups = computed(() => {
+  const source = props.draft.rebindAlias && props.draft.rows[0]?.group;
+  return source ? props.groups.filter(group => group.id !== source) : props.groups;
+});
 const visibleRows = computed(() => !selecting.value || !props.draft.searched ? props.draft.rows
   : props.draft.rows.filter(row => props.draft.searchKeys.has(positionKey(row)) || props.draft.chosen.has(positionKey(row))));
 const candidateInput = ref<HTMLInputElement>();
@@ -101,12 +107,13 @@ const destination = computed(() => {
     return `迁入 ${count} 处 → ${preview.value.code}`;
   }
   if (editing.value && preview.value) return `${preview.value.primary} → ${preview.value.code}`;
-  return preview.value?.code || target.value?.code || '';
+  return preview.value?.code || props.draft.alias?.code || target.value?.code || '';
 });
 const canApply = computed(() => !props.locked && !props.rangeFor && (needsPreview.value ? preview.value !== null : selectedRows.value.length > 0));
 const applyLabel = computed(() => {
   if (props.draft.resolution?.mode === 'whole') return '确认合并';
   if (props.draft.resolution?.mode === 'selected') return '确认改绑';
+  if (props.draft.rebindAlias) return `改绑所选 ${selectedRows.value.length} 处`;
   if (!editing.value) return `应用到所选 ${selectedRows.value.length} 处`;
   return '应用修改';
 });
@@ -183,14 +190,13 @@ function resolve(mode: 'whole' | 'selected' | 'retain', targetId?: string) {
         <label>类别<select v-model="draft.type" aria-label="类别" :disabled="editingLocked"><option v-for="(label, key) in labels" :key="key" :value="key">{{ label }}</option></select></label>
         <label>代号<input ref="codeInput" v-model="draft.code" :disabled="editingLocked" :placeholder="preview?.code || '自动分配'"></label>
       </div>
+      <p v-if="draft.alias || draft.fixedTarget && target" class="adjust-target">
+        {{ draft.alias?.original || target?.primary }} → {{ draft.alias?.code || target?.code }}
+      </p>
       <MappingTargetPicker v-if="draft.mode === 'bind' && !draft.fixedTarget" v-model="draft.groupId"
-        :groups="groups" :disabled="editingLocked" autofocus />
-      <div v-if="draft.mode === 'alias'" class="toolbar">
-        <button class="button small" :disabled="locked" @click="emit('add')">添加位置</button>
-        <button class="button small" :disabled="locked || !selectedRows.length" @click="emit('remove')">移出所选位置</button>
-      </div>
-      <form v-if="selecting" class="candidate-search" @submit.prevent="emit('search')">
-        <input ref="candidateInput" v-model="draft.query" type="search" aria-label="查找同文位置" placeholder="输入原词找位置">
+        :groups="targetGroups" :references="targetReferences" :disabled="editingLocked" autofocus />
+      <form v-if="canSearch" class="candidate-search" @submit.prevent="emit('search')">
+        <input v-if="!draft.alias" ref="candidateInput" v-model="draft.query" type="search" aria-label="查找同文位置" placeholder="输入原词找位置">
         <select v-model="draft.scope" aria-label="候选材料范围">
           <option value="all">全部材料</option><option value="current">本份材料</option>
         </select>
@@ -249,7 +255,7 @@ function resolve(mode: 'whole' | 'selected' | 'retain', targetId?: string) {
       </div>
     </div>
     <div v-else-if="!merging" class="adjust-results">
-      <p v-if="!visibleRows.length" class="muted-empty">{{ draft.searched ? '没有找到同文位置' : '在原文选词，或查找同文位置' }}</p>
+      <p v-if="!visibleRows.length" class="muted-empty">{{ draft.alias ? '没有可添加的位置' : draft.searched ? '没有找到同文位置' : '在原文选词，或查找同文位置' }}</p>
       <div v-for="row in visibleRows" :key="positionKey(row)" class="candidate-row"
         :class="{ checked: draft.chosen.has(positionKey(row)), current: row.materialId === materialId && (located === positionKey(row) || (row.itemId !== null && row.itemId === selected)) }">
         <label class="candidate-select">
@@ -335,7 +341,7 @@ function resolve(mode: 'whole' | 'selected' | 'retain', targetId?: string) {
         <p v-else-if="!preview && !error && (editing || merging ? previewing : needsPreview && selectedRows.length && (draft.mode !== 'bind' || draft.groupId))"
           class="impact-wait" role="status">正在更新影响预览…</p>
       </div>
-      <div v-if="draft.mode !== 'alias'" class="apply-bar" :class="{ 'edit-apply': editing }">
+      <div class="apply-bar" :class="{ 'edit-apply': editing }">
         <span class="destination" :title="editing ? editSummary : destination">{{ editing ? editSummary : (destination || (merging ? '' : `已选 ${selectedRows.length} 处`)) }}</span>
         <button class="button primary" :disabled="!canApply" @click="emit('apply')">{{ applyLabel }}</button>
       </div>
