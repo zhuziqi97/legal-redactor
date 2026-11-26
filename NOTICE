@@ -1,7 +1,14 @@
-legal-redactor
-Copyright 2026 legal-redactor contributors
+LegalRedactor
+Copyright 2026 zhuziqi97
 
-Licensed under the Apache License, Version 2.0.
+Licensed under the Apache License, Version 2.0. See LICENSE.
 
+Third-party attributions
+
+LegalRedactor includes pinyin data derived from pypinyin (MIT).
 DOCX import uses Mammoth.js (BSD-2-Clause) and parse5 (MIT).
-Their copyright and license notices are included alongside their packages.
+Local inference uses ONNX Runtime (MIT), copyright Microsoft Corporation.
+
+Desktop releases include an ONNX export of whoisjones/otter-cross-mmbert,
+licensed under the Apache License, Version 2.0.
+https://huggingface.co/whoisjones/otter-cross-mmbert

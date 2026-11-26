@@ -1,21 +1,30 @@
+<img src="public/legal-redactor-icon.png" width="72" alt="" align="right">
+
 # LegalRedactor
+
+**法律文档脱敏工具**
 
 LegalRedactor 用于在共享或进一步处理法律文档前，识别和替换其中的敏感信息。识别、复核和导出均在本机离线完成。
 
+[下载最新版](https://github.com/zhuziqi97/legal-redactor/releases/latest) · [从源码运行](#从源码运行) · [反馈与贡献](#反馈与贡献)
+
 ## 主要功能
 
-- 导入 TXT、Word（DOCX）或粘贴文本，识别人名、机构名、地址、联系方式等敏感信息。
-- 并排查看原文和脱敏预览，定位并修正替换结果，手动补充遗漏。
-- 为同一工作区的多份文档统一脱敏代号。
-- 保存并重新打开本地项目，继续复核。
-- 按当前项目映射恢复文本，并排核对替换结果和未匹配的代号。
-- 将复核后的文本复制到剪贴板或导出为 TXT。
+- **识别敏感信息**　导入 Word（DOCX）、TXT 或粘贴文本，识别人名、机构名、地址和联系方式等信息。
+- **对照复核**　并排查看原文和脱敏文本，定位、修改和补充脱敏项。
+- **多文档脱敏**　同一项目的多份文档共用代号。项目可加密保存，重新打开后继续复核。
+- **恢复文本**　将处理后文本中的脱敏代号恢复为对应原词。
+- **导出结果**　复制文本或导出为 TXT。
+
+## 下载
+
+目前提供 Windows x64 和 Linux x64 版本。下载对应系统的版本，解压后即可运行。
+
+[查看发布版本](https://github.com/zhuziqi97/legal-redactor/releases)
 
 ## 从源码运行
 
-需要 Node.js 24 或更新版本。从 [Otter 模型页](https://huggingface.co/whoisjones/otter-cross-mmbert) 获取模型，使用 [`scripts/export-otter.py`](scripts/export-otter.py) 导出 ONNX。将环境变量 `REDACTOR_ONNX_DIR` 指向包含 `otter.onnx`、`config.json` 和 `tokenizer.json` 的目录。
-
-在仓库根目录构建并启动应用。
+需要 Node.js 24 或更新版本。可用[模型准备脚本](scripts/prepare-release-model.py)生成本地 ONNX 模型，再将 `REDACTOR_ONNX_DIR` 指向模型目录。
 
 ```sh
 npm ci
@@ -23,12 +32,12 @@ npm run build
 npm start
 ```
 
-使用 `npm test` 运行测试。Windows 或 Linux 本地开发需要 GPU 探测时，安装 Visual Studio C++ 构建工具或 Linux Vulkan 开发头文件后运行 `npm run build:probe`。
+运行 `npm test` 执行测试。
 
-## 反馈
+## 反馈与贡献
 
-欢迎通过 [GitHub Issues](https://github.com/zhuziqi97/legal-redactor/issues) 反馈问题或提出建议。
+欢迎在 [GitHub Issues](https://github.com/zhuziqi97/legal-redactor/issues) 反馈问题和提出建议，也欢迎提交 Pull Request。
 
 ## 许可证
 
-项目采用 [Apache-2.0](LICENSE) 许可。第三方归属见 [NOTICE](NOTICE)。
+项目采用 [Apache-2.0](LICENSE) 许可。版权与第三方归属见 [NOTICE](NOTICE)。
