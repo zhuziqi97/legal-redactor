@@ -5,10 +5,11 @@ import DocumentReader from './components/DocumentReader.vue';
 import MaterialSidebar from './components/MaterialSidebar.vue';
 import ReviewPanel from './components/ReviewPanel.vue';
 import ProjectDialogs from './components/ProjectDialogs.vue';
+import MappingTargetPicker from './components/MappingTargetPicker.vue';
 import { useAnalysisQueue } from './analysis-queue';
 import RestoreWorkspace from './components/RestoreWorkspace.vue';
 import type { MappingScope, Preferences, SettingsSection, UpdateStatus } from '../engine/preferences';
-import { positionKey, prettyError, samePersonKind, type Adjustment, type AdjustmentPreviewResult, type Evidence,
+import { positionKey, prettyError, type Adjustment, type AdjustmentPreviewResult, type Evidence,
   type Group, type Issue, type Occurrence, type RangeSuggestion, type SourceChange, type Span, type Term,
   type SourceFile, type ViewOptions, type Workspace } from './model';
 import { indexText } from './positions';
@@ -76,21 +77,12 @@ const suggestionsKey = computed(() => {
 const visibleSuggestions = computed(() => suggestionsKey.value && suggestionsKey.value === suggestionReply.value?.key
   ? suggestionReply.value : null);
 const picked = computed(() => draft.value?.rows.filter(row => draft.value!.chosen.has(positionKey(row))) || []);
-const coverage = computed(() => draft.value && ['create', 'bind', 'edit'].includes(draft.value.mode));
+const coverage = computed(() => draft.value && ['create', 'bind', 'edit', 'merge'].includes(draft.value.mode));
 const sourceChanges = computed<SourceChange[]>(() => {
   const active = draft.value;
-  if (!active || active.mode === 'edit' || active.mode === 'alias' || (active.mode === 'bind' && !active.groupId)) return [];
-  const byMaterial = new Map<string, Occurrence[]>();
-  for (const row of picked.value) {
-    const rows = byMaterial.get(row.materialId) || [];
-    rows.push(row);
-    byMaterial.set(row.materialId, rows);
-  }
+  if (active?.mode !== 'remove') return [];
   return workspace.value.groups.flatMap(group => {
-    if (active.mode === 'bind' && active.groupId === group.id) return [];
-    const moved = group.occurrences.filter(row => coverage.value
-      ? byMaterial.get(row.materialId)?.some(next => next.start < row.end && row.start < next.end)
-      : active.chosen.has(positionKey(row)));
+    const moved = group.occurrences.filter(row => active.chosen.has(positionKey(row)));
     if (!moved.length) return [];
     const removed = new Set(moved);
     const rest = group.occurrences.filter(row => !removed.has(row));
@@ -100,7 +92,13 @@ const sourceChanges = computed<SourceChange[]>(() => {
 });
 const draftChange = computed<Change | null>(() => {
   const active = draft.value;
-  if (active?.mode === 'edit') {
+  if (!active) return null;
+  if (active.mode === 'merge') {
+    return active.resolution?.targetId ? {mode: 'merge', groupId: active.groupId, targetId: active.resolution.targetId} : null;
+  }
+  const primaries: Record<string, Term> = {};
+  for (const [id, original] of Object.entries(active.primaries)) if (original) primaries[id] = {original};
+  if (active.mode === 'edit') {
     const item = workspace.value.groups.find(group => group.id === active.groupId);
     const positions = Object.values(active.edits);
     const wordChanged = active.originalEdit?.value !== active.originalEdit?.base;
@@ -108,17 +106,12 @@ const draftChange = computed<Change | null>(() => {
     const codeChanged = item?.code !== inputCode && item?.code !== `【${inputCode}】`;
     if (!item || !inputCode || (wordChanged && !positions.length) || (!positions.length && !active.primary && !codeChanged)) return null;
     const rebindPositions = !positions.length && codeChanged ? picked.value : [];
-    return { mode: 'editMapping', groupId: active.groupId, positions, code: active.code, primary: active.primary,
+    return { mode: 'editMapping', groupId: active.groupId, positions, code: active.code, primary: active.primary, primaries,
       ...(rebindPositions.length ? { rebindPositions } : {}),
       ...(active.resolution ? { resolution: { ...active.resolution } } : {}) };
   }
-  if (!active || active.mode === 'alias' || !picked.value.length || (active.mode === 'bind' && !active.groupId)) return null;
+  if (active.mode === 'alias' || !picked.value.length || (active.mode === 'bind' && !active.groupId)) return null;
   const mode = active.mode === 'remove' ? active.keep ? 'keep' : 'review' : active.mode;
-  const primaries: Record<string, Term> = {};
-  for (const { group, terms } of sourceChanges.value) {
-    const choice = terms.find(row => row.original === active.primaries[group.id]);
-    if (choice) primaries[group.id] = { original: choice.original };
-  }
   return {
     mode, positions: picked.value, primaries,
     ...(mode === 'create' ? { type: active.type, code: active.code,
@@ -132,11 +125,19 @@ const visibleImpact = computed(() => previewKey.value && previewKey.value === pr
   ? previewReply.value.result : null);
 const mergeKey = computed(() => {
   if (!draft.value || !['edit', 'create'].includes(draft.value.mode) || !draftChange.value) return '';
-  const { resolution: _resolution, rebindPositions: _rebind, ...selection } = changePayload(draftChange.value);
+  const { resolution: _resolution, rebindPositions: _rebind, primaries: _primaries, ...selection } = changePayload(draftChange.value);
   return JSON.stringify([draftKey.value, workspace.value.revision, selection]);
 });
 const mergePrompt = computed(() => mergeKey.value === mergeReply.value?.key ? mergeReply.value.issue : null);
 watch(mergeKey, () => { if (draft.value) draft.value.resolution = null; });
+const transferScope = computed(() => {
+  if (!draftChange.value) return '';
+  const {primaries: _primaries, ...choice} = changePayload(draftChange.value);
+  return JSON.stringify([draftKey.value, workspace.value.revision, choice]);
+});
+watch(transferScope, () => {
+  if (draft.value && Object.keys(draft.value.primaries).length) draft.value.primaries = {};
+});
 const issues = ref<Issue[]>([]);
 const notice = ref({ text: '', error: false });
 const reader = ref<InstanceType<typeof DocumentReader>>();
@@ -159,19 +160,15 @@ const importEncodingTitle = ref('');
 const importError = ref('');
 let pasteDraft = { title: '', text: '' };
 const groupDialog = ref<HTMLDialogElement>();
+const groupDialogKey = ref(0);
 const groupAction = ref<'merge' | 'delete' | 'remove'>('merge');
 const group = shallowRef<Group | null>(null);
 const groupRows = shallowRef<Occurrence[]>([]);
 const targetId = ref('');
-const mergeQuery = ref('');
 const groupError = ref('');
 const groupTerm = computed(() => groupRows.value[0]?.original || '');
-const supportedTargets = computed(() => workspace.value.groups.filter(candidate =>
-  candidate.id !== group.value?.id && group.value && samePersonKind(candidate.type, group.value.type)));
-const mergeTargets = computed(() => supportedTargets.value.filter(candidate => candidate.id === targetId.value
-  || [candidate.primary, candidate.code, ...candidate.occurrences.map(row => row.original)]
-    .some(word => word.includes(mergeQuery.value.trim()))));
-const mergeTarget = computed(() => supportedTargets.value.find(candidate => candidate.id === targetId.value));
+const mergeTargets = computed(() => workspace.value.groups.filter(candidate => candidate.id !== group.value?.id));
+const mergeTarget = computed(() => mergeTargets.value.find(candidate => candidate.id === targetId.value));
 const groupImpact = computed(() => `影响 ${new Set(groupRows.value.map(row => row.materialId)).size} 份材料、${groupRows.value.length} 处`);
 const evidence = computed(() => material.value?.evidence.find(link => {
   const row = quickItem.value;
@@ -717,7 +714,7 @@ async function applyDraft() {
   if (result) {
     const destination = active.resolution?.targetId || active.groupId;
     draft.value = null;
-    if (active.mode === 'edit' || active.resolution?.targetId) review.value?.selectGroup(destination);
+    if (destination) review.value?.selectGroup(destination);
   }
   else if (draft.value?.issue?.stalePreview) {
     const current = await run({ op: 'view' }).catch(() => null);
@@ -753,8 +750,8 @@ function openGroupAction(action: 'edit' | 'add' | 'merge' | 'delete' | 'remove',
   group.value = item;
   groupRows.value = rows;
   groupAction.value = action;
+  groupDialogKey.value++;
   targetId.value = '';
-  mergeQuery.value = '';
   groupError.value = '';
   void nextTick(() => groupDialog.value?.showModal());
 }
@@ -772,19 +769,29 @@ function termAction(action: 'edit' | 'remove' | 'primary', item: Group, rows: Oc
 async function applyGroup(keep = false) {
   if (!group.value) return;
   groupError.value = '';
-  if (groupAction.value === 'merge' && mergeTarget.value) {
+  if (groupAction.value === 'merge') {
     const target = mergeTarget.value;
-    const active = editMapping(group.value);
-    active.code = target.code.slice(1, -1);
+    if (!target) return;
+    const source = workspace.value.groups.find(item => item.id === group.value?.id);
+    if (!source) { groupError.value = '源映射已变更，请重新选择。'; return; }
+    makeDraft('merge', {title: '合并映射', groupId: source.id, rows: source.occurrences,
+      resolution: {mode: 'whole', targetId: target.id}});
     groupDialog.value?.close();
-    await nextTick();
-    active.resolution = { mode: 'whole', targetId: target.id };
     return;
   }
   const change: Change = groupAction.value === 'remove'
     ? { mode: keep ? 'keep' : 'review', positions: groupRows.value }
     : { mode: groupAction.value, groupId: group.value.id, targetId: targetId.value, keep };
   if (await commit(change, message => { groupError.value = message; })) groupDialog.value?.close();
+}
+
+function chooseMergeTarget() {
+  const active = draft.value;
+  const source = workspace.value.groups.find(item => item.id === active?.groupId);
+  if (!active || !source) return;
+  draft.value = null;
+  openGroupAction('merge', source);
+  targetId.value = active.resolution?.targetId ?? '';
 }
 
 async function undo() {
@@ -904,7 +911,7 @@ function showEvidence(link: Evidence) {
             :merge-prompt="mergePrompt" :range-for="rangeFor"
             :suggestions="visibleSuggestions" @original="setOriginal"
             @cancel="draft = null; rangeFor = null; clearQuick()" @search="searchDraft" @jump="jump($event, true)" @reselect="chooseRange"
-            @issue="locate" @apply="applyDraft" @add="addToAlias" @remove="removeFromAlias" />
+            @issue="locate" @apply="applyDraft" @add="addToAlias" @remove="removeFromAlias" @choose-target="chooseMergeTarget" />
           <ReviewPanel v-show="!draft" ref="review" :material="material" :groups="workspace.groups" :pending="workspace.pending"
             :issues="issues" :selected="selected" :locked="busy || !!sourceEdit" :can-undo="workspace.canUndo"
             :scope="mappingScope" @scope="changeMappingScope" @jump="jump" @issue="locate"
@@ -987,20 +994,7 @@ function showEvidence(link: Evidence) {
         <button type="button" class="button quiet small close-dialog" aria-label="关闭映射操作" :disabled="busy" @click="groupDialog?.close()">×</button>
       </div>
       <div class="group-preview"><strong>{{ groupAction === 'remove' ? groupTerm : group.primary }}</strong> → {{ group.code }}<span>{{ groupImpact }}</span></div>
-      <template v-if="groupAction === 'merge'">
-        <label>搜索目标映射<input v-model="mergeQuery" type="search" placeholder="输入原词、别称或代号"></label>
-        <label>合并到<select v-model="targetId" aria-label="合并到" :disabled="busy"><option value="">请选择目标映射</option>
-          <option v-for="candidate in mergeTargets" :key="candidate.id" :value="candidate.id">{{ candidate.primary }} → {{ candidate.code }}</option></select>
-        </label>
-        <p v-if="!mergeTargets.length" class="count">没有匹配的同类映射</p>
-        <div class="merge-summary">
-          <strong>{{ mergeTarget ? `迁入「${mergeTarget.primary}」，使用 ${mergeTarget.code}` : '将一并迁入的原词' }}</strong>
-          <p>{{ [...new Set(groupRows.map(row => row.original))].join('、') }}</p>
-          <div v-if="mergeTarget" class="merge-positions">
-            <p v-for="row in groupRows" :key="positionKey(row)">{{ row.title }} · 第 {{ row.line }} 行 · {{ row.original }}</p>
-          </div>
-        </div>
-      </template>
+      <MappingTargetPicker v-if="groupAction === 'merge'" :key="groupDialogKey" v-model="targetId" :groups="mergeTargets" :disabled="busy" autofocus />
       <div v-if="['delete','remove'].includes(groupAction)" class="disposition-preview">
         <p v-if="groupAction === 'delete'" class="count">涉及 {{ new Set(groupRows.filter(row => row.original !== group?.primary).map(row => row.original)).size }} 个别称</p>
         <p>转待核后，处理完这些位置即可输出相应材料。</p>
@@ -1009,7 +1003,7 @@ function showEvidence(link: Evidence) {
       <div class="dialog-actions">
         <button type="button" class="button" :disabled="busy" @click="groupDialog?.close()">取消</button>
         <button v-if="['delete','remove'].includes(groupAction)" type="button" class="button" :disabled="busy" @click="applyGroup(true)">{{ groupRows.length }} 处保留原文</button>
-        <button class="button primary" :disabled="busy || (groupAction === 'merge' && !targetId)">
+        <button class="button primary" :disabled="busy || (groupAction === 'merge' && !mergeTarget)">
           {{ groupAction === 'merge' ? '查看合并' : `${groupRows.length} 处转待核` }}
         </button>
       </div>

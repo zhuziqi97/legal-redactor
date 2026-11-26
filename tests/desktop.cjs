@@ -223,3 +223,58 @@ test('加密项目重开保留共享代号，保存冲突保留当前修改与�
   await reopen.page.getByText('首次笔录', {exact: true}).first().click();
   await output(reopen.page).getByText('【当事人甲】', {exact: true}).waitFor();
 });
+
+test('搜索派生代号找到跨类别目标，预览三处后合并并撤销', async t => {
+  const {crossCategoryProject} = require('./mapping-fixture.cjs');
+  const {writeProject} = require('../build/project-file.cjs');
+  const {app, page, directory} = await open(t, {provider: 'cpu', model: false});
+  const path = join(directory, '跨类别复核.lrproj');
+  const state = crossCategoryProject();
+  const first = state.materials[0].decisions[0];
+  first.aliasType = '曾用名';
+  first.replacement = '【柳某甲-曾用名1】';
+  await writeProject(path, state);
+  await app.evaluate(({dialog}, path) => {
+    dialog.showOpenDialog = async () => ({canceled:false, filePaths:[path]});
+  }, path);
+  await channel(page.getByRole('tabpanel', {name:'脱敏'}), '打开项目').click();
+  const mappings = page.getByRole('region', {name:'映射清单'});
+  const source = mappings.locator('.mapping').filter({has: channel(page, '柳明川 → 【L机构】')});
+  await channel(source, '柳明川的映射操作').click();
+  await channel(source, '合并到其他映射').click();
+  const dialog = role(page, '合并映射');
+  const search = dialog.getByRole('searchbox', {name:'搜索目标映射'});
+  assert.equal(await search.evaluate(input => document.activeElement === input), true);
+  await search.fill('L机构');
+  await dialog.getByText('没有匹配的映射').waitFor();
+  assert.equal(await channel(dialog, '查看合并').isDisabled(), true);
+  await search.fill('柳某甲-曾用名1');
+  const target = channel(dialog, '柳明川 → 【柳某甲】 99 处');
+  await target.waitFor();
+  await search.press('ArrowDown');
+  await page.keyboard.press('Enter');
+  assert.equal(await target.getAttribute('aria-pressed'), 'true');
+  await channel(dialog, '查看合并').click();
+  const preview = page.getByRole('region', {name:'调整清单'});
+  await preview.getByText('迁入 3 处 → 【柳某甲】', {exact:true}).waitFor();
+  assert.equal(await preview.locator('.impact-entry').count(), 3);
+  assert.equal(await output(page).getByText('【L机构】', {exact:true}).count(), 3);
+  await channel(preview, '更换目标').click();
+  await channel(dialog, '查看合并').click();
+  await channel(preview, '确认合并').click();
+  const merged = mappings.locator('.mapping').filter({has:channel(page, '柳明川 → 【柳某甲】')});
+  await merged.getByText('102 处', {exact:true}).waitFor();
+  assert.equal(await source.count(), 0);
+  assert.equal(await output(page).getByText('【L机构】', {exact:true}).count(), 0);
+  await channel(mappings, '撤销上次订正').click();
+  await source.getByText('3 处', {exact:true}).waitFor();
+
+  await page.locator('#source-text mark[data-item="100"]').click();
+  await channel(page, '绑定到现有映射').click();
+  const picker = preview.getByRole('searchbox', {name:'搜索目标映射'});
+  await picker.fill('柳某甲-曾用名1');
+  await channel(preview, '柳明川 → 【柳某甲】 99 处').click();
+  await channel(preview, '应用到所选 1 处').click();
+  await merged.getByText('100 处', {exact:true}).waitFor();
+  await source.getByText('2 处', {exact:true}).waitFor();
+});

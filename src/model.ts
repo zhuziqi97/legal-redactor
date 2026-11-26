@@ -1,6 +1,6 @@
 import type { RedactionAPI } from '../electron/contract';
 import type { Issue, Occurrence } from '../engine/workspace-types';
-import type { WorkspaceView } from '../engine/workspace';
+import type { WorkspaceReplies, WorkspaceView } from '../engine/workspace';
 export type { SourceFile } from '../electron/contract';
 export type { ViewOptions } from '../engine/preferences';
 export type { Issue, Occurrence } from '../engine/workspace-types';
@@ -18,11 +18,7 @@ export const labels = {
 };
 export function kindLabel(kind: string) { return labels[kind as keyof typeof labels]; }
 export type Term = { original: string };
-export type AdjustmentImpact = Span & { line: number; before: string; after: { text: string; restored?: boolean }[] };
-export type AdjustmentPreview = {
-  revision: number; code: string; primary: string;
-  materials: { materialId: string; title: string; changes: AdjustmentImpact[]; removedCount: number; restoredCount: number }[];
-};
+export type AdjustmentPreview = Extract<WorkspaceReplies['previewAdjustment'], {preview: unknown}>['preview'];
 export type AdjustmentPreviewResult = { preview: AdjustmentPreview } | { issue: Issue } | { error: string };
 export type RangeCandidate = { position: Occurrence; clear: boolean; overlap: boolean };
 export type RangeSuggestion = { original: Occurrence; candidates: RangeCandidate[] };
@@ -43,16 +39,12 @@ export function positionKey(position: Span & { materialId: string }) {
   return `${position.materialId}:${position.start}:${position.end}`;
 }
 
-export function samePersonKind(left: string, right: string) {
-  return left === right || (['person', 'nickname'].includes(left) && ['person', 'nickname'].includes(right));
-}
-
 export function prettyError(error: unknown) {
   return (error instanceof Error ? error.message : String(error)).replace(/^Error invoking remote method '[^']+': Error: /, '');
 }
 
 export type Adjustment = {
-  mode: 'create' | 'bind' | 'alias' | 'remove' | 'edit';
+  mode: 'create' | 'bind' | 'alias' | 'remove' | 'edit' | 'merge';
   title: string;
   groupId: string;
   fixedTarget: boolean;

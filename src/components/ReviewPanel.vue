@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref } from 'vue';
+import { matchMapping } from '../mapping-search';
 import type { MappingScope } from '../../engine/preferences';
 import { categoryColor, type Group, type Issue, type Material, type Occurrence } from '../model';
 import MappingMenu from './MappingMenu.vue';
@@ -39,10 +40,8 @@ function terms(group: Group) {
 const filtered = computed(() => props.groups.flatMap(group => {
   const scoped = group.occurrences.filter(belongs);
   if (!scoped.length) return [];
-  const direct = [group.primary, group.code].some(word => word.toLocaleLowerCase().includes(search.value));
-  const matched = direct ? [] : [...new Set(scoped.filter(row => [row.original, row.replacement]
-    .some(word => word.toLocaleLowerCase().includes(search.value))).map(row => row.original))];
-  return direct || matched.length ? [{ group, matched, count: scoped.length }] : [];
+  const {found, terms} = matchMapping(group, search.value, scoped);
+  return found ? [{ group, matched: terms, count: scoped.length }] : [];
 }));
 const pending = computed(() => props.pending.filter(belongs));
 const mapping = computed(() => showPending.value ? null : props.groups.find(group => group.id === groupId.value));
@@ -118,8 +117,8 @@ defineExpose({ selectGroup, reveal });
             <span v-if="count === group.occurrences.length" class="mapping-count">{{ count }} 处</span>
             <button class="button small quiet rename-button" :disabled="locked" @click="emit('group', 'edit', group)">修改映射</button>
             <MappingMenu :label="`${group.primary}的映射操作`" :disabled="locked">
-              <button v-if="['person', 'nickname', 'organization', 'address'].includes(group.type)" @click="emit('group', 'add', group)">添加别称</button>
-              <button v-if="['person', 'nickname', 'organization', 'address'].includes(group.type)" @click="emit('group', 'merge', group)">合并到其他映射</button>
+              <button @click="emit('group', 'add', group)">添加别称</button>
+              <button v-if="groups.length > 1" @click="emit('group', 'merge', group)">合并到其他映射</button>
               <button class="danger" @click="emit('group', 'delete', group)">删除映射</button>
             </MappingMenu>
           </div>

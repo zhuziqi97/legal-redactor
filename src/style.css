@@ -499,7 +499,7 @@ dialog::backdrop { background: #17284a40; }
 .adjust-controls h3 { font-size: 13px; color: #395575; font-weight: 650; }
 .adjust-fields { display: grid; grid-template-columns: minmax(80px, 1fr) minmax(0, 2fr); gap: 7px; }
 .adjust-fields label { display: grid; gap: 3px; color: var(--muted); font-size: 12px; }
-.adjust-fields input, .group-preview, .merge-summary { min-width: 0; overflow-wrap: anywhere; }
+.adjust-fields input, .group-preview { min-width: 0; overflow-wrap: anywhere; }
 .candidate-search { display: flex; gap: 5px; min-width: 0; }
 .candidate-search input { flex: 1; min-width: 45px; font-size: 12px; }
 .candidate-search button { flex: none; }
@@ -554,6 +554,8 @@ dialog::backdrop { background: #17284a40; }
   flex: 0 1 auto; min-height: 0; max-height: 51%; display: flex; flex-direction: column;
   border-top: 1px solid var(--line);
 }
+.merge-preview .adjust-footer { flex: 1; max-height: none; border-top: 0; }
+.merge-preview .adjust-impact-scroll { flex: 1; }
 .adjust-impact-scroll { min-height: 0; overflow: auto; padding: 7px 10px 0; }
 .adjust-impact { display: grid; gap: 4px; padding: 0 0 5px; color: var(--muted); font-size: 12px; }
 .adjust-impact label { display: flex; align-items: center; gap: 6px; }
@@ -574,9 +576,8 @@ dialog::backdrop { background: #17284a40; }
 .conflict-locations { display: flex; flex-wrap: wrap; align-items: flex-start; }
 .disposition { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 13px; }
 .disposition input { accent-color: var(--accent); }
-.group-preview, .merge-summary, .disposition-preview { padding: 8px 10px; background: var(--surface); border-radius: 7px; font-size: 13px; }
+.group-preview, .disposition-preview { padding: 8px 10px; background: var(--surface); border-radius: 7px; font-size: 13px; }
 .group-preview span { display: block; margin-top: 3px; color: var(--muted); font-size: 12px; }
-.merge-positions { max-height: 145px; overflow: auto; margin-top: 4px; color: var(--muted); }
 
 @media (max-width: 1100px) {
   .workspace-main { padding: 10px; }
