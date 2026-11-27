@@ -8,7 +8,7 @@ import OccurrenceRow from './OccurrenceRow.vue';
 
 const props = defineProps<{
   material: Material | null; groups: Group[]; pending: Occurrence[]; issues: Issue[];
-  selected: number | null; locked: boolean; canUndo: boolean; scope: MappingScope;
+  selected: number | null; locked: boolean; opening: boolean; canUndo: boolean; scope: MappingScope;
 }>();
 const category = defineModel<MappingCategory>('category', {required: true});
 const emit = defineEmits<{
@@ -30,7 +30,7 @@ const isCurrent = (row: Occurrence) => row.materialId === props.material?.id && 
 
 const filtered = computed(() => props.groups.flatMap(group => {
   if (category.value !== 'all' && mappingCategory(group.type) !== category.value) return [];
-  const scoped = group.occurrences.filter(belongs);
+  const scoped = scope.value === 'all' ? group.occurrences : group.occurrences.filter(belongs);
   if (!scoped.length && (scope.value === 'current' || group.occurrences.length)) return [];
   const {found, terms} = matchMapping(group, search.value, scoped);
   return found ? [{ group, matched: terms, count: scoped.length }] : [];
@@ -98,7 +98,7 @@ defineExpose({ selectGroup, reveal, showGroup });
   <section class="card review" aria-label="映射清单">
     <div class="review-heading">
       <h2>映射清单</h2>
-      <button class="button small" :disabled="locked || material?.status !== 'ready'" @click="emit('create')">＋ 新建映射</button>
+      <button class="button small" :disabled="locked || opening || material?.status !== 'ready'" @click="emit('create')">＋ 新建映射</button>
     </div>
     <div class="mapping-filters">
       <input v-model="query" type="search" aria-label="搜索映射" placeholder="搜索原词、别称或代号">
@@ -111,7 +111,7 @@ defineExpose({ selectGroup, reveal, showGroup });
     </div>
     <div class="review-filters">
       <button class="button small quiet" :aria-pressed="showPending" @click="showPending = !showPending">待核 {{ pending.length }}</button>
-      <button v-if="canUndo" class="button small quiet" :disabled="locked" @click="emit('undo')">撤销上次订正</button>
+      <button v-if="canUndo" class="button small quiet" :disabled="locked || opening" @click="emit('undo')">撤销上次订正</button>
     </div>
     <div v-if="issues.length" class="issue-list">
       <h3>输出检查</h3>
@@ -120,7 +120,8 @@ defineExpose({ selectGroup, reveal, showGroup });
     <div v-if="hidden" class="hidden-mapping"><button class="button small quiet" @click="showCurrent">查看所属映射</button></div>
     <div ref="list" class="review-list">
       <p v-if="!filtered.length" class="muted-empty">{{ search || category !== 'all' || groups.length ? '没有匹配的映射' : '没有映射' }}</p>
-      <div v-for="{group, matched, count} in filtered" :key="group.id" class="mapping"
+      <div v-for="{group, matched, count} in filtered" :key="group.id"
+        v-memo="[group, matched, count, mapping?.id === group.id, locked, groups.length > 1]" class="mapping"
         :class="{ 'mapping-selected': mapping?.id === group.id }">
         <div class="mapping-row">
           <button class="mapping-toggle" :aria-pressed="mapping?.id === group.id" @click="selectGroup(group.id)">
@@ -158,8 +159,8 @@ defineExpose({ selectGroup, reveal, showGroup });
         <OccurrenceRow v-for="row in positions" :key="`${row.materialId}/${row.itemId}`" :row="row" :current="isCurrent(row)" :disabled="locked" @locate="emit('jump', $event)" />
       </div>
       <div v-if="mapping && positions.length" class="item-nav">
-        <button class="button small quiet" :disabled="locked || activeIndex <= 0" @click="emit('jump', positions[activeIndex - 1]!)">↑ 上一处</button>
-        <button class="button small quiet" :disabled="locked || activeIndex >= positions.length - 1" @click="emit('jump', positions[activeIndex + 1]!)">↓ 下一处</button>
+        <button class="button small quiet" :disabled="locked || opening || activeIndex <= 0" @click="emit('jump', positions[activeIndex - 1]!)">↑ 上一处</button>
+        <button class="button small quiet" :disabled="locked || opening || activeIndex >= positions.length - 1" @click="emit('jump', positions[activeIndex + 1]!)">↓ 下一处</button>
         <span>{{ activeIndex < 0 ? '–' : activeIndex + 1 }} / {{ positions.length }}</span>
       </div>
     </section>

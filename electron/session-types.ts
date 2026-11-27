@@ -1,7 +1,7 @@
-import type { ProjectProtection } from './contract.js';
+import type { ProjectProtection, WorkspaceResult } from './contract.js';
 import type { InferenceDevice } from '../engine/inference-devices.js';
 import type { Preferences } from '../engine/preferences.js';
-import type { WorkspaceView, WorkspaceWorkerReply } from '../engine/workspace.js';
+import type { WorkspaceView } from '../engine/workspace.js';
 import type { Workspace } from '../engine/workspace-types.js';
 
 type ProjectFile = { path: string; mtimeMs: number; size: number };
@@ -9,7 +9,7 @@ export type ProjectSnapshot = { state: Workspace; file: ProjectFile; view: Works
 
 type Pending = {
   id: number;
-  resolve: (result: WorkspaceWorkerReply) => void;
+  resolve: (result: WorkspaceResult) => void;
   reject: (error: Error) => void;
   progress: (phase: string) => void;
   device: InferenceDevice;

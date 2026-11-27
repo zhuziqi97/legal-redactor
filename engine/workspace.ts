@@ -82,12 +82,24 @@ function occurrence(doc: Material, row: Pick<Row, 'start' | 'end'> & Partial<Row
   };
 }
 
+function materialSummary(doc: Material, output: string, pending: number) {
+  return {id: doc.id, title: doc.title, revision: doc.revision ?? 1,
+    status: doc.decisions ? 'ready' as const : 'unrecognized' as const, pending,
+    exportState: doc.exported == null ? null : doc.exported === output ? 'current' as const : 'changed' as const};
+}
+
+export function materialView(doc: Material) {
+  const result = viewMaterial(doc);
+  const pending = result.items.reduce((count, row) => count + Number(row.action === 'review'), 0);
+  return {...materialSummary(doc, result.output, pending), text: doc.text, ...result, previousOutput: doc.previousOutput ?? null};
+}
+
 function workspaceView(state: Workspace) {
   const groups = Object.fromEntries(Object.entries(state.groups).map(([id, group]) =>
     [id, {...group, occurrences: [] as Occurrence[]}]));
   const documents = [];
   const pending: Occurrence[] = [];
-  let current = null;
+  let current: ReturnType<typeof materialView> | null = null;
   for (const doc of state.materials) {
     const result = viewMaterial(doc);
     let count = 0;
@@ -97,9 +109,7 @@ function workspaceView(state: Workspace) {
         count++;
       } else if (row.group) groups[row.group].occurrences.push(occurrence(doc, row));
     }
-    const summary = {id: doc.id, title: doc.title, revision: doc.revision ?? 1,
-      status: doc.decisions ? 'ready' as const : 'unrecognized' as const, pending: count,
-      exportState: doc.exported == null ? null : doc.exported === result.output ? 'current' as const : 'changed' as const};
+    const summary = materialSummary(doc, result.output, count);
     documents.push(summary);
     if (doc.id === state.activeId) current = {...summary, text: doc.text, ...result, previousOutput: doc.previousOutput ?? null};
   }
@@ -1122,7 +1132,7 @@ export type WorkspaceReplies = {
   suggest: string;
   output: Output | {decisions: Row[]; sourcePaths: string[]; filename: string};
   apply: AdjustmentReply;
-} & Record<'undo' | 'add' | 'renameMaterial' | 'editMaterial' | 'markExported' | 'deleteMaterial' | 'open' | 'scan' | 'reviseMaterial', ViewResult>;
+} & Record<'undo' | 'add' | 'renameMaterial' | 'editMaterial' | 'markExported' | 'deleteMaterial' | 'scan' | 'reviseMaterial', ViewResult>;
 type WithState<T> = T extends ViewResult ? T & {state?: Workspace} : T;
 export type WorkspaceWorkerReply = WithState<WorkspaceReplies[Request['op']]>;
 
@@ -1212,10 +1222,9 @@ export async function runWorkspace(state: Workspace, request: Request, scan?: Sc
     delete doc.previousOutput;
     delete doc.previousReview;
     state.revision++;
-  } else if (op === 'open' || op === 'scan' || op === 'markExported') {
+  } else if (op === 'scan' || op === 'markExported') {
     const doc = lookupMaterial(state, request.materialId);
-    if (op === 'open') state.activeId = doc.id;
-    else if (op === 'scan') {
+    if (op === 'scan') {
       const revision = doc.revision ?? 1;
       if ((request.revision ?? revision) !== revision) throw new Error('材料已更新，请分析最新修订。');
       await scanMaterial(state, doc, newId, scan);

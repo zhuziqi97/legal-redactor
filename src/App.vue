@@ -46,6 +46,7 @@ function applyPreferences(settings: Preferences, reset: boolean) {
 }
 api.onPreferencesChanged(({ settings }, reset) => applyPreferences(settings, reset));
 const busy = ref(true);
+const openingMaterial = ref(false);
 const sourceEdit = ref<{ id: string; revision: number; base: string; text: string } | null>(null);
 const sourceDirty = computed(() => !!sourceEdit.value && sourceEdit.value.text !== sourceEdit.value.base);
 const sourceError = ref('');
@@ -257,15 +258,18 @@ async function openMaterial(id: string) {
   if (busy.value) return false;
   if (id !== material.value?.id) {
     if (!confirmSourceSwitch()) return false;
+    openingMaterial.value = true;
     try {
       const result = await run({ op: 'open', materialId: id });
       endSourceEdit();
-      adopt(result.view);
+      adopt({...workspace.value, current: result.current});
       rangeFor.value = null;
       announce();
     } catch (error) {
       announce(prettyError(error), true);
       return false;
+    } finally {
+      openingMaterial.value = false;
     }
   }
   return true;
@@ -780,6 +784,7 @@ function editMapping(item: Group, origin?: Occurrence, rows = item.occurrences) 
 }
 
 function openGroupAction(action: 'edit' | 'aliases' | 'merge' | 'delete', item: Group) {
+  if (openingMaterial.value) return;
   clearQuick();
   if (action === 'edit') {
     makeDraft('rename', {title:'修改代号', groupId:item.id, rows:item.occurrences, code:item.code.slice(1,-1)});
@@ -964,7 +969,7 @@ function showEvidence(link: Evidence) {
             :selected="selected" :locked="busy || !!sourceEdit" @back="aliasGroupId = ''" @jump="jump"
             @add="addAlias()" @add-positions="addAlias" @term="termAction" />
           <ReviewPanel v-if="showReview" v-show="!draft && !aliasGroup" ref="review" :material="material" :groups="workspace.groups" :pending="workspace.pending"
-            :issues="issues" :selected="selected" :locked="busy || !!sourceEdit" :can-undo="workspace.canUndo"
+            :issues="issues" :selected="selected" :locked="(busy && !openingMaterial) || !!sourceEdit" :opening="openingMaterial" :can-undo="workspace.canUndo"
             v-model:category="reviewCategory" :scope="mappingScope" @scope="changeMappingScope" @jump="jump" @issue="locate"
             @create="makeDraft('create'); clearQuick()" @group="openGroupAction" @undo="undo" />
         </div>

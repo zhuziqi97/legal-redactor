@@ -333,7 +333,7 @@ test('搜索派生代号找到跨类别目标，预览三处后合并并撤销',
 });
 
 test('按类别和材料搜索映射，保留原文位置和脱敏输出', async t => {
-  const {writeProject} = require('../build/project-file.cjs');
+  const {readProject, writeProject} = require('../build/project-file.cjs');
   const {runWorkspace} = await import('../build/engine/workspace.js');
   const {app, page, directory} = await open(t, {provider:'cpu'});
   let state = {materials:[], groups:{}, activeId:null, undo:null, revision:0};
@@ -383,10 +383,27 @@ test('按类别和材料搜索映射，保留原文位置和脱敏输出', async
   const positions = mappings.getByRole('region', {name:'出现位置'});
   const lei = mappings.getByRole('button', {name:/^张雷 →/u});
   await lei.click();
+  await positions.getByRole('button', {name:/补充说明.*被询问人/u}).click();
+  await page.locator('#source-text mark.selected').filter({hasText:'张雷'}).waitFor();
+  await channel(positions, '↑ 上一处').click();
+  await page.locator('.material-row[aria-current="page"]').filter({hasText:'初次笔录'}).waitFor();
+  await channel(positions, '↓ 下一处').click();
+  await page.locator('.material-row[aria-current="page"]').filter({hasText:'补充说明'}).waitFor();
   await positions.getByRole('button', {name:/补充说明.*小雷/u}).click();
   await page.locator('#source-text mark.selected').filter({hasText:'小雷'}).waitFor();
   assert.equal(await category.inputValue(), 'person');
+  const opened = await page.evaluate(() => window.redaction.engine({op:'open', materialId:'2'}));
+  assert.deepEqual(Object.keys(opened), ['current']);
+  assert.equal(opened.current.output, await output(page).textContent());
+  await page.evaluate(() => window.redaction.saveProject());
+  assert.equal((await readProject(paths[0])).state.activeId, '2');
   const firstMaterial = page.locator('.material-row').filter({hasText:'初次笔录'});
+  await channel(page, '编辑原文').click();
+  await page.getByRole('textbox', {name:'编辑材料原文'}).fill('尚未应用的修改');
+  page.once('dialog', dialog => dialog.dismiss());
+  await firstMaterial.click();
+  assert.equal(await page.getByRole('textbox', {name:'编辑材料原文'}).inputValue(), '尚未应用的修改');
+  page.once('dialog', dialog => dialog.accept());
   await firstMaterial.click();
   await firstMaterial.and(page.locator('[aria-current="page"]')).waitFor();
 

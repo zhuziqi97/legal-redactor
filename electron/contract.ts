@@ -1,7 +1,7 @@
 import type { Backend, InferenceStatus } from '../engine/inference-devices.js';
 import type { PreferencePatch, PreferenceSnapshot, SettingsChanges, SettingsSection, UpdateStatus, ViewOptions, ViewSwitch } from '../engine/preferences.js';
-import type { WorkspaceReplies, WorkspaceView, WorkspaceWorkerReply } from '../engine/workspace.js';
-import type { Occurrence, Request, Row } from '../engine/workspace-types.js';
+import type { materialView, WorkspaceReplies, WorkspaceView, WorkspaceWorkerReply } from '../engine/workspace.js';
+import type { Material, Occurrence, Request, Row, Workspace } from '../engine/workspace-types.js';
 
 export type SourceFile = { path: string; title: string; text: string; encoding: string };
 export type ImportSelection = SourceFile | { requiresEncoding: true; title: string };
@@ -19,10 +19,12 @@ export type WindowChrome = {
 };
 export type ProjectSaveStatus = ProjectDestination & { hasFile: boolean; protected: boolean };
 export type EngineRequest = Exclude<Request, {op: 'output' | 'scan'}>
+  | {op: 'open'; materialId: string}
   | {op: 'output'; materialId: string}
   | {op: 'findOriginal'; text: string}
   | (Extract<Request, {op: 'scan'}> & {queueMs?: number});
 type EngineReplies = Omit<WorkspaceReplies, 'output'> & {
+  open: {current: ReturnType<typeof materialView>};
   output: Exclude<WorkspaceReplies['output'], {decisions: Row[]}>;
   findOriginal: Occurrence[];
 };
@@ -65,7 +67,11 @@ export type RedactionAPI = {
   onConfirmClose: (callback: () => void) => void;
 };
 
+export type WorkspaceJob = {id: number} & (
+  {material: Material} | {state: Workspace; request: Request; provider: string; rulesOnly: boolean}
+);
+export type WorkspaceResult = WorkspaceWorkerReply | EngineReplies['open'];
 export type WorkspaceWorkerMessage = {id: number} & (
   {inference: {texts: string[]; labels: string[]}} | {diagnostic: Record<string, unknown>} |
-  {phase: string} | {error: string} | {result: WorkspaceWorkerReply}
+  {phase: string} | {error: string} | {result: WorkspaceResult}
 );

@@ -1,8 +1,7 @@
-import type { EngineReply, EngineRequest, WorkspaceWorkerMessage } from './contract.js';
+import type { EngineReply, EngineRequest, WorkspaceJob, WorkspaceResult, WorkspaceWorkerMessage } from './contract.js';
 import type { Session, WindowSession } from './session-types.js';
 import type { InferenceDevice, InferenceStatus } from '../engine/inference-devices.js';
 import type { Preferences } from '../engine/preferences.js';
-import type { WorkspaceWorkerReply } from '../engine/workspace.js';
 import type { Request } from '../engine/workspace-types.js';
 import type { Prediction } from '../engine/model.js';
 const { dialog, utilityProcess } = require('electron') as typeof import('electron');
@@ -161,12 +160,21 @@ function createAnalysis({nativeModel, rulesOnly, preference, diagnose, statusCha
   async function runEngine<R extends Exclude<EngineRequest, {op: 'findOriginal'}>>(session: Session, request: R,
     progress: (phase: string) => void, device = cpuDevice): Promise<EngineReply<R>> {
     if (session.pending) throw new Error('请等待当前操作完成。');
+    const id = ++session.nextId;
+    let job: WorkspaceJob;
+    if (request.op === 'open') {
+      const material = session.state.materials.find(doc => doc.id === request.materialId);
+      if (!material) throw new Error('找不到这份材料。');
+      job = {id, material};
+    } else {
+      job = {id, state: session.state, request, provider: device.id, rulesOnly};
+    }
     const child = session.worker ?? startWorker(session);
-    const result = await new Promise<WorkspaceWorkerReply>((resolve, reject) => {
-      const id = ++session.nextId;
+    const result = await new Promise<WorkspaceResult>((resolve, reject) => {
       session.pending = {id, resolve, reject, progress, device, started: performance.now()};
-      child.postMessage({id, state: session.state, request, provider: device.id, rulesOnly});
+      child.postMessage(job);
     });
+    if (request.op === 'open') session.state = {...session.state, activeId: request.materialId};
     if (typeof result === 'object' && 'state' in result) {
       const {state, ...payload} = result;
       if (state) session.state = state;

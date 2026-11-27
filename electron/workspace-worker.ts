@@ -1,9 +1,6 @@
-import type { WorkspaceWorkerMessage } from './contract.js';
+import type { WorkspaceJob, WorkspaceWorkerMessage } from './contract.js';
 type Prediction = import('../engine/model.js').Prediction;
-type Request = import('../engine/workspace-types.js').Request;
-type Workspace = import('../engine/workspace-types.js').Workspace;
 
-type Job = {id: number; state: Workspace; request: Request; provider: string; rulesOnly: boolean};
 type Reply = {id: number; predictions?: Prediction[][]; inferenceError?: string};
 
 const port = (process as NodeJS.Process & {parentPort: Electron.ParentPort}).parentPort;
@@ -11,9 +8,10 @@ const cache = new Map<string, {provider: string; batches: Map<string, Prediction
 const modules = Promise.all([(import('./engine/workspace.js' as string) as Promise<typeof import('../engine/workspace.js')>), (import('./engine/model.js' as string) as Promise<typeof import('../engine/model.js')>)]);
 let prediction: {id: number; resolve: (result: Prediction[][]) => void; reject: (error: Error) => void} | undefined;
 
-async function dispatch(job: Job) {
+async function dispatch(job: WorkspaceJob) {
+  const [{runWorkspace, materialView}, {scanCandidates}] = await modules;
+  if ('material' in job) return {current: materialView(job.material)};
   const {id, state, request, provider, rulesOnly} = job;
-  const [{runWorkspace}, {scanCandidates}] = await modules;
   if (request.op !== 'scan' && request.op !== 'reviseMaterial') return runWorkspace(state, request);
   const send = (message: WorkspaceWorkerMessage) => port.postMessage(message);
   const phase = (text: string) => send({id, phase: text});
@@ -59,8 +57,8 @@ async function dispatch(job: Job) {
   return result;
 }
 
-port.on('message', ({data}: {data: Job | Reply}) => {
-  if ('request' in data) {
+port.on('message', ({data}: {data: WorkspaceJob | Reply}) => {
+  if ('request' in data || 'material' in data) {
     void dispatch(data).then(
       result => port.postMessage({id: data.id, result} satisfies WorkspaceWorkerMessage),
       error => port.postMessage({id: data.id, error: error instanceof Error ? error.message : String(error)} satisfies WorkspaceWorkerMessage),

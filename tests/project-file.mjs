@@ -47,7 +47,8 @@ test('项目保留跨材料改绑、派生代号、导出状态和待识别原�
   const { output } = await project.run({ op: 'output', materialId: '2' });
   await project.run({ op: 'markExported', materialId: '2', text: output });
   await project.run({ op: 'add', title: '未识别材料', text: '姓名：王甲' });
-  const { view: before } = await project.run({ op: 'open', materialId: '2' });
+  project.state.activeId = '2';
+  const { view: before } = await project.run({ op: 'view' });
 
   await writeProject(path, project.state);
   const zip = new ZipReader(new Uint8ArrayReader(await readFile(path)), { useWebWorkers: false });
