@@ -1,6 +1,6 @@
 import type { Relation } from './context.js';
 import type { Layout } from './fields.js';
-import { publishedOrganizationSpans } from './phrases.js';
+import { anonymousBranchMention, publishedOrganizationSpans } from './phrases.js';
 import { bisect, keyOf, length, type Span } from './text.js';
 
 type Opcode = 'equal' | 'replace' | 'insert' | 'delete';
@@ -169,6 +169,21 @@ export function revisionRanges(original: string, text: string, blocks: Block[], 
   for (const [start, end] of answers) {
     if (ranges.some(([a, b]) => a < end && start < b)) addLines(start, end);
   }
+
+  // An untouched repetition can supply the only model evidence for a masked parent.
+  const affected = ([start, end]: Span) => ranges.some(([a, b]) => a < end && start < b);
+  const branchMentions = (value: string) => [...anonymousBranchMention.finditer(value)]
+    .map(match => ({name: match.group('mention')!, span: match.span('mention')}));
+  const mentions = branchMentions(text);
+  const related = new Set(mentions.filter(mention => affected(mention.span)).map(mention => mention.name));
+  for (const mention of branchMentions(original)) {
+    const moved = project(blocks, ...mention.span);
+    if (!moved?.[2] || affected([moved[0], moved[1]])) related.add(mention.name);
+  }
+  for (const mention of mentions) {
+    if (related.has(mention.name)) ranges.push(mention.span);
+  }
+
   const merged: Span[] = [];
   for (const range of ranges.sort((a, b) => a[0] - b[0])) {
     const last = merged.at(-1);

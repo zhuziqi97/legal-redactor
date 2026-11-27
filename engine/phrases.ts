@@ -25,7 +25,13 @@ const ward = rule('(?:住院部|门诊部)(?:[一-鿿]{1,4}?科)?');
 const courtUnit = rule('(?:执行局|立案庭|(?:民事|刑事|行政|执行)?审判(?:第[一二三四五六七八九十\\d]+)?庭)(?!长)');
 const taxUnit = rule('(?:' + ORDINAL + ')?稽查局(?!长)');
 const legalForm = rule('(?:（[一-鿿]{2,6}）|\\([一-鿿]{2,6}\\))?(?:股份有限公司|有限责任公司|有限公司)');
-const regionalBranch = rule('([一-鿿]{1,16}?)(分公司|分行|支行)');
+const branchRegion = '[一-鿿]{1,16}?';
+const regionalBranch = rule('(' + branchRegion + ')(分公司|分行|支行)');
+// Written repetitions identify passages to rescan. The model still supplies the protection evidence.
+export const anonymousBranchMention = rule('(?<!' + mask.pattern + ')(?=(?<mention>'
+  + mask.pattern + '+[一-鿿A-Za-z0-9（）()＊*×·&]*?(?:'
+  + '银行(?:' + legalForm.pattern + ')?' + branchRegion + '(?:分行|支行)'
+  + '|(?:有限责任公司|有限公司)' + branchRegion + '分公司)))');
 const publishedUnit = rule('(?<![A-Za-zＡ-Ｚａ-ｚ0-9])([A-ZＡ-Ｚ])(?:银行|医院|学校|'
   + '(?:融资担保|担保|保险|物业|物流)?(?:股份有限公司|有限责任公司|有限公司|公司))');
 const maskedBank = rule('(?:某+|[＊*×]+)银行');

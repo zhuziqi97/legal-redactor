@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { ZipReader, ZipWriter, Uint8ArrayReader, Uint8ArrayWriter, TextReader } from '@zip.js/zip.js';
+import { hit } from '../build/engine/fields.js';
 import { runWorkspace } from '../build/engine/workspace.js';
 import { encodeProject } from '../build/engine/project-state.js';
 import { restoreText } from '../build/engine/restore.js';
@@ -130,6 +131,44 @@ test('修改原文后、重新识别前保存的项目仍可接续人工订正',
   const scanned = await runWorkspace(restored, { op: 'scan', materialId: '1', revision: 1 });
   assert.equal(scanned.view.current.items.find(row => row.original === '张甲').action, 'keep');
   assert.match(scanned.view.current.output, /姓名：张甲/);
+});
+
+test('重开项目后局部编辑保留重复匿名分支，删除依据后更新剩余位置', async t => {
+  const path = await localProject(t);
+  const parent = '某某物业有限公司';
+  const branch = '南京市分公司';
+  const full = parent + branch;
+  const unrelated = '某某建材有限公司' + branch;
+  const text = `${full}负责移交。\n\n李某称${full}负责签收。\n\n${unrelated}另行报备。\n\n姓名：张甲`;
+  const submitted = [];
+  const scan = (source, free) => {
+    submitted.push(...free.map(({start, end}) => source.slice(start, end)));
+    const candidates = [...source.matchAll(new RegExp(full, 'gu'))].flatMap(({index: start}) =>
+      source.startsWith('负责移交', start + full.length)
+        ? [hit(start, start + parent.length, 'organization', 'Otter', 60)]
+        : [hit(start + parent.length, start + full.length, 'organization', 'Otter', 60)]);
+    return candidates.filter(row => free.some(passage => passage.start <= row.start && row.end <= passage.end));
+  };
+  const project = workspace();
+  const added = await project.run({op:'add', text, title:'合成说明'});
+  const inspected = await runWorkspace(added.state, {op:'scan', materialId:'1'}, scan);
+  assert.ok(inspected.view.current.output.includes(`${full}负责签收。`));
+  const name = inspected.view.groups.find(group => group.primary === '张甲');
+  const renamed = await runWorkspace(inspected.state, {op:'apply', change:{mode:'rename', groupId:name.id, code:'人工甲'}});
+  await writeProject(path, renamed.state);
+  const {state} = await readProject(path);
+  submitted.length = 0;
+  const edited = text.replace('负责签收', '已完成签收');
+  const revised = await runWorkspace(state, {op:'reviseMaterial', materialId:'1', revision:renamed.view.current.revision, text:edited}, scan);
+  assert.ok(revised.view.current.output.includes(`${full}已完成签收。`));
+  assert.ok(submitted.some(value => value.includes(`${full}负责移交`)));
+  assert.ok(submitted.every(value => !value.includes(unrelated) && !value.includes('姓名')));
+  assert.equal(revised.view.current.items.find(row => row.original === '张甲').replacement, '【人工甲】');
+
+  const removed = edited.replace(`${full}负责移交。\n\n`, '');
+  const noEvidence = await runWorkspace(revised.state, {op:'reviseMaterial', materialId:'1', revision:revised.view.current.revision, text:removed}, scan);
+  assert.equal(noEvidence.view.current.items.find(row => row.original === branch && row.start === removed.indexOf(branch))?.action, 'replace');
+  assert.equal(noEvidence.view.current.items.find(row => row.original === '张甲').replacement, '【人工甲】');
 });
 
 test('拒绝错误格式、较新版本和指向错误原文的复核记录', async t => {
