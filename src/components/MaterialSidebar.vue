@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, shallowRef, watch } from 'vue';
-import { positionKey, prettyError, type MaterialSummary, type Occurrence } from '../model';
+import { nextTick, ref, shallowRef, watch } from 'vue';
+import { prettyError, type MaterialSummary, type Occurrence } from '../model';
 import MappingMenu from './MappingMenu.vue';
+import OccurrenceList from './OccurrenceList.vue';
 
 const props = defineProps<{
   documents: MaterialSummary[]; current: string | undefined; collapsed: boolean;
@@ -18,15 +19,7 @@ const submitted = ref('');
 const matches = shallowRef<Occurrence[] | null>(null);
 const error = ref('');
 let requestId = 0;
-const groups = computed(() => {
-  const materials = new Map<string, Occurrence[]>();
-  for (const row of matches.value ?? []) {
-    const rows = materials.get(row.materialId);
-    if (rows) rows.push(row);
-    else materials.set(row.materialId, [row]);
-  }
-  return [...materials.values()];
-});
+const results = ref<InstanceType<typeof OccurrenceList>>();
 const status = (id: string) => props.phases[id]?.split(' · ')[0] || '正在分析';
 
 async function toggleSearch() {
@@ -44,6 +37,7 @@ async function search() {
   submitted.value = text;
   matches.value = null;
   error.value = '';
+  results.value?.resetScroll();
   try {
     const rows = await props.findProject(text);
     if (id === requestId) matches.value = rows;
@@ -89,18 +83,11 @@ watch(() => props.documents.length, count => { if (!count) searching.value = fal
           @keydown.escape.stop="toggleSearch">
         <button class="button small" :disabled="!query.trim()">查找</button>
       </form>
-      <div class="material-list project-results" aria-label="项目搜索结果">
+      <OccurrenceList ref="results" :rows="matches ?? []" :disabled="locked" grouped aria-label="项目搜索结果" @locate="emit('locate', $event)">
         <p v-if="error" class="form-error" role="alert">{{ error }}</p>
         <p v-else-if="submitted && !matches" class="muted-empty" role="status">正在查找</p>
         <p v-else-if="matches && !matches.length" class="muted-empty">项目中没有匹配</p>
-        <section v-for="rows in groups" :key="rows[0].materialId" class="project-result-group">
-          <h3>{{ rows[0].title }} <span class="count">{{ rows.length }} 处</span></h3>
-          <button v-for="row in rows" :key="positionKey(row)" class="occurrence" :disabled="locked" @click="emit('locate', row)">
-            <span class="occurrence-meta">第 {{ row.line }} 行</span>
-            <span class="snippet">{{ row.before }}<b>{{ row.original }}</b>{{ row.after }}</span>
-          </button>
-        </section>
-      </div>
+      </OccurrenceList>
     </template>
     <div v-else-if="!collapsed" class="material-list">
       <p v-if="!documents.length" class="material-empty">暂无材料</p>

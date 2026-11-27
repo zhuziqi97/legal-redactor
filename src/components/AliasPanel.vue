@@ -4,7 +4,7 @@ import type { AliasTarget } from '../../engine/workspace-types';
 import { mappingTerms } from '../mapping-search';
 import type { Group, Occurrence } from '../model';
 import MappingMenu from './MappingMenu.vue';
-import OccurrenceRow from './OccurrenceRow.vue';
+import OccurrenceList from './OccurrenceList.vue';
 
 const props = defineProps<{ group: Group; materialId?: string; selected: number | null; locked: boolean; canAdd: boolean }>();
 const emit = defineEmits<{
@@ -22,6 +22,8 @@ const terms = computed(() => {
   })).sort((left, right) => Number(right.primary) - Number(left.primary));
 });
 const selectedTerm = computed(() => terms.value.find(term => term.original === selectedOriginal.value));
+const activeIndex = computed(() => selectedTerm.value?.rows.findIndex(row =>
+  row.materialId === props.materialId && row.itemId === props.selected) ?? -1);
 
 function termAction(action: 'rebind' | 'removePositions' | 'primary' | 'edit', rows: Occurrence[]) {
   selectedOriginal.value = rows[0].original;
@@ -60,12 +62,9 @@ function termAction(action: 'rebind' | 'removePositions' | 'primary' | 'edit', r
     </div>
     <section v-if="selectedTerm?.rows.length" :key="selectedTerm.original" class="mapping-positions" aria-label="原词位置">
       <div class="position-heading"><h3>{{ selectedTerm.original }}的出现位置</h3></div>
-      <div class="position-list">
-        <OccurrenceRow v-for="row in selectedTerm.rows" :key="`${row.materialId}/${row.itemId}`" :row="row"
-          :current="row.materialId === materialId && row.itemId === selected" :disabled="locked" @locate="emit('jump', $event)">
-          <template v-if="selectedTerm.codes.length > 1"> · {{ row.replacement }}</template>
-        </OccurrenceRow>
-      </div>
+      <OccurrenceList :rows="selectedTerm.rows" :current-index="activeIndex" :disabled="locked" @locate="emit('jump', $event)">
+        <template v-if="selectedTerm.codes.length > 1" #detail="{row}"> · {{ row.replacement }}</template>
+      </OccurrenceList>
     </section>
   </section>
 </template>

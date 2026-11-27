@@ -4,7 +4,7 @@ import { mappingCategories, mappingCategory, mappingTerms, matchMapping, type Ma
 import type { MappingScope } from '../../engine/preferences';
 import { categoryColor, type Group, type Issue, type Material, type Occurrence } from '../model';
 import MappingMenu from './MappingMenu.vue';
-import OccurrenceRow from './OccurrenceRow.vue';
+import OccurrenceList from './OccurrenceList.vue';
 
 const props = defineProps<{
   material: Material | null; groups: Group[]; pending: Occurrence[]; issues: Issue[];
@@ -22,7 +22,7 @@ const showPending = ref(false);
 const groupId = ref<string | null>(null);
 const termFilter = ref('');
 const list = ref<HTMLElement>();
-const positionList = ref<HTMLElement>();
+const positionList = ref<InstanceType<typeof OccurrenceList>>();
 const search = computed(() => query.value.trim().toLocaleLowerCase());
 const scope = computed(() => props.material ? props.scope : 'all');
 const belongs = (row: Occurrence) => scope.value === 'all' || row.materialId === props.material?.id;
@@ -54,13 +54,13 @@ function selectGroup(id: string) {
 }
 
 function resetPositionScroll() {
-  if (positionList.value) positionList.value.scrollTop = 0;
+  positionList.value?.resetScroll();
 }
 
 async function reveal() {
   await nextTick();
   list.value?.querySelector('.mapping-selected')?.scrollIntoView({ block: 'nearest' });
-  positionList.value?.querySelector('.occurrence.current')?.scrollIntoView({ block: 'nearest' });
+  await positionList.value?.revealCurrent();
 }
 async function showGroup(id: string) {
   await nextTick();
@@ -154,10 +154,9 @@ defineExpose({ selectGroup, reveal, showGroup });
           </select>
         </div>
       </div>
-      <div ref="positionList" class="position-list">
-        <p v-if="!positions.length" class="muted-empty">{{ showPending ? '当前范围没有待核位置' : '当前范围没有出现位置' }}</p>
-        <OccurrenceRow v-for="row in positions" :key="`${row.materialId}/${row.itemId}`" :row="row" :current="isCurrent(row)" :disabled="locked" @locate="emit('jump', $event)" />
-      </div>
+      <OccurrenceList ref="positionList" :rows="positions" :current-index="activeIndex" :disabled="locked" @locate="emit('jump', $event)">
+        <p class="muted-empty">{{ showPending ? '当前范围没有待核位置' : '当前范围没有出现位置' }}</p>
+      </OccurrenceList>
       <div v-if="mapping && positions.length" class="item-nav">
         <button class="button small quiet" :disabled="locked || opening || activeIndex <= 0" @click="emit('jump', positions[activeIndex - 1]!)">↑ 上一处</button>
         <button class="button small quiet" :disabled="locked || opening || activeIndex >= positions.length - 1" @click="emit('jump', positions[activeIndex + 1]!)">↓ 下一处</button>

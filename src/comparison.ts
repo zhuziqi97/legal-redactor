@@ -29,17 +29,19 @@ function other(side: Side): Side { return side === 0 ? 1 : 0; }
 
 function correspondingPosition(position: number, changes: Change[], from: Side, edge?: 'start' | 'end') {
   const to = other(from);
-  let displacement = 0;
-  for (const change of changes) {
-    if (position < change.start[from]) break;
-    if (position < change.end[from]) {
-      if (edge === 'start') return change.start[to];
-      if (edge === 'end') return Math.max(change.start[to], change.end[to] - 1);
-      return change.start[to] + Math.min(position - change.start[from], Math.max(0, change.end[to] - change.start[to] - 1));
-    }
-    displacement = change.end[to] - change.end[from];
+  let first = 0;
+  let last = changes.length;
+  while (first < last) {
+    const mid = Math.floor((first + last) / 2);
+    if (changes[mid].start[from] <= position) first = mid + 1;
+    else last = mid;
   }
-  return position + displacement;
+  const change = changes[first - 1];
+  if (!change) return position;
+  if (position >= change.end[from]) return position + change.end[to] - change.end[from];
+  if (edge === 'start') return change.start[to];
+  if (edge === 'end') return Math.max(change.start[to], change.end[to] - 1);
+  return change.start[to] + Math.min(position - change.start[from], Math.max(0, change.end[to] - change.start[to] - 1));
 }
 
 function lineAt(lines: HTMLCollection, comesBefore: (line: HTMLElement) => boolean) {
@@ -144,6 +146,7 @@ export function useComparison(
   const panes = [source, result] as const;
   const lastTop = new WeakMap<HTMLElement, number>();
   let lastSide: Side = 0;
+  let scrollFrame: number | undefined;
   let focusedRows = new Set<HTMLElement>();
   let focus: LineFocus | undefined;
   let hovered: HTMLElement | undefined;
@@ -152,7 +155,13 @@ export function useComparison(
     const pane = panes[side].value;
     return pane && positionAtTop(pane);
   };
+  function cancelFollow() {
+    if (scrollFrame === undefined) return;
+    cancelAnimationFrame(scrollFrame);
+    scrollFrame = undefined;
+  }
   function rememberScroll() {
+    cancelFollow();
     for (const ref of panes) {
       const pane = ref.value;
       if (pane) lastTop.set(pane, pane.scrollTop);
@@ -177,7 +186,11 @@ export function useComparison(
     if (!pane || lastTop.get(pane) === pane.scrollTop) return;
     lastTop.set(pane, pane.scrollTop);
     lastSide = side;
-    follow(side);
+    if (scrollFrame !== undefined || !options()?.sync || !canCompare()) return;
+    scrollFrame = requestAnimationFrame(() => {
+      scrollFrame = undefined;
+      follow(lastSide);
+    });
   }
 
   function clearLines() {
@@ -249,12 +262,13 @@ export function useComparison(
   function escape(event: KeyboardEvent) {
     if (event.key === 'Escape' && focus && !event.defaultPrevented && !document.querySelector('dialog[open]')) clearLines();
   }
-  watch([canCompare, changes], clearLines);
+  watch([canCompare, changes], () => { cancelFollow(); clearLines(); });
   onMounted(() => {
     document.addEventListener('selectionchange', trackSelection);
     window.addEventListener('keydown', escape);
   });
   onUnmounted(() => {
+    cancelFollow();
     document.removeEventListener('selectionchange', trackSelection);
     window.removeEventListener('keydown', escape);
   });
@@ -264,6 +278,7 @@ export function useComparison(
     const reflow = next.wrap !== before?.wrap || next.lineNumbers !== before?.lineNumbers
       || next.font !== before?.font || next.fontSize !== before?.fontSize;
     if (reflow) {
+      cancelFollow();
       const left = position(0);
       const right = position(1);
       await nextTick();

@@ -436,6 +436,62 @@ test('按类别和材料搜索映射，保留原文位置和脱敏输出', async
   assert.equal(await category.inputValue(), 'contact');
 });
 
+test('长位置列表可滚动到末尾并跨材料定位，正文仍可联动与复制', async t => {
+  const {crossCategoryProject} = require('./mapping-fixture.cjs');
+  const {writeProject} = require('../build/project-file.cjs');
+  const {app, page, directory} = await open(t, {model:false});
+  const state = crossCategoryProject();
+  state.materials.push({...state.materials[0], id:'2', title:'补充笔录'});
+  state.nextMaterialId = 3;
+  const path = join(directory, '长位置列表.lrproj');
+  await writeProject(path, state);
+  await app.evaluate(({dialog}, path) => {
+    dialog.showOpenDialog = async () => ({canceled:false, filePaths:[path]});
+  }, path);
+  await channel(page.getByRole('tabpanel', {name:'脱敏'}), '打开项目').click();
+
+  await channel(page, '搜索项目').click();
+  await page.getByRole('searchbox', {name:'搜索项目'}).fill('柳明川');
+  await channel(page, '查找').click();
+  const results = page.locator('.project-results');
+  await results.getByRole('heading', {name:'合成笔录 102 处'}).waitFor();
+  assert.ok(await results.locator('.occurrence').count() < 60);
+  await results.evaluate(list => { list.scrollTop = list.scrollHeight; });
+  await results.getByRole('button', {name:/第 102 行/u}).click();
+  await page.waitForFunction(() => CSS.highlights.has('adjustment-position'));
+  await channel(page, '搜索项目').click();
+  await page.locator('.material-row[aria-current="page"]').filter({hasText:'补充笔录'}).waitFor();
+
+  await page.locator('#source-text mark[data-item="99"]').click();
+  await page.locator('.position-list .occurrence.current').filter({hasText:/补充笔录.*第 99 行/u}).waitFor();
+  assert.ok(await page.locator('.position-list .occurrence').count() < 60);
+  await channel(page, '↑ 上一处').click();
+  await page.locator('.position-list .occurrence.current').filter({hasText:/补充笔录.*第 98 行/u}).waitFor();
+
+  await page.locator('#source-scroll').evaluate(pane => { pane.scrollTop = 250; });
+  await page.waitForFunction(() => {
+    const source = document.getElementById('source-scroll');
+    const output = document.getElementById('output-scroll');
+    const firstVisible = pane => [...pane.querySelectorAll('.text-line')].find(row =>
+      row.getBoundingClientRect().bottom > pane.getBoundingClientRect().top + 12)?.dataset.lineNumber;
+    return output.scrollTop > 0 && Math.abs(Number(firstVisible(source)) - Number(firstVisible(output))) <= 1;
+  });
+  const selected = await page.locator('#source-text').evaluate(root => {
+    root.focus();
+    const [first, second] = root.querySelectorAll('.text-line-body');
+    const range = document.createRange();
+    range.setStart(first.firstChild, 0);
+    range.setEnd(second.firstChild, second.firstChild.textContent.length);
+    const selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+    return range.toString();
+  });
+  assert.match(selected, /柳明川\n/u);
+  await page.keyboard.press(process.platform === 'darwin' ? 'Meta+C' : 'Control+C');
+  assert.equal(await app.evaluate(({clipboard}) => clipboard.readText()), selected);
+});
+
 test('通过映射菜单管理别称，跨材料补位置沿用实际代号', async t => {
   const {writeProject} = require('../build/project-file.cjs');
   const {runWorkspace} = await import('../build/engine/workspace.js');
