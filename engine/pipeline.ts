@@ -6,8 +6,8 @@ import { administrativeParts, genericOrganization, hit, languageRules, organizat
   streetAddresses, typicalName, type Hit, type Layout, type Passage } from './fields.js';
 import { localRooms, proseRooms } from './housing.js';
 import { departmentEnd, locationBoundaries, parkingSites } from './locations.js';
-import { GENERIC_OFFICE, independentForms, publicForms } from './organizations.js';
-import { commonPlaces, completePhrases } from './phrases.js';
+import { GENERIC_OFFICE, independentForms, NUMBERED_TYPE, publicForms } from './organizations.js';
+import { commonPlaces, completePhrases, namedUnitEnd, publishedOrganizationSpans, regionalBranchEnd } from './phrases.js';
 import { idChecksum, translateWidth } from './numbers.js';
 import { hasSurname } from './suspects.js';
 import { bisect, char, keyOf, length, rule, slice, trim } from './text.js';
@@ -70,7 +70,7 @@ const issuedTitle = rule("《(?<issuer>[^《》]{1,30}?(?:政府|委员会|法�
 const maskedBranch = rule("(?:某+|[×＊*Xx]+)(?:分行|支行|分公司|分院|分校)");
 const plateLabel = rule("车牌(?:号码?)?[为是：: ]*$");
 const maskedPlate = rule("[一-鿿][A-ZＡ-Ｚ][A-ZＡ-Ｚ0-9０-９×＊*]{4,7}");
-const maskedOfficeTail = rule("(?:某+|[×＊*Xx]+)(?:局|委员会|人民政府|办公室|分局)");
+const maskedOfficeTail = rule('(?:某+|[×＊*Xx]+)(?:局|委员会|人民政府|办公室|分局|' + NUMBERED_TYPE + '|高中|初中)');
 const anonymousOrgStart = rule("(?:^|[，,。；;：:\\n]|申请人|原告|被告)[ \\t]*(?:某+|[×＊*]+)$");
 const landUse = rule("(?:菜地|耕地|林地|宅基地)(?:上|里)?");
 const motion = rule("(?:去到|前往|去|到|从|往|在)$");
@@ -79,7 +79,15 @@ function filterCandidates(text: string, predicted: Hit[], registeredOrgs: Set<st
   const publicForm = independentForms(text);
   const modelSpans = new Set(predicted.map(item => keyOf(item.start, item.end, item.kind)));
   const organizations = predicted.filter(item => item.kind === 'organization');
-  const maskedOrganizations = organizations.filter(item => maskedTerm.test(slice(text, item.start, item.end)));
+  const maskedOrganizations = publishedOrganizationSpans(text);
+  const anonymousBranches = new Set<string>();
+  for (const {start, end} of organizations) {
+    if (!maskedTerm.test(slice(text, start, end))) continue;
+    maskedOrganizations.push([start, end]);
+    const branchEnd = regionalBranchEnd(text, start, end);
+    if (branchEnd > end) anonymousBranches.add(slice(text, start, branchEnd));
+  }
+  for (const [, start, end] of allSpans(text, anonymousBranches)) maskedOrganizations.push([start, end]);
   const titles = [...annualStandard.finditer(text)].map(match => match.span(1));
   for (const title of quotedTitle.finditer(text)) {
     const left = slice(text, Math.max(0, title.start() - 8), title.start());
@@ -111,7 +119,7 @@ function filterCandidates(text: string, predicted: Hit[], registeredOrgs: Set<st
     if (kind === 'organization' || kind === 'address') {
       if (genericOrganization.fullmatch(value) || referenceLead.match(value) || genericPlace.fullmatch(value)
           || titles.some(([a, b]) => a <= start && end <= b)
-          || maskedOrganizations.some(row => row.start <= start && end <= row.end)) return [];
+          || maskedOrganizations.some(([a, b]) => a <= start && end <= b)) return [];
       if (kind === 'organization' && (maskedTerm.test(value)
           || start && '某×＊*'.includes(char(text, start - 1))
           && anonymousOrgStart.search(slice(text, Math.max(0, start - 16), start)))) return [];
@@ -165,7 +173,8 @@ function documentOccurrences(text: string, hits: Hit[], layout: Layout) {
       extra.push(hit(start, end, 'person', '全文登记姓名与人物陈述', 74));
     } else if (organizations.get(raw)?.has(scope(start))
         && !(current?.kind === 'organization' && end < current.end)) {
-      const stop = /(?:政府|局|委员会|法院)$/u.test(raw) ? departmentEnd(text, end) : end;
+      const department = /(?:政府|局|委员会|法院)$/u.test(raw) ? departmentEnd(text, end) : end;
+      const stop = Math.max(department, namedUnitEnd(text, start, end));
       extra.push(hit(start, stop, 'organization', stop > end ? '全称与直属部门' : '全文全称', stop > end ? 96 : 62));
     } else if (villages.has(raw) && villageTail.match(text, end)
         && !(current?.kind === 'address' && end <= current.end)

@@ -156,3 +156,33 @@ test('表格房屋编号覆盖有序楼室及带连接号的房号', async () =>
   assert.deepEqual(rows.filter(row => row.type === 'address').map(row => row.original), ['A栋 2单元 305室', '3－4－706室']);
   assert.match(render(text, rows).output, /\n1\t【[^】]+】\t已交\n2\t【[^】]+】\t待核$/u);
 });
+
+test('连续识别银行辖区支行、上级机关和法庭全称', async () => {
+  const bank = '东莞农村商业银行';
+  const authority = '国家税务总局';
+  const court = '杭州市西湖区人民法院';
+  const text = `回执由${bank}长安支行送达。材料转交${authority}郑州市税务局第一稽查局。${court}民事审判第一庭归档。`;
+  const [rows] = await buildPlan(text, {}, () =>
+    predictions(text, [bank, authority, court].map(value => [value, 'organization']))
+      .map(({start, end, label}) => ({start, end, kind: label, reason: 'Otter', priority: 60})));
+  assert.deepEqual(rows.map(({original, type}) => [original, type]), [
+    [bank + '长安支行', 'organization'], [authority + '郑州市税务局第一稽查局', 'organization'],
+    [court + '民事审判第一庭', 'organization'],
+  ]);
+});
+
+test('保留原文声明的机构代称和匿名分支，仍识别具名商号', async () => {
+  const parent = '某某供应链有限公司';
+  const branch = '杭州市分公司';
+  const named = 'G云川设备有限公司';
+  const published = 'B银行北京市分行（以下简称B银行）';
+  const text = `${published}提交说明。B银行复函。CB银行参加。${parent}${branch}登记。${parent}${branch}签收。另通知${branch}和${named}。`;
+  const values = ['B银行北京市分行', 'B银行', 'CB银行', parent, branch, named];
+  const [rows] = await buildPlan(text, {}, () => values.flatMap(value =>
+    [...text.matchAll(new RegExp(value, 'gu'))].map(({index: start}) =>
+      ({start, end: start + value.length, kind: 'organization', reason: 'Otter', priority: 60}))));
+  assert.deepEqual(rows.map(row => row.original), ['CB银行', branch, named]);
+  const output = render(text, rows).output;
+  assert.ok(output.startsWith(`${published}提交说明。B银行复函。`));
+  assert.ok(output.includes(`${parent}${branch}登记。${parent}${branch}签收。`));
+});

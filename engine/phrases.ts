@@ -1,11 +1,14 @@
 import { readFileSync } from 'node:fs';
 import { gunzipSync } from 'node:zlib';
-import { administrativeParts, hit, type Hit } from './fields.js';
+import { allSpans } from './context.js';
+import { ALIAS_SUFFIX } from './context-rules.js';
+import { administrativeParts, hit, organizationValue, type Hit } from './fields.js';
 import { housingEnd } from './housing.js';
-import { REGIONAL_UNIT } from './organizations.js';
-import { char, length, point, rule, slice, startsAny, endsAny, unit } from './text.js';
+import { ORDINAL, publicPattern, REGIONAL_UNIT } from './organizations.js';
+import { char, length, point, rule, slice, startsAny, endsAny, unit, trim, type Span } from './text.js';
 
-const localUnit = rule('(?:人民)?政府(?:办公室)?|(?:职业技术|技术|技师)学院|(?:工商行政|市场监督)管理局');
+const localUnit = rule('(?:人民)?政府(?:办公室)?|(?:职业技术|技术|技师)学院|(?:工商行政|市场监督)管理局'
+  + '|(?:民政|司法|税务|财政)局|' + ORDINAL + '看守所');
 const specialCourt = rule('(?:铁路运输|知识产权|海事|金融|互联网)(?:中级|高级)?(?:人民)?法院');
 const subunit = rule('(?<name>[一-鿿]{0,6}?)(?<type>派出所|分局|总队|支队|大队)');
 const ranks: Record<string, number> = {分局: 1, 总队: 1, 支队: 2, 大队: 3, 派出所: 4};
@@ -19,6 +22,13 @@ const maskedRoad = rule('(?:[＊*×某Xx]+(?:大道|街道|路|街|巷|弄))+(?:
 const anonymousSite = rule('(?:某+|[×＊*Xx]+)(?<site>(?:[一-鿿]{0,4}?)(?:小区|社区|花园|家园|公寓|住宅楼|大厦))?');
 const floors = rule('(?:、[ \\t]*(?:地下)?\\d+(?:楼|层))+');
 const ward = rule('(?:住院部|门诊部)(?:[一-鿿]{1,4}?科)?');
+const courtUnit = rule('(?:执行局|立案庭|(?:民事|刑事|行政|执行)?审判(?:第[一二三四五六七八九十\\d]+)?庭)(?!长)');
+const taxUnit = rule('(?:' + ORDINAL + ')?稽查局(?!长)');
+const legalForm = rule('(?:（[一-鿿]{2,6}）|\\([一-鿿]{2,6}\\))?(?:股份有限公司|有限责任公司|有限公司)');
+const regionalBranch = rule('([一-鿿]{1,16}?)(分公司|分行|支行)');
+const publishedUnit = rule('(?<![A-Za-zＡ-Ｚａ-ｚ0-9])([A-ZＡ-Ｚ])(?:银行|医院|学校|'
+  + '(?:融资担保|担保|保险|物业|物流)?(?:股份有限公司|有限责任公司|有限公司|公司))');
+const maskedBank = rule('(?:某+|[＊*×]+)银行');
 const addressLead = rule('(?:户籍地址|户籍地|住所地?|住址)[：:]?(?:位于|在)?|(?:居住在|居住于|住在|位于|坐落于|到达|前往|从|往|在|到)');
 const floorEnding = rule('\\d+(?:楼|层|室)$');
 let vocabulary: ReturnType<typeof loadVocabulary> | undefined;
@@ -56,6 +66,95 @@ function loadVocabulary() {
 
 export function commonPlaces() {
   return genericPlaces ??= new Set(readFileSync(new URL('./lexicon/generic_places.txt', import.meta.url), 'utf8').trimEnd().split('\n'));
+}
+
+export function namedUnitEnd(text: string, start: number, end: number) {
+  const name = slice(text, start, end);
+  if (name.endsWith('法院')) return courtUnit.match(text, end)?.end() ?? end;
+  if (name.endsWith('税务局')) return taxUnit.match(text, end)?.end() ?? end;
+  if (endsAny(name, ['医院', '病院'])) {
+    const child = ward.match(text, end);
+    if (child && !link.search(child.value)) return child.end();
+  }
+  return end;
+}
+
+function isTownOf(parent: string, region: string, lexicon: ReturnType<typeof loadVocabulary>) {
+  if (length(region) < 2) return false;
+  const forms = [region, region + '镇', region + '乡', region + '街道'];
+  for (let n = 2; n <= length(parent); n++) {
+    const prefix = slice(parent, 0, n);
+    const codes = [...(lexicon.codes.get(prefix) ?? []), ...(lexicon.codes.get(prefix + '市') ?? [])];
+    for (const code of codes) {
+      const towns = lexicon.towns.get(code)?.get(char(region, 0));
+      if (forms.some(form => towns?.has(form))) return true;
+    }
+  }
+  return false;
+}
+
+export function regionalBranchEnd(text: string, start: number, end: number) {
+  const parent = slice(text, start, end);
+  const bankIndex = parent.lastIndexOf('银行');
+  const suffix = parent.slice(bankIndex + 2);
+  const bank = bankIndex >= 0 && (!suffix || legalForm.fullmatch(suffix));
+  if (!bank && !endsAny(parent, ['有限公司', '有限责任公司'])) return end;
+  const cursor = parent.endsWith('银行') ? legalForm.match(text, end)?.end() ?? end : end;
+  const lexicon = vocabulary ??= loadVocabulary();
+  let allowed = bank ? ['分行', '支行'] : ['分公司'];
+  for (let child = regionalBranch.match(text, cursor); child; child = regionalBranch.match(text, end)) {
+    const region = child.group(1)!;
+    const kind = child.group(2)!;
+    if (!allowed.includes(kind) || !lexicon.codes.has(region) && !lexicon.cities.has(region) && !isTownOf(parent, region, lexicon)) break;
+    end = child.end();
+    if (kind !== '分行') break;
+    allowed = ['支行'];
+  }
+  return end;
+}
+
+function* namedBranches(text: string, evidence: Hit[]): Iterable<Hit> {
+  const parents = new Map<string, Span>();
+  for (const match of publicPattern.finditer(text)) {
+    if (match.value.endsWith('银行')) parents.set(match.span().join('/'), match.span());
+  }
+  for (const row of evidence) {
+    if (row.kind !== 'organization') continue;
+    const value = slice(text, row.start, row.end);
+    const bank = value.indexOf('银行');
+    const parent = bank > 0 ? value.slice(0, bank + 2) : value;
+    if (!mask.search(parent) && !link.search(parent) && organizationValue(parent)) {
+      const span: Span = [row.start, row.start + length(parent)];
+      parents.set(span.join('/'), span);
+    }
+  }
+  for (const [start, end] of parents.values()) {
+    const branchEnd = regionalBranchEnd(text, start, end);
+    if (branchEnd > end) yield hit(start, branchEnd, 'organization', '具名单位与辖区分支', 88);
+  }
+}
+
+export function publishedOrganizationSpans(text: string): Span[] {
+  const names = new Set<string>();
+  for (const party of publishedUnit.finditer(text)) {
+    const end = regionalBranchEnd(text, party.start(), party.end());
+    const alias = ALIAS_SUFFIX.match(text, end);
+    if (!alias) continue;
+    const short = trim(trim(alias.group(1)!), '“”「」"');
+    if (short.startsWith(party.group(1)!) && publishedUnit.fullmatch(short)) {
+      names.add(slice(text, party.start(), end));
+      names.add(short);
+    }
+  }
+  const spans: Span[] = [];
+  for (const [, start, end] of allSpans(text, names)) {
+    if (start === 0 || !/^[A-Za-zＡ-Ｚａ-ｚ0-9]$/u.test(char(text, start - 1))) spans.push([start, end]);
+  }
+  for (const parent of maskedBank.finditer(text)) {
+    const end = regionalBranchEnd(text, parent.start(), parent.end());
+    if (end > parent.end()) spans.push([parent.start(), end]);
+  }
+  return spans;
 }
 
 function policeEnd(text: string, end: number) {
@@ -113,7 +212,8 @@ function* territorialNames(text: string): Iterable<Hit> {
     }
     const office = localUnit.match(text, cursor) ?? REGIONAL_UNIT.match(text, cursor);
     if (office) {
-      yield hit(start, office.value === '公安局' ? policeEnd(text, office.end()) : office.end(), 'organization', '地域与完整单位', 88);
+      const end = office.value === '公安局' ? policeEnd(text, office.end()) : office.end();
+      yield hit(start, namedUnitEnd(text, start, end), 'organization', '地域与完整单位', 88);
       continue;
     }
     const hamlet = town ? village.match(text, cursor) : undefined;
@@ -163,7 +263,12 @@ export function completePhrases(text: string, predicted: Hit[], fields: Hit[], e
       }
     }
   }
-  for (const row of territorialNames(text)) {
+  const parents = new Map(evidence.filter(row => row.kind === 'organization' && slice(text, row.start, row.end).endsWith('税务总局'))
+    .map(row => [row.end, row.start]));
+  for (const place of [...territorialNames(text), ...namedBranches(text, evidence)]) {
+    const parent = parents.get(place.start);
+    const row = parent !== undefined && place.kind === 'organization' && slice(text, place.start, place.end).includes('税务局')
+      ? hit(parent, place.end, 'organization', '上级机关与辖区下属单位', place.priority) : place;
     const inside = (ref: Hit) => row.start <= ref.start && ref.end <= row.end;
     if (evidence.some(ref => row.start < ref.end && ref.start < row.end && !inside(ref) &&
         !(ref.kind === 'address' && row.reason === '住所中的已知地域' && mask.search(slice(text, ref.start, ref.end))))) continue;
@@ -174,9 +279,9 @@ export function completePhrases(text: string, predicted: Hit[], fields: Hit[], e
   }
   for (const row of evidence) {
     const value = slice(text, row.start, row.end);
-    if (row.kind === 'organization' && endsAny(value, ['医院', '病院'])) {
-      const next = ward.match(text, row.end);
-      if (next && !link.search(next.value)) result.push(hit(row.start, next.end(), row.kind, '具名医院科室', Math.max(69, row.priority)));
+    if (row.kind === 'organization') {
+      const end = namedUnitEnd(text, row.start, row.end);
+      if (end > row.end) result.push(hit(row.start, end, row.kind, '具名机构与直属部门', Math.max(69, row.priority)));
     }
     if (row.kind !== 'address') continue;
     if (endsAny(value, ['园', '苑', '小区', '公寓', '大厦', '号']) && !mask.search(value)) {

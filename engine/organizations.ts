@@ -4,7 +4,7 @@ const banks = ['中国人民银行', '中国建设银行', '建设银行'];
 const ministries = ['司法部', '教育部', '财政部', '公安部'];
 export const publicForms = new Set([...banks, '中国共产党', '中共',
   ...ministries.flatMap(name => ['中华人民共和国' + name, name])]);
-const publicPattern = rule([...publicForms].sort((a, b) => b.length - a.length).map(escape).join('|'));
+export const publicPattern = rule([...publicForms].sort((a, b) => b.length - a.length).map(escape).join('|'));
 export const GENERIC_OFFICE = rule('(?:[本该]?[省市区县乡镇]?(?:人民政府|政府|人大|政协)|公安机关|派出所|监委)');
 export const OFFICE_TYPE = '(?:(?:中级|高级|基层)?人民法院|人民检察院|人民政府|公安局|教育局|'
   + '监察委员会|监委|看守所|(?:政协|人大)(?:委员会|常委会)?|图书馆)';
