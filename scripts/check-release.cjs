@@ -30,6 +30,9 @@ async function main(executable, version) {
       assert.deepEqual(await readFile(join(resources, license)), await readFile(join(__dirname, '..', license)),
         `Packaged ONNX Runtime ${name} differs from the upstream copy`);
     }
+    for (const name of ['districts.tsv.gz', 'generic_places.txt', 'NOTICE.txt', 'LICENSE-districts.txt']) {
+      await access(join(resources, 'app', 'build', 'engine', 'lexicon', name));
+    }
     const page = await desktop.firstWindow();
     page.setDefaultTimeout(90000);
     const runtime = join(resources, 'app', 'node_modules', 'onnxruntime-node');

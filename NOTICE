@@ -13,3 +13,7 @@ See licenses/onnxruntime/ for its original license and third-party notices.
 Desktop releases include an ONNX export of whoisjones/otter-cross-mmbert,
 licensed under the Apache License, Version 2.0.
 https://huggingface.co/whoisjones/otter-cross-mmbert
+
+The bundled district and common-place lexicons are derived from Administrative-divisions-of-China
+(WTFPL version 2) and jieba (MIT). See engine/lexicon/NOTICE.txt and
+engine/lexicon/LICENSE-districts.txt for the sources and license texts.

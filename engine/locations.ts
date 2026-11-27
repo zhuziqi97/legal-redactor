@@ -1,7 +1,8 @@
 import { ADDRESS_BREAK, ADDRESS_DETAIL, NOTE } from './field-rules.js';
-import { addressComponentEnd, deliveryEnd, hit, type Hit } from './fields.js';
+import { addressComponentEnd, administrativeParts, deliveryEnd, hit, type Hit, type Passage } from './fields.js';
+import { publicUnits, REGIONAL_UNIT } from './organizations.js';
 import * as R from './location-rules.js';
-import { bisect, indexOf, length, rule, slice, startsAny, trim } from './text.js';
+import { bisect, char, indexOf, length, rule, slice, startsAny, trim } from './text.js';
 
 const levelOf = (suffix: string) => R.ADMIN_LEVEL[suffix as keyof typeof R.ADMIN_LEVEL];
 const noteItems = rule('[^，,、；;]+');
@@ -43,12 +44,77 @@ function addressEnd(text: string, place: Hit, positions: number[]) {
   return R.ADDRESS_EDGE.match(text, end) ? end : place.end;
 }
 
+const siteParking = rule("(?=(?:在|位于|从|于|到|至)(?<site>(?:[一-鿿]{1,8}?(?:省|市|区|县)){0,3}[一-鿿]{1,12}?(?:交易市场|市场|小区|广场|大厦|大楼)[一-鿿]{0,8}?(?:[ \\t]*的)?[ \\t]*(?:\\d+|[一二两三四五六七八九十]+)[ \\t]*(?:楼|层)[ \\t]*(?:停车场|停车库|车库)))");
+const siteAction = rule("位于|坐落|居住|前往|进入|走到|送到|来到|离开|赶到|乘车|步行");
+const orgStart = rule("[在向][ \\t]*");
+const orgLink = rule("的|由|从|与|向|以及|位于|设在|来到|前往|属于|收到|要求|申请|代表|提起|办理|出具|联系|工作|设有|有一|一家|关于|根据|按照|判决|裁定|原告|被告");
+const localOffice = rule("(?:(?:(?:中级|高级|基层)?人民法院|人民检察院|人民政府|公安局|教育局|监察委员会|监委|看守所|(?:政协|人大)(?:委员会|常委会)?|图书馆)|(?<station>[一-鿿]{0,5}?)派出所|(?:精神|专科)?病院)");
+const tradeUnit = rule("[一-鿿A-Za-z0-9]{2,14}?经营部");
+const officeBranch = rule("办公室|(?:[一-鿿]{1,5})?登记处");
+const companyDept = rule("第[零〇一二两三四五六七八九十百\\d]+[一-鿿]{0,4}?部");
+
+export function departmentEnd(text: string, end: number) {
+  const branch = officeBranch.match(text, end);
+  return branch && !orgLink.search(branch.value) && !R.PLACE_SEPARATOR.match(branch.value) ? branch.end() : end;
+}
+
+function organizationBoundaries(text: string, places: Map<number, Hit>, organizations: Hit[]) {
+  const result: Hit[] = [];
+  const starts = new Set([...places.keys(), ...[...orgStart.finditer(text)].map(match => match.end())]);
+  for (const start of starts) {
+    let end = start;
+    for (const [stem, , , offset] of administrativeParts(slice(text, start, start + 48))) {
+      if (orgLink.search(stem) || R.PLACE_SEPARATOR.match(stem)
+          || end === start && !places.has(start) && length(stem) > 3) break;
+      end = start + offset;
+    }
+    if (end === start) continue;
+    const office = localOffice.match(text, end) ?? (levelOf(char(text, end)) !== undefined ? localOffice.match(text, end + 1) : undefined);
+    const station = office?.group('station') ?? '';
+    if (office && !orgLink.search(station) && !R.PLACE_SEPARATOR.match(station)) {
+      result.push(hit(start, departmentEnd(text, office.end()), 'organization', '地域与直属单位全称', 96));
+    } else if (places.has(start)) {
+      const trade = tradeUnit.match(text, end);
+      if (trade && !orgLink.search(trade.value) && !R.PLACE_SEPARATOR.match(trade.value)) {
+        result.push(hit(start, trade.end(), 'organization', '地域与经营单位全称', 89));
+      }
+    }
+  }
+  for (const org of organizations) {
+    const value = slice(text, org.start, org.end);
+    if (value.endsWith('事务所')) {
+      const end = places.get(org.end)?.end ?? org.end;
+      if (slice(text, end, end + 2) === '分所') result.push(hit(org.start, end + 2, 'organization', '事务所与分所', 96));
+    } else if (value.endsWith('公司')) {
+      const department = companyDept.match(text, org.end);
+      if (department) result.push(hit(org.start, department.end(), 'organization', '公司与编号部门', 96));
+    }
+  }
+  return result;
+}
+
+export function parkingSites(text: string, passages: Passage[]) {
+  const result: Hit[] = [];
+  for (const {start, end} of passages) {
+    const value = slice(text, start, end);
+    for (const site of siteParking.finditer(value)) {
+      const [a, b] = site.span('site');
+      if (siteAction.search(slice(value, a, b))) continue;
+      result.push(hit(start + a, start + b, 'address', '具名场所内的停车位置', 88));
+    }
+  }
+  return result;
+}
+
 export function locationBoundaries(text: string, predicted: Hit[], language: Hit[], fields: Hit[]) {
   const places = new Map(predicted.filter(item => item.kind === 'address').map(item => [item.start, item]));
   const positions = [...places.keys()].sort((a, b) => a - b);
   const preceding = new Map([...places.values()].map(item => [item.end, item]));
   const organizations = predicted.filter(item => item.kind === 'organization');
-  const result: Hit[] = [];
+  const result = organizationBoundaries(text, places, organizations);
+  const knownSpans = new Set([...predicted, ...fields].filter(item => ['organization', 'address'].includes(item.kind))
+    .map(item => [item.start, item.end].join('/')));
+  for (const span of publicUnits(text, knownSpans)) result.push(hit(...span, 'organization', '具名地方机构全称', 95));
   for (const lead of locationStart.finditer(text)) {
     const start = lead.end();
     if (!R.ADMIN_PART.match(text, start)) continue;
@@ -75,6 +141,10 @@ export function locationBoundaries(text: string, predicted: Hit[], language: Hit
   }
   for (const place of places.values()) {
     const value = slice(text, place.start, place.end);
+    const regionEnd = [...administrativeParts(value)].at(-1)?.[3] ?? 0;
+    if (regionEnd && REGIONAL_UNIT.fullmatch(slice(value, regionEnd))) {
+      result.push(hit(place.start, place.end, 'organization', '地域与机构类型', 69));
+    }
     const admin = R.ADMIN_END.search(value);
     if (admin) {
       const end = nearbySite(text, place.end, levelOf(admin.value));

@@ -4,7 +4,9 @@ import { displayBase } from './display.js';
 import { NUMBER_KINDS, PERSON_VALUE, TITLE } from './field-rules.js';
 import { administrativeParts, genericOrganization, hit, languageRules, organizationValue, readFields, referenceLead,
   streetAddresses, typicalName, type Hit, type Layout, type Passage } from './fields.js';
-import { locationBoundaries } from './locations.js';
+import { departmentEnd, locationBoundaries, parkingSites } from './locations.js';
+import { GENERIC_OFFICE, independentForms, publicForms } from './organizations.js';
+import { commonPlaces, completePhrases } from './phrases.js';
 import { idChecksum, translateWidth } from './numbers.js';
 import { hasSurname } from './suspects.js';
 import { bisect, char, keyOf, length, rule, slice, trim } from './text.js';
@@ -61,14 +63,29 @@ const completeAccount = rule('\\d{8,22}');
 export const validCode = rule('【[^【】\\r\\n]{1,40}】');
 const namedKinds = new Set(['person', 'organization', 'address']);
 
-function filterCandidates(text: string, predicted: Hit[]) {
+const issuedTitle = rule("《(?<issuer>[^《》]{1,30}?(?:政府|委员会|法院|检察院|部|厅|局|办公室))关于[^《》]+的(?:通知|公告|通告)》");
+const maskedBranch = rule("(?:某+|[×＊*Xx]+)(?:分行|支行|分公司|分院|分校)");
+const plateLabel = rule("车牌(?:号码?)?[为是：: ]*$");
+const maskedPlate = rule("[一-鿿][A-ZＡ-Ｚ][A-ZＡ-Ｚ0-9０-９×＊*]{4,7}");
+const maskedOfficeTail = rule("(?:某+|[×＊*Xx]+)(?:局|委员会|人民政府|办公室|分局)");
+const anonymousOrgStart = rule("(?:^|[，,。；;：:\\n]|申请人|原告|被告)[ \\t]*(?:某+|[×＊*]+)$");
+const landUse = rule("(?:菜地|耕地|林地|宅基地)(?:上|里)?");
+const motion = rule("(?:去到|前往|去|到|从|往|在)$");
+
+function filterCandidates(text: string, predicted: Hit[], registeredOrgs: Set<string>) {
+  const publicForm = independentForms(text);
   const modelSpans = new Set(predicted.map(item => keyOf(item.start, item.end, item.kind)));
   const organizations = predicted.filter(item => item.kind === 'organization');
   const maskedOrganizations = organizations.filter(item => maskedTerm.test(slice(text, item.start, item.end)));
   const titles = [...annualStandard.finditer(text)].map(match => match.span(1));
   for (const title of quotedTitle.finditer(text)) {
+    const left = slice(text, Math.max(0, title.start() - 8), title.start());
     if (!statuteTitle.fullmatch(title.value) && !annualTitle.fullmatch(title.value)
-        && !statuteArticle.match(trim(slice(text, title.end(), title.end() + 15), undefined, 'left'))) continue;
+        && !statuteArticle.match(trim(slice(text, title.end(), title.end() + 15), undefined, 'left'))) {
+      const notice = issuedTitle.fullmatch(title.value);
+      if (notice && citationIntro.search(left)) titles.push([title.start(), title.start() + notice.end('issuer')]);
+      continue;
+    }
     const prefix = organizations.find(item => item.end === title.start()
       && citationIntro.search(slice(text, Math.max(0, item.start - 8), item.start)));
     titles.push([prefix?.start ?? title.start(), title.end()]);
@@ -78,13 +95,24 @@ function filterCandidates(text: string, predicted: Hit[]) {
     if (!namedKinds.has(kind) && kind !== 'nickname') return [item];
     const value = slice(text, start, end);
     if (/[\r\n\f]/u.test(value)) return [];
+    if (!['全文称呼', '机构简称'].includes(reason) && !(kind === 'organization' && registeredOrgs.has(value))
+        && (publicForm(start, end) || GENERIC_OFFICE.fullmatch(value))) return [];
+    if ((kind === 'organization' || kind === 'address') && reason === 'Otter' && !registeredOrgs.has(value)
+        && commonPlaces().has(value) && motion.search(slice(text, Math.max(0, start - 4), start))) return [];
+    if (kind === 'person' && plateLabel.search(slice(text, Math.max(0, start - 10), start))
+        && maskedPlate.fullmatch(value) && maskedTerm.test(value)) return [];
+    if (kind === 'organization' && maskedBranch.match(text, end)
+        && publicForms.has(value.replace(/股份有限公司$/u, ''))) return [];
     if ((kind === 'person' || kind === 'nickname') && (unnamedPerson.fullmatch(value) || courtesyName.fullmatch(value))) return [];
     if (kind === 'organization' || kind === 'address') {
       if (genericOrganization.fullmatch(value) || referenceLead.match(value) || genericPlace.fullmatch(value)
           || titles.some(([a, b]) => a <= start && end <= b)
           || maskedOrganizations.some(row => row.start <= start && end <= row.end)) return [];
-      if (kind === 'organization' && maskedTerm.test(value)) return [];
-      if (kind === 'address' && (maskedPlaceTail.match(text, end)
+      if (kind === 'organization' && (maskedTerm.test(value)
+          || start && '某×＊*'.includes(char(text, start - 1))
+          && anonymousOrgStart.search(slice(text, Math.max(0, start - 16), start)))) return [];
+      if (kind === 'address' && (landUse.fullmatch(value) || maskedOfficeTail.match(text, end)
+          || maskedPlaceTail.match(text, end) && !['住所中的已知地域', '遮名道路中的地域'].includes(reason)
           || maskedTerm.test(value) && !/\d+(?:号|室|栋)/u.test(value))) return [];
     }
     const modelAgreement = modelSpans.has(keyOf(start, end, kind));
@@ -128,9 +156,13 @@ function documentOccurrences(text: string, hits: Hit[], layout: Layout) {
     const prior = hits[bisect(positions, start, true) - 1];
     const current = prior && start < prior.end ? prior : undefined;
     const left = slice(text, Math.max(0, start - 24), start);
-    if (organizations.get(raw)?.has(scope(start))
+    if (knownPeople.has(raw) && current?.kind === 'organization' && current.start === start && current.end === end
+        && current.priority < 65 && (personRole.search(left) || personAction.match(text, end))) {
+      extra.push(hit(start, end, 'person', '全文登记姓名与人物陈述', 74));
+    } else if (organizations.get(raw)?.has(scope(start))
         && !(current?.kind === 'organization' && end < current.end)) {
-      extra.push(hit(start, end, 'organization', '全文全称', 62));
+      const stop = /(?:政府|局|委员会|法院)$/u.test(raw) ? departmentEnd(text, end) : end;
+      extra.push(hit(start, stop, 'organization', stop > end ? '全称与直属部门' : '全文全称', stop > end ? 96 : 62));
     } else if (villages.has(raw) && villageTail.match(text, end)
         && !(current?.kind === 'address' && end <= current.end)
         && (villageLead.search(left) || ['人', '其家'].some(tail => slice(text, end, end + 2).startsWith(tail)))) {
@@ -157,7 +189,10 @@ function documentOccurrences(text: string, hits: Hit[], layout: Layout) {
 
 export function normalized(kind: string, value: string) {
   if (kind === 'address') {
-    return translateWidth(value).replaceAll('（', '(').replaceAll('）', ')')
+    return translateWidth(value)
+      .replace(/(?<![零〇一二两三四五六七八九十百千万])([一二两三四五六七八九])(?=[ \t]*(?:楼|层))/gu,
+        digit => digit === '两' ? '2' : String('一二三四五六七八九'.indexOf(digit) + 1))
+      .replaceAll('（', '(').replaceAll('）', ')')
       .replace(/(?<=市|省|县|区)[，,](?=[\u3400-\u9fff])/g, '')
       .replace(/(?<=[\u3400-\u9fff])[ \t　]+|[ \t　]+(?=[\u3400-\u9fff])/g, '');
   }
@@ -257,6 +292,7 @@ export async function buildPlan(text: string, registry: Registry = {}, scan?: Sc
   }
 
   const boundaries = locationBoundaries(text, predicted, language, rules);
+  boundaries.push(...completePhrases(text, predicted, rules, boundaries, language), ...parkingSites(text, layout.free));
   for (const reply of layout.courtReplies) {
     if (!identityStatement.search(text, reply.start, reply.end)) continue;
     for (const field of identityFields.finditer(text, reply.start, reply.end)) {
@@ -284,7 +320,8 @@ export async function buildPlan(text: string, registry: Registry = {}, scan?: Sc
       ? hit(item.start, stop, item.kind, item.reason, item.priority) : item;
   });
 
-  const eligible = filterCandidates(text, predicted);
+  const registeredOrgs = new Set(Object.values(registry).filter(item => item.kind === 'organization').map(item => item.value));
+  const eligible = filterCandidates(text, predicted, registeredOrgs);
   const candidates = eligible([...rules, ...language, ...predicted, ...boundaries]);
   let hits = choose(candidates);
   const completion = eligible(documentOccurrences(text, hits, layout));

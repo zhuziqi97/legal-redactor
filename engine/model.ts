@@ -50,6 +50,8 @@ export function modelWindows(text: string, free: Passage[], known: Hit[]) {
 
 export async function scanCandidates(text: string, free: Passage[], known: Hit[], predict: Predict,
   progress?: (done: number, total: number) => void) {
+  const established = new Set(known.filter(item => item.kind === 'person' && item.priority >= 95)
+    .map(item => slice(text, item.start, item.end)));
   const groups = modelWindows(text, free, known);
   const total = [...groups.values()].reduce((sum, windows) => sum + windows.length, 0);
   let completed = 0;
@@ -91,7 +93,7 @@ export async function scanCandidates(text: string, free: Passage[], known: Hit[]
               kind = 'person';
             }
           }
-          if (kind === 'person' && b - a > 2 && '的吗呢'.includes(char(text, b - 1))) b--;
+          if (kind === 'person' && b - a > 2 && '的吗呢'.includes(char(text, b - 1)) && !established.has(slice(text, a, b))) b--;
           if (kind === 'organization' && char(text, b - 1) === '的') b--;
           const value = slice(text, a, b);
           if (ROLE.fullmatch(value) || TITLE.fullmatch(value) || length(value) < 2 ||

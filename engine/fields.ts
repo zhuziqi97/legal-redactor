@@ -1,3 +1,4 @@
+import { OFFICE_TYPE } from './organizations.js';
 import * as R from './field-rules.js';
 import { _BANK_PREFIX, _EMAIL, _LABELED_USCC, _USCC } from './number-rules.js';
 import { structuralCandidates, luhn, translateWidth } from './numbers.js';
@@ -22,7 +23,7 @@ export function typicalName(value: string) {
 const dateTime = rule(R.DATE_TIME);
 const direction = rule('借方?|贷方?|进账|入账|出账|收入|支出');
 const shortDefinition = rule('[（(]\\s*(?:以下)?简称');
-const organizationEnding = rule('税务所|大队|支队|小学|中学');
+const organizationEnding = rule(OFFICE_TYPE + '|税务所|大队|支队|小学|中学');
 export const genericOrganization = rule('医院|法院|人民法院|检察院|人民检察院|合议庭|(?:保险|物业|快递|物流|担保)?公司|'
   + '(?:社区|当地|定点|公立|私立)医院|商业银行|银行|大学|学校|小学|中学');
 export const referenceLead = rule('^(?:该(?:家|所|名)?|[这那](?:家|所|个|位)|[一各](?:家|所)|某(?:家|所)?|对方(?:的)?|本(?=院|校|公司))');
@@ -306,11 +307,12 @@ function fieldValues(text: string, start: number, end: number, label: string, pr
   if (R.SIGNATURE_LABELS.has(label)) return signatureValues(text, start, end, label);
   if (kind in R.VALUE_PATTERNS || kind === 'case_number') return identifierValues(text, start, end, kind, label, 110, protectedRows);
   if (label === '房号') {
-    const first = start + length(slice(text, start, end)) - length(trim(slice(text, start, end), undefined, 'left'));
-    const unit = propertyUnit.match(text, first, end);
-    if (!unit) return [];
-    const detail = propertyDetail.match(text, unit.end(), end);
-    return [hit(first, first + length(trim(slice(text, first, detail?.end() ?? unit.end()), undefined, 'right')), kind, label, 102)];
+    return [...partyList.finditer(text, start, end)].flatMap(atom => {
+      const value = trim(atom.value);
+      const at = atom.start() + length(atom.value) - length(trim(atom.value, undefined, 'left'));
+      const stop = propertyEnd(value);
+      return stop ? [hit(at, at + stop, kind, label, 102)] : [];
+    });
   }
   if (kind === 'address') return addressValues(text, start, end, label);
   const row = scalarField(text, start, end, label);
@@ -354,7 +356,7 @@ function cellsOf(line: string, offset: number, delim: string | null): Span[] {
 
 const numericHeader = rule('\\d(?:[ \\t.-]*\\d){2}');
 const fourDigits = rule('\\d{4}');
-const hasLabels = (values: string[]) => values.filter(value => Object.hasOwn(R.FIELD_TYPES, value)).length >= 2;
+const hasLabels = (values: string[]) => values.filter(value => Object.hasOwn(R.FIELD_TYPES, value) || sequenceCaptions.has(value)).length >= 2;
 const sequenceCaptions = new Set(['序号', '债权编号', '债权人编号']);
 const partyCaptions = new Map([['债权人', '债权人名称'], ['债权人姓名或名称', '债权人名称'], ['债权人姓名', '姓名'], ['职工姓名', '姓名']]);
 const amountCaption = rule('(?:金额|总额|余额)(?:[（(](?:人民币|万)?元[）)])?$');
@@ -367,24 +369,54 @@ const propertyUnit = rule('(?:[\\u3400-\\u9fff]{1,8}[ \\t]*(?=\\d))?'
 const propertyDetail = rule('(?:宿舍)?(?:由[东南西北]向[东南西北])?第[ \\t]*[一二三四五六七八九十百\\d]+'
   + '(?:[ \\t]*间(?:及前方)?|个(?:车位|柱子)|至第[一二三四五六七八九十百\\d]+个柱子之间)');
 
+const propertyCode = rule("\\d{1,3}-\\d{1,3}-\\d{2,5}");
+const propertyFloor = rule("(?:地下室栋)?(?:-?\\d+(?:栋|幢|楼|层|单元))*-?\\d+(?:号|室|房)");
+const propertySite = rule("[一-鿿]{1,10}(?:花园|小区|大厦)(?=\\d)");
+const roomCode = rule("(?:公寓|商铺|车库|车位|住宅|宿舍|[A-Za-z](?:栋|座|区))?\\d{1,6}(?:[-－]\\d{1,5})*(?=[ \\t]*(?:$|[（(]|等[一二两三四五六七八九十\\d]+[间套户个]))");
+const scheduleRoom = rule("(?:本院)?第[零〇一二三四五六七八九十百\\d]+法庭");
+const inlineCredit = rule("(?:统一社会信用代码|纳税人识别号|社会信用代码)[ \\t　]*([A-Za-z0-9]{18})(?![A-Za-z0-9])");
+const buildingId = rule("(?:[A-Za-z]|[0-9]{1,4})(?:号楼|号栋|号幢|栋|幢|座|#)?");
+const parkingId = rule("(?=[A-Za-z0-9#-]*\\d)[A-Za-z0-9]+(?:[#-][A-Za-z0-9]+)*(?:号)?");
+const caseSuffix = rule("之[一二三四五六七八九十百零〇\\d]+|（个\\d+）|\\(个\\d+\\)");
+const propertyColumns = new Map([
+  ...['楼栋', '楼栋号', '楼号', '幢号'].map(label => [label, buildingId] as const),
+  ...['车位', '车位号', '车库号'].map(label => [label, parkingId] as const),
+]);
+
+function propertyEnd(value: string) {
+  if (propertyCode.fullmatch(value)) return length(value);
+  const prefix = propertyUnit.match(value);
+  let end = Math.max(addressComponentEnd(value, 0, length(value)), prefix?.end() ?? 0);
+  if (end) {
+    const site = propertySite.match(value, end);
+    end = propertyFloor.match(value, site?.end() ?? end)?.end() ?? end;
+  }
+  const detail = prefix && propertyDetail.match(value, prefix.end());
+  return Math.max(end, roomCode.match(value)?.end() ?? 0, detail?.end() ?? 0);
+}
+
 function columnLabels(values: string[], delim: string | null) {
   const numbered = delim === '  ' && sequenceCaptions.has(values[0]);
   return values.map(value => {
     const compact = value.replace(/\s/gu, '');
     if (amountCaption.search(compact) || amountColumns.has(compact)) return '金额';
     if (numbered && ['名称', '主体名称'].includes(compact)) return '债权人名称';
+    if (endsAny(compact, ['房号', '房屋坐落', '（房号）', '(房号)']) || compact === '房屋信息') return '房号';
+    if (compact.endsWith('姓名')) return '姓名';
+    if (['法院', '受理法院'].includes(compact)) return '单位名称';
     return partyCaptions.get(compact) ?? (Object.hasOwn(R.FIELD_TYPES, compact) || sequenceCaptions.has(compact) ? compact : value);
   });
 }
 
 function isHeader(values: string[], columns: string[], text: string, following: number, delimiter: string | null) {
   if (!hasLabels(values) || values.some(value => numericHeader.test(value))) return false;
-  if (values.every(value => Object.hasOwn(R.FIELD_TYPES, value) || R.HEADER_NAMES.has(value)
-      || sequenceCaptions.has(value) || columns.includes(value))) return true;
   const start = blankRecords.match(text, following)?.end() ?? following;
   const record = delimiter === ',' ? csvRecord(text, start) : undefined;
   const cells = record?.[0] ?? cellsOf(slice(text, start, R.RECORD_END.search(text, start)?.start()), start, delimiter);
   if (cells.length !== values.length) return false;
+  if (sequenceCaptions.has(values[0]) && digits(trim(slice(text, ...cells[0])))) return true;
+  if (values.every(value => Object.hasOwn(R.FIELD_TYPES, value) || R.HEADER_NAMES.has(value)
+      || sequenceCaptions.has(value) || columns.includes(value))) return true;
   return cells.some(([a, b], index) => {
     const value = trim(slice(text, a, b));
     const kind = R.FIELD_TYPES[values[index]];
@@ -551,6 +583,15 @@ export function readFields(source: string): Layout {
         const [a, b] = cells[i];
         const value = values[i];
         if (!value || blankValue.fullmatch(value)) continue;
+        if (label === '法庭' && scheduleRoom.fullmatch(value)) {
+          hits.push(hit(a, b, 'keep', '庭期表庭号', 112));
+          continue;
+        }
+        if (propertyColumns.get(label)?.fullmatch(value)) {
+          const at = a + length(slice(text, a, b)) - length(trim(slice(text, a, b), undefined, 'left'));
+          hits.push(hit(at, at + length(value), 'address', '独立列内的楼栋或车位编号', 102));
+          continue;
+        }
         const typed = numberedTable && ['债权人名称', '姓名'].includes(label) ? tableParties(text, a, b, label === '姓名')
           : label in R.FIELD_TYPES ? fieldValues(text, a, b, label, protectedRows) : [];
         const context = label ? `${label}：` : '';
@@ -673,6 +714,9 @@ export function readFields(source: string): Layout {
   }
   for (const match of R.TAIL.finditer(text)) hits.push(hit(...match.span(1), 'tail', '尾号字段', 99));
   hits.push(...protectedRows);
+  for (const match of inlineCredit.finditer(text)) {
+    if (_USCC.fullmatch(match.group(1)!)) hits.push(hit(...match.span(1), 'uscc', '统一社会信用代码', 112));
+  }
   for (const match of _LABELED_USCC.finditer(text)) {
     const value = match.group(1)!;
     if (!/[\r\n\f]/u.test(value) && _USCC.fullmatch(value.replace(/\s/gu, '').toUpperCase())
@@ -686,6 +730,9 @@ export function readFields(source: string): Layout {
       hits.push(hit(match.start, match.end, kind, match.notes || match.category, 86));
     }
   }
+  for (const item of hits) {
+    if (item.kind === 'case_number') item.end = caseSuffix.match(text, item.end)?.end() ?? item.end;
+  }
   return layout;
 }
 
@@ -698,9 +745,57 @@ export function languageRules(text: string) {
   });
 }
 
+const residenceStart = rule("(?:(?:住所地|户籍地址|居住地址)[ \\t]*[：:]?|住所[ \\t]*[：:])[ \\t]*(?:并非|并?不是|并?不在|应为|位于|[为是在])?[ \\t]*|(?:^|[，,；;。\\n])[ \\t]*现?住(?!所|院|过)(?:在|于)?");
+const streetPart = rule("[一-鿿A-Za-z0-9]{1,14}?(?:大道|大街|道路|路|街|巷|弄|环[东西南北]段)");
+const roadDirection = rule("(?:以[东西南北]|[东西南北](?:侧|段|面))");
+const crossing = rule("与[一-鿿A-Za-z0-9]{1,14}?(?:大道|大街|道路|路|街|巷|弄|环[东西南北]段)交(?:叉|会)口(?:向[东西南北]\\d+米(?:路[东西南北])?)?");
+const residenceSite = rule("[一-鿿A-Za-z0-9]{1,16}?(?:(?:小区|社区|花园|公寓|大厦|广场|家园|新村|园区|苑)|公馆|院内|办公楼|住宅楼)|(?:办公|住宅)楼");
+const residenceUnit = rule("(?:\\d+号院|\\d+[-－]\\d+层|\\d+内(?=\\d+层)|\\d+(?:、\\d+)+室|(?:(?:[0-9A-Za-z]+[ \\t]*(?:号楼|楼|栋|幢|层|单元|座|室|房)|\\d+(?:[-－]\\d+)?号|\\d+#楼)|[零〇一二两三四五六七八九十百]+(?:楼|层|栋|幢|单元|室)|[东西南北中](?:区|楼|栋|座|单元)))");
+const residenceStop = rule("[，,。；;！？!?（）()\\r\\n：:《》的在]|另寄|改寄|搬离|(?:步行|开车|搬|迁|转|走|送)(?:到了?|至|往)|已(?:经|搬|迁)|工作日|签收|收件|交付|交货|办理|登记|经营|收到|前往|随后|然后|转至|并(?:于|向)|住院|住过|曾在|来到|走到|离开|前去|到达|参加|要求|称其|购买|上班");
+
+function residenceEnd(text: string, start: number) {
+  const limit = residenceStop.search(text, start)?.start() ?? length(text);
+  let end = start;
+  for (const [stem, , , stop] of administrativeParts(slice(text, start, limit))) {
+    if (placeBreak.match(stem) || /[从与向由]/u.test(stem)) break;
+    end = start + stop;
+  }
+  if (slice(text, start, end).endsWith('街道') && slice(text, end, limit) === '办') return limit;
+  if (end > start && /^[东西南北](?:侧|面)?$/u.test(slice(text, end, limit))) return limit;
+  const road = streetPart.match(text, end, limit);
+  if (road) {
+    end = crossing.match(text, road.end(), limit)?.end() ?? road.end();
+    const side = roadDirection.match(text, end, limit);
+    if (side) {
+      end = side.end();
+      const other = char(text, end) === '、' && streetPart.match(text, end + 1, limit);
+      const otherSide = other && roadDirection.match(text, other.end(), limit);
+      if (otherSide) {
+        end = otherSide.end();
+        const site = slice(text, end, limit);
+        if (/^[一-鿿A-Za-z0-9]{2,14}?(?:中心|大厦|广场|园区)$/u.test(site)
+            && !placeBreak.match(site) && !R.ADDRESS_BREAK.search(site)) end = limit;
+      }
+    }
+  }
+  while (end < limit) {
+    const part = residenceUnit.match(text, end, limit) ?? residenceSite.match(text, end, limit);
+    if (!part || placeBreak.match(part.value) || /[与向由]/u.test(part.value)) break;
+    end = part.end();
+  }
+  if (end > start && char(text, end - 1) === '号' && streetPart.fullmatch(text, end, limit)) return limit;
+  return end;
+}
+
 export function streetAddresses(text: string) {
   const rows: Hit[] = [];
   const end = length(text);
+  for (const intro of residenceStart.finditer(text)) {
+    const start = intro.end();
+    if (!R.AREA.match(text, start) && !streetPart.match(text, start)) continue;
+    const stop = residenceEnd(text, start);
+    if (stop > start) rows.push(hit(start, stop, 'address', '住所陈述中的地址', 100));
+  }
   for (const intro of R.DELIVERY_INTRO.finditer(text)) {
     const start = intro.end();
     const road = R.ROAD_VALUE.match(text, start);

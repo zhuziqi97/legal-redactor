@@ -3,7 +3,7 @@ import { rule } from './text.js';
 
 export const FORMAL_COMPANY = rule("(?:股份有限公司|有限责任公司|有限公司)$");
 export const PARTY_LEAD = rule("(?:原告|被告|第三人|甲方|乙方|委托方)\\s*$");
-export const BRANCH = rule("(?:分校|校区|分院|分公司|分店|门店|支行|分行)$");
+export const BRANCH = rule("(?:分校|校区|分院|分公司|分店|门店|支行|分行|分所)$");
 export const PARENT_ORG = rule("(?:大学|学院|医院|有限公司|有限责任公司|银行)$");
 export const PUBLIC_OFFICE = rule("(?:[（(][A-Za-z][A-Za-z .'-]{0,35}[）)])?(?:人民政府|人民检察院|(?:人民)?法院(?:赔偿委员会|审判委员会)?)");
 export const JUDICIAL_COMMITTEE = rule("最高人民法院(?:赔偿委员会|审判委员会)");

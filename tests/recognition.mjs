@@ -89,3 +89,25 @@ test('问答更正撤回别称归属，重用问句动词时只替换姓名', as
   assert.doesNotMatch(output, /阿林|阿杨|吴刚/u);
   assert.match(output, /实际是【[^】]+】。\n问：谁领了单据？\n答：【吴某】领的。/u);
 });
+
+test('按行政区和机关层级识别全称并保留独立公共机构', async () => {
+  const text = '依据公安部发布的说明。材料移交郑州市公安局管城分局。';
+  const [rows] = await buildPlan(text, {}, async () =>
+    predictions(text, [['公安部', 'organization'], ['郑州市', 'location']])
+      .map(({start, end, label}) => ({
+        start, end, kind: label === 'location' ? 'address' : label, reason: 'Otter', priority: 60,
+      })));
+  assert.deepEqual(rows.map(({original, type}) => [original, type]), [['郑州市公安局管城分局', 'organization']]);
+  assert.match(render(text, rows).output, /^依据公安部发布的说明。材料移交【[^】]+】。$/u);
+});
+
+test('编号列和案号附号按原文位置识别，保留庭号和序号', async () => {
+  const text = '序号\t房屋信息\t楼栋号\t车位号\t法庭\n1\t2-3-504、601\tA栋\tB-209\t本院第八法庭\n'
+    + '案号：（2025）豫0102民初123号之二\n统一社会信用代码91000000MA0REDAC1X';
+  const [rows] = await buildPlan(text);
+  assert.deepEqual(rows.map(({original, type}) => [original, type]), [
+    ['2-3-504', 'address'], ['601', 'address'], ['A栋', 'address'], ['B-209', 'address'],
+    ['（2025）豫0102民初123号之二', 'case_number'], ['91000000MA0REDAC1X', 'uscc'],
+  ]);
+  assert.match(render(text, rows).output, /\n1\t.*本院第八法庭\n/u);
+});

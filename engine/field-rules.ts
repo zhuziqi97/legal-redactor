@@ -61,6 +61,7 @@ export const FIELD_TYPES: Record<string, string> = {
   "户籍地址": "address",
   "居住地址": "address",
   "住所": "address",
+  "住所地": "address",
   "微信号": "social",
   "微信账号": "social",
   "微信昵称": "nickname",
