@@ -222,3 +222,41 @@ test('重开后按项目地域继续编号，并跳过人工与零位置代号',
   assert.equal((await runWorkspace(next.state, {op: 'output', materialId: '1'})).output, output);
   assert.equal(next.state.groups[city.id].code, '【T1市】');
 });
+
+test('v1 项目旧案号继续导出，只有重新识别该行才将附号纳入', async t => {
+  const path = await localProject(t);
+  const base = '（2025）豫0102民初123号';
+  const original = `姓名：张甲\n\n案号：${base}之二\n\n材料已核对。`;
+  const oldOutput = '姓名：【当事人甲】\n\n案号：【初审案号】之二\n\n材料已核对。';
+  const previous = {
+    materials: [{id: '1', title: '旧材料', text: original, sourcePath: null, relations: [], decisions: [
+      {id: 1, start: 3, end: 5, original: '张甲', action: 'replace', replacement: '【当事人甲】', group: 'person',
+        type: 'person', reason: '人工订正', object: null, name: '张甲'},
+      {id: 2, start: original.indexOf(base), end: original.indexOf(base) + base.length, original: base,
+        action: 'replace', replacement: '【初审案号】', group: 'case', type: 'case_number',
+        reason: '案号', object: null, name: null},
+    ], exported: oldOutput}],
+    groups: {
+      person: {id: 'person', type: 'person', code: '【当事人甲】', primary: '张甲'},
+      case: {id: 'case', type: 'case_number', code: '【初审案号】', primary: base},
+    },
+    activeId: '1', revision: 0, nextMaterialId: 2, undo: null,
+  };
+  await writeProject(path, previous);
+  const {state} = await readProject(path);
+  assert.equal((await runWorkspace(state, {op: 'output', materialId: '1'})).output, oldOutput);
+
+  const text = original.replace('已核对', '已复核');
+  const local = await runWorkspace(state, {op: 'reviseMaterial', materialId: '1', revision: 1, text});
+  assert.equal((await runWorkspace(local.state, {op: 'output', materialId: '1'})).output, oldOutput.replace('已核对', '已复核'));
+  assert.equal(local.state.groups.case.code, '【初审案号】');
+  await writeProject(path, local.state);
+  const reopened = await readProject(path);
+  assert.deepEqual(reopened.state.materials[0].sourceValues, local.state.materials[0].sourceValues);
+
+  const edited = await runWorkspace(reopened.state, {op: 'reviseMaterial', materialId: '1', revision: 1,
+    text: text.replace('之二', '之三')});
+  const {output} = await runWorkspace(edited.state, {op: 'output', materialId: '1'});
+  assert.match(output, /^姓名：【当事人甲】\n\n案号：【[^】]+】\n\n材料已复核。$/u);
+  assert.equal(edited.view.current.items.find(row => row.type === 'case_number').original, base + '之三');
+});

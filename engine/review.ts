@@ -1,4 +1,5 @@
-import { checkSourceValues, labels, render, reviewDecisions, validCode, type Action } from './pipeline.js';
+import { readFields } from './fields.js';
+import { checkSourceValues, labels, render, reviewDecisions, sourceValues, validCode, type Action } from './pipeline.js';
 import { length, slice, trim } from './text.js';
 import type { Issue, Material, Row } from './workspace-types.js';
 
@@ -78,7 +79,7 @@ export function checkedOutput(doc: Material, decisionsOnly: boolean): {issues: I
   }));
   if (pending.length) return {issues: pending};
   try {
-    checkSourceValues(doc.text, rows);
+    checkSourceValues(doc.text, rows, doc.sourceValues ?? sourceValues(readFields(doc.text, true)));
   } catch (error) {
     const message = (error as Error).message;
     const match = /原文 (\d+)–(\d+)/u.exec(message);

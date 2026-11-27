@@ -1,5 +1,5 @@
 import type { Relation } from './context.js';
-import type { Action, Decision } from './pipeline.js';
+import type { Action, Decision, SourceValue } from './pipeline.js';
 
 export type Row = Decision & {
   id: number; group: string | null; aliasType?: string; match?: [kind: string, value: string]; sourceDefinitions?: number[];
@@ -9,6 +9,7 @@ export type PreviousReview = {text: string; decisions: Row[]; relations: Relatio
 export type Material = {
   id: string; title: string; text: string; sourcePath: string | null;
   decisions: Row[] | null; relations: Relation[]; revision?: number;
+  sourceValues?: SourceValue[];
   exported?: string; previousOutput?: string; previousReview?: PreviousReview;
 };
 export type Workspace = {

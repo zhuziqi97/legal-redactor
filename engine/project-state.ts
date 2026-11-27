@@ -6,7 +6,7 @@ import type { Group, Material, PreviousReview, Row, Workspace } from './workspac
 const format = 'io.github.zhuziqi97.legalredactor.project';
 const schemaVersion = 1;
 
-type ProjectMaterialV1 = Pick<Material, 'id' | 'title' | 'text' | 'decisions' | 'relations' | 'exported' | 'previousReview'>;
+type ProjectMaterialV1 = Pick<Material, 'id' | 'title' | 'text' | 'decisions' | 'relations' | 'exported' | 'previousReview' | 'sourceValues'>;
 type ProjectFileV1 = {
   format: typeof format;
   schemaVersion: typeof schemaVersion;
@@ -25,8 +25,8 @@ export function encodeProject(state: Workspace): ProjectFileV1 {
     format,
     schemaVersion,
     workspace: {
-      materials: materials.map(({ id, title, text, decisions, relations, exported, previousReview }) =>
-        ({ id, title, text, decisions, relations, exported, previousReview })),
+      materials: materials.map(({ id, title, text, decisions, relations, exported, previousReview, sourceValues }) =>
+        ({ id, title, text, decisions, relations, exported, previousReview, sourceValues })),
       groups,
       activeId,
       nextMaterialId,
@@ -126,7 +126,17 @@ export function decodeProject(value: unknown): Workspace {
     check(typeof title === 'string' && title.trim().length && typeof text === 'string'
       && (exported === undefined || typeof exported === 'string'), '材料内容');
     validateReview(doc, text, groups);
+    if (doc.sourceValues !== undefined) {
+      const size = length(text);
+      check(Array.isArray(doc.sourceValues) && doc.sourceValues.every(entry => {
+        const {start, end, kind} = record(entry, '原文值范围');
+        return typeof start === 'number' && Number.isSafeInteger(start) && start >= 0
+          && typeof end === 'number' && Number.isSafeInteger(end) && start < end && end <= size
+          && typeof kind === 'string' && Object.hasOwn(labels, kind);
+      }), '原文值范围');
+    }
     const material: Material = { id, title, text, sourcePath: null, revision: 1, exported,
+      sourceValues: doc.sourceValues as Material['sourceValues'],
       decisions: doc.decisions as Row[] | null, relations: doc.relations as Material['relations'] };
     if (doc.previousReview !== undefined) {
       const previous = record(doc.previousReview, '历史复核');

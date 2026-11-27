@@ -398,3 +398,31 @@ test('移除别称依据后，后文已有别称回到待核，机构全称仍�
   assert.equal(view.pending[0].itemId, alias.id);
   assert.equal(view.pending[0].original, '远山公司');
 });
+
+test('局部修订复核依赖已登记姓名的后文，保留未受影响的人工代号', async () => {
+  const w = workspace();
+  const text = '姓名：林榆宁\n姓名：张甲\n\n林榆宁表示已提交。\n\n说明完毕。';
+  const at = text.lastIndexOf('林榆宁');
+  const predicted = hit(at, at + 3, 'organization', 'Otter', 60);
+  const {view: added} = await w.run({op: 'add', text, title: '合成笔录'});
+  const {view: before} = await w.run({op: 'scan', materialId: added.current.id}, () => [predicted]);
+  const entry = before.current.items.find(row => row.start === at);
+  assert.equal(entry.reason, '全文登记姓名与人物陈述');
+  assert.equal(entry.type, 'person');
+  const group = before.groups.find(item => item.primary === '张甲');
+  await w.apply({mode: 'rename', groupId: group.id, code: '人工甲'});
+  const windows = [];
+  const scan = (source, free) => {
+    windows.push(...free.map(({start, end}) => source.slice(start, end)));
+    return [];
+  };
+  const {view: stable} = await w.run({op: 'reviseMaterial', materialId: '1', revision: before.current.revision,
+    text: text.replace('完毕', '已确认')}, scan);
+  assert.equal(stable.current.items.find(row => row.id === entry.id).replacement, entry.replacement);
+  assert.equal(stable.current.items.find(row => row.original === '张甲').replacement, '【人工甲】');
+  const {view: changed} = await w.run({op: 'reviseMaterial', materialId: '1', revision: stable.current.revision,
+    text: stable.current.text.replace('姓名：林榆宁', '备注：未登记')}, scan);
+  assert.equal(changed.current.items.find(row => row.id === entry.id).action, 'review');
+  assert.equal(changed.current.items.find(row => row.original === '张甲').replacement, '【人工甲】');
+  assert.ok(windows.every(value => !value.includes('表示已提交')));
+});

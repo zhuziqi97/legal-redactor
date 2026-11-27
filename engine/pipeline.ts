@@ -1,7 +1,7 @@
 import { allSpans, answerNames, choose, definitions, identityEvidence, namesInStatements, type Relation } from './context.js';
 import { PERSON_ALIAS } from './context-rules.js';
 import { availableDisplay, displayBase, projectAreas } from './display.js';
-import { NUMBER_KINDS, PERSON_VALUE, TITLE } from './field-rules.js';
+import { NUMBER_KINDS, PERSON_VALUE, ROLE, TITLE } from './field-rules.js';
 import { administrativeParts, genericOrganization, hit, languageRules, organizationValue, readFields, referenceLead,
   streetAddresses, typicalName, type Hit, type Layout, type Passage } from './fields.js';
 import { departmentEnd, locationBoundaries, parkingSites } from './locations.js';
@@ -63,6 +63,7 @@ const completeMobile = rule('\\+\\d{8,15}|1[3-9]\\d{9}|0\\d{9,11}|[48]00\\d{7}')
 const completeAccount = rule('\\d{8,22}');
 export const validCode = rule('【[^【】\\r\\n]{1,40}】');
 const namedKinds = new Set(['person', 'organization', 'address']);
+const partyRoles = new Set(['申请人', '被申请人', '上诉人', '被上诉人', '被告人']);
 
 const issuedTitle = rule("《(?<issuer>[^《》]{1,30}?(?:政府|委员会|法院|检察院|部|厅|局|办公室))关于[^《》]+的(?:通知|公告|通告)》");
 const maskedBranch = rule("(?:某+|[×＊*Xx]+)(?:分行|支行|分公司|分院|分校)");
@@ -104,7 +105,8 @@ function filterCandidates(text: string, predicted: Hit[], registeredOrgs: Set<st
         && maskedPlate.fullmatch(value) && maskedTerm.test(value)) return [];
     if (kind === 'organization' && maskedBranch.match(text, end)
         && publicForms.has(value.replace(/股份有限公司$/u, ''))) return [];
-    if ((kind === 'person' || kind === 'nickname') && (unnamedPerson.fullmatch(value) || courtesyName.fullmatch(value))) return [];
+    if ((kind === 'person' || kind === 'nickname')
+        && (partyRoles.has(value) || ROLE.fullmatch(value) || unnamedPerson.fullmatch(value) || courtesyName.fullmatch(value))) return [];
     if (kind === 'organization' || kind === 'address') {
       if (genericOrganization.fullmatch(value) || referenceLead.match(value) || genericPlace.fullmatch(value)
           || titles.some(([a, b]) => a <= start && end <= b)
@@ -235,7 +237,7 @@ class Objects {
       if (!this.keys.has(lookup)) this.keys.set(lookup, key);
     }
     this.areas = allocation.areas ? new Map(allocation.areas) : projectAreas(Object.values(this.records));
-    this.used = new Set([...allocation.reserved ?? [], ...Object.values(this.records).map(item => item.replacement), ...this.names.values()]);
+    this.used = new Set([...(allocation.reserved ?? []), ...Object.values(this.records).map(item => item.replacement), ...this.names.values()]);
   }
 
   allocate(kind: string, value: string, parts = new Map<string, string>()) {
@@ -487,9 +489,15 @@ export function reviewDecisions<Row extends Decision>(text: string, relations: R
   return {rows, links};
 }
 
-export function checkSourceValues(text: string, rows: Decision[]) {
-  const numbers = choose(readFields(text).hits).filter(item => item.priority >= 86 &&
-    (NUMBER_KINDS.has(item.kind) || ['case_number', 'social', 'email', 'uscc'].includes(item.kind)));
+export type SourceValue = Pick<Hit, 'start' | 'end' | 'kind'>;
+
+export function sourceValues(layout: Layout): SourceValue[] {
+  return choose(layout.hits).filter(item => item.priority >= 86 &&
+    (NUMBER_KINDS.has(item.kind) || ['case_number', 'social', 'email', 'uscc'].includes(item.kind)))
+    .map(({start, end, kind}) => ({start, end, kind}));
+}
+
+export function checkSourceValues(text: string, rows: Decision[], numbers: SourceValue[]) {
   const ordered = [...rows].sort((a, b) => a.start - b.start);
   let index = 0;
   for (const value of numbers) {

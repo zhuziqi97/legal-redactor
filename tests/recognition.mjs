@@ -111,3 +111,22 @@ test('编号列和案号附号按原文位置识别，保留庭号和序号', as
   ]);
   assert.match(render(text, rows).output, /\n1\t.*本院第八法庭\n/u);
 });
+
+test('确认的住所字段覆盖路名之后的连续具名楼座与房号', async () => {
+  const address = '广东省广州市天河区石牌东街金桐中心A座22025号';
+  const text = `住所：${address}。统一社会信用代码：91000000MA0REDAC1X。`;
+  const [rows] = await buildPlan(text, {}, async () => [
+    {start: 3, end: 19, kind: 'address', reason: 'Otter', priority: 60},
+  ]);
+  assert.deepEqual(rows.map(row => row.original), [address, '91000000MA0REDAC1X']);
+});
+
+test('即使段落中重复出现，诉讼角色本身也不形成姓名映射', async () => {
+  const text = '被申请人提交材料。申请人称：收到回执。';
+  const start = text.indexOf('申请人称');
+  const [rows] = await buildPlan(text, {}, async () => [
+    {start: 1, end: 4, kind: 'person', reason: 'Otter', priority: 60},
+    {start, end: start + 3, kind: 'person', reason: 'Otter', priority: 60},
+  ]);
+  assert.equal(render(text, rows).output, text);
+});

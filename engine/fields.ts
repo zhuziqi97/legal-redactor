@@ -191,14 +191,14 @@ function* addressParts(text: string, start: number, end: number): Generator<[ann
   yield [false, depth ? opened + 1 : cursor, end];
 }
 
-function addressValues(text: string, start: number, end: number, label: string, insideNote = false): Hit[] {
+function addressValues(text: string, start: number, end: number, label: string, legacy: boolean, insideNote = false): Hit[] {
   const rows: Hit[] = [];
   for (const [annotation, a, b] of addressParts(text, start, end)) {
     const last = rows.at(-1);
     if (annotation) {
       if (last?.kind === 'address' && !trim(slice(text, last.end, a)) && R.ADDRESS_DETAIL.fullmatch(trim(slice(text, a + 1, b - 1)))) {
         rows[rows.length - 1] = hit(last.start, b, 'address', label, 100);
-      } else rows.push(...addressValues(text, a + 1, b - 1, label, true));
+      } else rows.push(...addressValues(text, a + 1, b - 1, label, legacy, true));
       continue;
     }
     const piece = slice(text, a, b);
@@ -212,8 +212,11 @@ function addressValues(text: string, start: number, end: number, label: string, 
     if (route) lo = route.end();
     let needsContext = false;
     const road = R.ROAD_VALUE.match(text, lo, hi);
+    const parsed = !legacy && !road && R.AREA.match(text, lo, hi) ? addressComponentEnd(text, lo, hi) : lo;
     const site = road ? undefined : R.PREMISE.match(text, lo, hi);
-    if (road || site) hi = deliveryEnd(text, (road ?? site)!.end(), hi);
+    if (road) hi = deliveryEnd(text, road.end(), hi);
+    else if (parsed > lo && (parsed === hi || !/(?:省|市|县|区|镇|乡|村|街道)$/u.test(slice(text, lo, parsed)))) hi = parsed;
+    else if (site) hi = deliveryEnd(text, site.end(), hi);
     else if (!(R.ADDRESS_DETAIL.fullmatch(slice(text, lo, hi)) || (!insideNote && a === start) || route || R.ADDRESS_CONTINUATION.fullmatch(slice(text, lo, hi)))) continue;
     else {
       const stop = R.ADDRESS_BREAK.search(text, lo, hi);
@@ -302,11 +305,19 @@ function identifierValues(text: string, start: number, end: number, kind: string
   return [...new Map(rows.map(row => [keyOf(row), row])).values()].sort((a, b) => a.start - b.start || b.priority - a.priority || b.end - a.end);
 }
 
-function fieldValues(text: string, start: number, end: number, label: string, protectedRows: Hit[]) {
+function fieldValues(text: string, start: number, end: number, label: string, protectedRows: Hit[], legacy: boolean) {
   const kind = R.FIELD_TYPES[label];
   if (R.SIGNATURE_LABELS.has(label)) return signatureValues(text, start, end, label);
   if (kind in R.VALUE_PATTERNS || kind === 'case_number') return identifierValues(text, start, end, kind, label, 110, protectedRows);
   if (label === '房号') {
+    const value = slice(text, start, end);
+    if (legacy) {
+      const first = start + length(value) - length(trim(value, undefined, 'left'));
+      const unit = propertyUnit.match(text, first, end);
+      if (!unit) return [];
+      const stop = propertyDetail.match(text, unit.end(), end)?.end() ?? unit.end();
+      return [hit(first, first + length(trim(slice(text, first, stop), undefined, 'right')), kind, label, 102)];
+    }
     return [...partyList.finditer(text, start, end)].flatMap(atom => {
       const value = trim(atom.value);
       const at = atom.start() + length(atom.value) - length(trim(atom.value, undefined, 'left'));
@@ -314,7 +325,7 @@ function fieldValues(text: string, start: number, end: number, label: string, pr
       return stop ? [hit(at, at + stop, kind, label, 102)] : [];
     });
   }
-  if (kind === 'address') return addressValues(text, start, end, label);
+  if (kind === 'address') return addressValues(text, start, end, label, legacy);
   const row = scalarField(text, start, end, label);
   return row ? [row] : [];
 }
@@ -356,7 +367,6 @@ function cellsOf(line: string, offset: number, delim: string | null): Span[] {
 
 const numericHeader = rule('\\d(?:[ \\t.-]*\\d){2}');
 const fourDigits = rule('\\d{4}');
-const hasLabels = (values: string[]) => values.filter(value => Object.hasOwn(R.FIELD_TYPES, value) || sequenceCaptions.has(value)).length >= 2;
 const sequenceCaptions = new Set(['序号', '债权编号', '债权人编号']);
 const partyCaptions = new Map([['债权人', '债权人名称'], ['债权人姓名或名称', '债权人名称'], ['债权人姓名', '姓名'], ['职工姓名', '姓名']]);
 const amountCaption = rule('(?:金额|总额|余额)(?:[（(](?:人民币|万)?元[）)])?$');
@@ -395,28 +405,33 @@ function propertyEnd(value: string) {
   return Math.max(end, roomCode.match(value)?.end() ?? 0, detail?.end() ?? 0);
 }
 
-function columnLabels(values: string[], delim: string | null) {
+function columnLabels(values: string[], delim: string | null, legacy: boolean) {
   const numbered = delim === '  ' && sequenceCaptions.has(values[0]);
   return values.map(value => {
     const compact = value.replace(/\s/gu, '');
     if (amountCaption.search(compact) || amountColumns.has(compact)) return '金额';
     if (numbered && ['名称', '主体名称'].includes(compact)) return '债权人名称';
-    if (endsAny(compact, ['房号', '房屋坐落', '（房号）', '(房号)']) || compact === '房屋信息') return '房号';
-    if (compact.endsWith('姓名')) return '姓名';
-    if (['法院', '受理法院'].includes(compact)) return '单位名称';
+    if (!legacy) {
+      if (endsAny(compact, ['房号', '房屋坐落', '（房号）', '(房号)']) || compact === '房屋信息') return '房号';
+      if (compact.endsWith('姓名')) return '姓名';
+      if (['法院', '受理法院'].includes(compact)) return '单位名称';
+    }
     return partyCaptions.get(compact) ?? (Object.hasOwn(R.FIELD_TYPES, compact) || sequenceCaptions.has(compact) ? compact : value);
   });
 }
 
-function isHeader(values: string[], columns: string[], text: string, following: number, delimiter: string | null) {
-  if (!hasLabels(values) || values.some(value => numericHeader.test(value))) return false;
+function isHeader(values: string[], columns: string[], text: string, following: number, delimiter: string | null, legacy: boolean) {
+  const typed = (label: string) => Object.hasOwn(R.FIELD_TYPES, label) && (!legacy || label !== '住所地');
+  if (values.filter(value => typed(value) || !legacy && sequenceCaptions.has(value)).length < 2
+      || values.some(value => numericHeader.test(value))) return false;
+  const known = values.every(value => typed(value) || R.HEADER_NAMES.has(value)
+      || sequenceCaptions.has(value) || columns.includes(value));
+  if (legacy && known) return true;
   const start = blankRecords.match(text, following)?.end() ?? following;
   const record = delimiter === ',' ? csvRecord(text, start) : undefined;
   const cells = record?.[0] ?? cellsOf(slice(text, start, R.RECORD_END.search(text, start)?.start()), start, delimiter);
   if (cells.length !== values.length) return false;
-  if (sequenceCaptions.has(values[0]) && digits(trim(slice(text, ...cells[0])))) return true;
-  if (values.every(value => Object.hasOwn(R.FIELD_TYPES, value) || R.HEADER_NAMES.has(value)
-      || sequenceCaptions.has(value) || columns.includes(value))) return true;
+  if (known || !legacy && sequenceCaptions.has(values[0]) && digits(trim(slice(text, ...cells[0])))) return true;
   return cells.some(([a, b], index) => {
     const value = trim(slice(text, a, b));
     const kind = R.FIELD_TYPES[values[index]];
@@ -475,11 +490,12 @@ function fieldEnd(line: string, start: number, limit: number, label: string) {
   return delimiter.search(line, start, limit)?.start() ?? limit;
 }
 
-export function readFields(source: string): Layout {
+export function readFields(source: string, legacyCoverage = false): Layout {
   const text = translateWidth(source);
   const total = length(text);
   const layout: Layout = {hits: [], free: [], sections: [], answers: [], speakers: new Map(), courtReplies: []};
   const {hits, free} = layout;
+  const fieldLabel = legacyCoverage ? R.LEGACY_LABEL : R.LABEL;
   const protectedRows = [...R.DATE_AMOUNT.finditer(text)].map(match => hit(...match.span(), 'keep', '日期、时间或金额', 108));
   protectedRows.push(...[..._EMAIL.finditer(text)].map(match => hit(...match.span(), 'email', '邮箱', 109)));
   protectedRows.sort((a, b) => a.start - b.start);
@@ -520,14 +536,14 @@ export function readFields(source: string): Layout {
       line = slice(text, offset, end);
     } else cells = cellsOf(line, offset, delim);
     let values = cells.map(([a, b]) => trim(slice(text, a, b)));
-    let labels = columnLabels(values, delim);
+    let labels = columnLabels(values, delim, legacyCoverage);
     if (columns.length && (afterBlank || cells.length !== columns.length)) {
       const candidate = separator(line);
       if (candidate && candidate !== delim) {
         const candidateCells = cellsOf(line, offset, candidate);
         const candidateValues = candidateCells.map(([a, b]) => trim(slice(text, a, b)));
-        const candidateLabels = columnLabels(candidateValues, candidate);
-        if (isHeader(candidateLabels, columns, text, following, candidate)) {
+        const candidateLabels = columnLabels(candidateValues, candidate, legacyCoverage);
+        if (isHeader(candidateLabels, columns, text, following, candidate, legacyCoverage)) {
           [delim, cells, values, labels] = [candidate, candidateCells, candidateValues, candidateLabels];
         }
       }
@@ -538,7 +554,7 @@ export function readFields(source: string): Layout {
       offset = following;
       continue;
     }
-    const newHeader = isHeader(labels, columns, text, following, delim);
+    const newHeader = isHeader(labels, columns, text, following, delim, legacyCoverage);
     const numberedTable = columns.some(label => sequenceCaptions.has(label));
     const totals = numberedTable && totalsCaption.fullmatch(values[0] ?? '')
       && values.slice(1).every(value => R.EMPTY.has(value) || R.AMOUNT_FIELD.fullmatch(value));
@@ -583,17 +599,18 @@ export function readFields(source: string): Layout {
         const [a, b] = cells[i];
         const value = values[i];
         if (!value || blankValue.fullmatch(value)) continue;
-        if (label === '法庭' && scheduleRoom.fullmatch(value)) {
+        if (!legacyCoverage && label === '法庭' && scheduleRoom.fullmatch(value)) {
           hits.push(hit(a, b, 'keep', '庭期表庭号', 112));
           continue;
         }
-        if (propertyColumns.get(label)?.fullmatch(value)) {
+        if (!legacyCoverage && propertyColumns.get(label)?.fullmatch(value)) {
           const at = a + length(slice(text, a, b)) - length(trim(slice(text, a, b), undefined, 'left'));
           hits.push(hit(at, at + length(value), 'address', '独立列内的楼栋或车位编号', 102));
           continue;
         }
         const typed = numberedTable && ['债权人名称', '姓名'].includes(label) ? tableParties(text, a, b, label === '姓名')
-          : label in R.FIELD_TYPES ? fieldValues(text, a, b, label, protectedRows) : [];
+          : label in R.FIELD_TYPES && !(legacyCoverage && label === '住所地')
+            ? fieldValues(text, a, b, label, protectedRows, legacyCoverage) : [];
         const context = label ? `${label}：` : '';
         if (typed.length) {
           hits.push(...typed);
@@ -612,7 +629,7 @@ export function readFields(source: string): Layout {
     } else {
       columns = [];
       const bodyStart = messageStart - offset;
-      const fields = [...R.LABEL.finditer(line, bodyStart), ...R.INLINE_IDENTIFIER.finditer(line, bodyStart)]
+      const fields = [...fieldLabel.finditer(line, bodyStart), ...R.INLINE_IDENTIFIER.finditer(line, bodyStart)]
         .sort((a, b) => a.start() - b.start());
       let context = question && answer ? slice(text, ...question) : '';
       if (continuation && !speaker && !turn && !heading) {
@@ -621,7 +638,7 @@ export function readFields(source: string): Layout {
         const pattern = kind === 'case_number' ? R.CASE_VALUE : R.VALUE_PATTERNS[kind];
         const limit = fieldEnd(line, first, fields[0]?.start() ?? length(line), continuation);
         if (first < limit && (!pattern || pattern.match(line, first, limit))) {
-          hits.push(...fieldValues(text, offset + first, offset + limit, continuation, protectedRows));
+          hits.push(...fieldValues(text, offset + first, offset + limit, continuation, protectedRows, legacyCoverage));
           context ||= `${continuation}：`;
         }
       }
@@ -668,7 +685,7 @@ export function readFields(source: string): Layout {
         const limit = fields[index + 1]?.start() ?? length(line);
         const label = field.group(1)!;
         if (index === fields.length - 1 && !trim(slice(line, field.end(), limit))) pendingLabel = label;
-        hits.push(...fieldValues(text, offset + field.end(), offset + fieldEnd(line, field.end(), limit, label), label, protectedRows));
+        hits.push(...fieldValues(text, offset + field.end(), offset + fieldEnd(line, field.end(), limit, label), label, protectedRows, legacyCoverage));
       }
       const prose = !(speaker || turn || fields.length || heading || signature || continuation);
       const previous = free.at(-1);
@@ -714,8 +731,10 @@ export function readFields(source: string): Layout {
   }
   for (const match of R.TAIL.finditer(text)) hits.push(hit(...match.span(1), 'tail', '尾号字段', 99));
   hits.push(...protectedRows);
-  for (const match of inlineCredit.finditer(text)) {
-    if (_USCC.fullmatch(match.group(1)!)) hits.push(hit(...match.span(1), 'uscc', '统一社会信用代码', 112));
+  if (!legacyCoverage) {
+    for (const match of inlineCredit.finditer(text)) {
+      if (_USCC.fullmatch(match.group(1)!)) hits.push(hit(...match.span(1), 'uscc', '统一社会信用代码', 112));
+    }
   }
   for (const match of _LABELED_USCC.finditer(text)) {
     const value = match.group(1)!;
@@ -730,8 +749,10 @@ export function readFields(source: string): Layout {
       hits.push(hit(match.start, match.end, kind, match.notes || match.category, 86));
     }
   }
-  for (const item of hits) {
-    if (item.kind === 'case_number') item.end = caseSuffix.match(text, item.end)?.end() ?? item.end;
+  if (!legacyCoverage) {
+    for (const item of hits) {
+      if (item.kind === 'case_number') item.end = caseSuffix.match(text, item.end)?.end() ?? item.end;
+    }
   }
   return layout;
 }

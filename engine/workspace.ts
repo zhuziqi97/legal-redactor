@@ -2,7 +2,7 @@ import { overlap, type Relation } from './context.js';
 import { availableDisplay, displayBase, projectAreas } from './display.js';
 import { NUMBER_KINDS, PERSON_VALUE, TITLE } from './field-rules.js';
 import { hit, readFields, typicalName, type Hit, type Layout } from './fields.js';
-import { buildPlan, completeNumber, labels, normalized, reviewDecisions, validCode, type Action, type Scan } from './pipeline.js';
+import { buildPlan, completeNumber, labels, normalized, reviewDecisions, sourceValues, validCode, type Action, type Scan } from './pipeline.js';
 import { amend, checkedOutput, displayCode, requireDecisions, viewMaterial, type MaterialItem } from './review.js';
 import { project, projectRelation, revisionBlocks, revisionRanges } from './revision.js';
 import { bisect, indexOf, keyOf, length, lineNumber, rule, slice, trim, type Span } from './text.js';
@@ -421,7 +421,8 @@ function settleAliases(state: Workspace, newId: NewId) {
         let group = independent.get(key);
         if (!group) {
           const matchId = row.type === 'person' ? known.get(keyOf('person', row.original)) : undefined;
-          if (matchId) group = state.groups[matchId];
+          const match = matchId ? state.groups[matchId] : undefined;
+          if (match && !doc.text.includes(match.code)) group = match;
           else {
             const allocated = allocateCode(row.type, row.original, used, areas);
             used.add(allocated.code);
@@ -437,18 +438,37 @@ function settleAliases(state: Workspace, newId: NewId) {
   }
 }
 
-function collectRevision(old: string, text: string, layout: Layout) {
-  const blocks = [...revisionBlocks(old, text)];
-  const ranges = revisionRanges(text, blocks, readFields(old), layout);
+function collectRevision(doc: Material, text: string, layout: Layout) {
+  const blocks = [...revisionBlocks(doc.text, text)];
+  const ranges = revisionRanges(text, blocks, readFields(doc.text), layout);
   const affects = ({start, end}: {start: number; end: number}) => ranges.some(([a, b]) => a < end && start < b);
-  return {blocks, affects, layout};
+  // Existing coverage follows unchanged text. Newly analyzed ranges use the current rules.
+  const previousValues = doc.sourceValues ?? sourceValues(readFields(doc.text, true));
+  const values = previousValues.flatMap(item => {
+    const moved = project(blocks, item.start, item.end);
+    if (!moved?.[2]) return [];
+    const value = {...item, start: moved[0], end: moved[1]};
+    return affects(value) ? [] : [value];
+  });
+  values.push(...sourceValues(layout).filter(affects));
+  values.sort((a, b) => a.start - b.start);
+  return {blocks, affects, layout, values};
 }
 
 function isManual(row: Row) {
   return row.reason === '人工订正' || row.reason === revisedReview;
 }
 
-const documentOccurrenceReasons = new Set(['全文村名', '全文全称', '全文姓名', '全文姓名边界']);
+const documentOccurrenceReasons = new Set([
+  '全文村名', '全文全称', '全文姓名', '全文姓名边界', '全称与直属部门', '全文登记姓名与人物陈述',
+]);
+
+function priorModelKind(row: Row) {
+  if (row.reason === 'Otter') return row.type;
+  if (row.reason === '具名机构用作地点') return 'address';
+  if (row.reason === '全文登记姓名与人物陈述') return 'organization';
+  return undefined;
+}
 
 function relationKey(link: Relation) {
   return keyOf(link.type, link.start, link.end, link.subject_start, link.object_start, link.name, link.value);
@@ -479,13 +499,17 @@ async function scanMaterial(state: Workspace, doc: Material, newId: NewId, scan?
     }
   }
   const localScan: Scan | undefined = changes && scan ? async (text, free, known) => [
-    ...[...moved.values()].filter(row => ['Otter', '具名机构用作地点'].includes(row.reason) && !changes.affects(row))
-      .map(row => hit(row.start, row.end, row.reason === '具名机构用作地点' ? 'address' : row.type, 'Otter', 60)),
+    ...[...moved.values()].flatMap(row => {
+      const kind = priorModelKind(row);
+      return kind && !changes.affects(row) ? [hit(row.start, row.end, kind, 'Otter', 60)] : [];
+    }),
     ...await scan(text, free.filter(changes.affects), known),
   ] : scan;
   const areas = areasFor(state);
-  const [raw, objects, relations] = await buildPlan(doc.text, records, localScan, doc.id, names, changes?.layout,
+  const layout = changes?.layout ?? readFields(doc.text);
+  const [raw, objects, relations] = await buildPlan(doc.text, records, localScan, doc.id, names, layout,
     {reserved: used, areas});
+  doc.sourceValues = changes?.values ?? sourceValues(layout);
   const {rows, links: supported} = reviewDecisions(doc.text, relations, raw);
   const retained: Row[] = [];
   const documentUpdates = new Set<(typeof rows)[number]>();
@@ -662,10 +686,14 @@ function transferCheck(state: Workspace) {
     if (!/[\p{N}\p{Script=Latin}@＠]/u.test(raw)) return undefined;
     if (!fields.has(doc)) {
       const byRange = new Map<string, Hit>();
-      for (const hit of readFields(doc.text).hits) {
+      for (const hit of readFields(doc.text, doc.sourceValues === undefined).hits) {
         if (hit.priority < 86 || !identifiers.has(hit.kind)) continue;
         const key = keyOf(hit.start, hit.end);
         if (!byRange.has(key) || byRange.get(key)!.priority < hit.priority) byRange.set(key, hit);
+      }
+      for (const value of doc.sourceValues ?? []) {
+        const key = keyOf(value.start, value.end);
+        if (!byRange.has(key)) byRange.set(key, hit(value.start, value.end, value.kind, '字段', 86));
       }
       fields.set(doc, byRange);
     }
@@ -1160,7 +1188,7 @@ export async function runWorkspace(state: Workspace, request: Request, scan?: Sc
           doc.previousReview = {text: doc.text, decisions: doc.decisions, relations: doc.relations,
             groups: Object.fromEntries(doc.decisions.flatMap(row => row.group ? [[row.group, {...state.groups[row.group]}]] : []))};
         }
-        Object.assign(doc, {text, decisions: null, relations: [], revision: (doc.revision ?? 1) + 1});
+        Object.assign(doc, {text, decisions: null, relations: [], sourceValues: undefined, revision: (doc.revision ?? 1) + 1});
         state.undo = null;
         repairGroups(state, detached);
       }
@@ -1176,7 +1204,7 @@ export async function runWorkspace(state: Workspace, request: Request, scan?: Sc
     if (text === doc.text) return {view: workspaceView(state)};
     const edit = doc.decisions ? {
       previous: {text: doc.text, decisions: doc.decisions, relations: doc.relations, groups: {...state.groups}},
-      changes: collectRevision(doc.text, text, readFields(text)),
+      changes: collectRevision(doc, text, readFields(text)),
     } : undefined;
     doc.text = text;
     await scanMaterial(state, doc, newId, scan, edit);

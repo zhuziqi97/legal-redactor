@@ -99,9 +99,12 @@ export const STRUCTURAL: Record<string, string> = {
   wechat_qq: "social",
   email: "email",
 };
-export const LABEL = rule(
-  "(?<![A-Za-z0-9_])(" + Object.keys(FIELD_TYPES).sort((a, b) => b.length - a.length).join('|') + ")[ \\t　]*[：:]",
+const fieldLabels = (keys: string[]) => rule(
+  "(?<![A-Za-z0-9_])(" + keys.sort((a, b) => b.length - a.length).join('|') + ")[ \\t　]*[：:]",
 );
+const fieldNames = Object.keys(FIELD_TYPES);
+export const LABEL = fieldLabels(fieldNames);
+export const LEGACY_LABEL = fieldLabels(fieldNames.filter(label => label !== '住所地'));
 export const CHAT = rule("^\\s*(?:(?:\\[)?(?:\\d{4}[-/]\\d{1,2}[-/]\\d{1,2}[ T]+)?\\d{1,2}:\\d\\d(?::\\d\\d)?(?:\\])?\\s+)([^：:\\n]{1,32})[：:]");
 export const BARE_CHAT = rule("^\\s*([^：:\\n]{1,24})[：:]");
 export const CHAT_HEADING = rule("^\\s*(?:[【\\[（#]+\\s*)?(?:微信|聊天|通话)(?:记录|节录|摘录|内容)");
