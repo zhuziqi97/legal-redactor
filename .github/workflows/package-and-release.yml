@@ -136,8 +136,6 @@ jobs:
       - name: Prepare Windows resources
         if: runner.os == 'Windows'
         shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
           $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
@@ -151,14 +149,12 @@ jobs:
           foreach ($dll in 'msvcp140.dll','vcruntime140.dll','vcruntime140_1.dll') {
             Copy-Item (Join-Path $crt $dll) release-inputs/crt -ErrorAction Stop
           }
-          gh release download v2.0.0 -R electron/rcedit --pattern rcedit-x64.exe --output release-inputs/rcedit-x64.exe
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Assemble and verify the release archive
         run: |
           set -euo pipefail
           args=("$TARGET" --inputs release-inputs --staging staging --model release-model)
           if [[ "$TARGET" == windows ]]; then
-            args+=(--windows-crt release-inputs/crt --windows-rcedit release-inputs/rcedit-x64.exe)
+            args+=(--windows-crt release-inputs/crt)
           fi
           python scripts/stage-portable.py "${args[@]}"
           name="$PACKAGE_DIRECTORY"

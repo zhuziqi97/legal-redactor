@@ -6,7 +6,6 @@ from pathlib import Path
 import plistlib
 import shutil
 import subprocess
-import sys
 from tempfile import TemporaryDirectory
 from zipfile import ZipFile
 
@@ -25,12 +24,9 @@ def unpack_zip(archive, destination):
                 (destination / member.filename).chmod(mode)
 
 
-def set_windows_icon(folder, executable, rcedit):
-    command = [str(rcedit.resolve())]
-    if sys.platform != "win32":
-        command.insert(0, "wine")
-    icon = r"resources\app\dist\legal-redactor-icon.ico"
-    subprocess.run([*command, executable, "--set-icon", icon], cwd=folder, check=True)
+def set_windows_icon(folder, executable):
+    icon = folder / "resources" / "app" / "dist" / "legal-redactor-icon.ico"
+    subprocess.run(["node", PROJECT / "scripts" / "set-windows-icon.mjs", folder / executable, icon], check=True)
 
 
 def stage_mac_bundle(archive, folder, version):
@@ -83,7 +79,7 @@ def stage_docx_dependencies(app):
                 raise ValueError(f"{package} has an unlocked dependency: {name}")
 
 
-def stage(target, inputs, staging, model, windows_crt, windows_rcedit):
+def stage(target, inputs, staging, model, windows_crt):
     metadata = json.loads((PROJECT / "package.json").read_text(encoding="utf-8"))
     spec = TARGETS[target]
     platform, arch, token_abi = spec["electron"], spec["arch"], spec["token_abi"]
@@ -112,7 +108,7 @@ def stage(target, inputs, staging, model, windows_crt, windows_rcedit):
     for path in ("dist", "build"):
         shutil.copytree(PROJECT / path, app / path)
     if target == "windows":
-        set_windows_icon(folder, executable, windows_rcedit)
+        set_windows_icon(folder, executable)
     node_modules = app / "node_modules"
     native = PROJECT / "node_modules"
     shutil.copytree(native / "@zip.js" / "zip.js", node_modules / "@zip.js" / "zip.js")
@@ -163,14 +159,10 @@ def main():
     parser.add_argument("--staging", required=True, type=Path)
     parser.add_argument("--model", required=True, type=Path)
     parser.add_argument("--windows-crt", type=Path)
-    parser.add_argument("--windows-rcedit", type=Path, help="Path to Electron rcedit-x64.exe (uses Wine outside Windows)")
     args = parser.parse_args()
-    if args.target == "windows":
-        if args.windows_crt is None:
-            parser.error("--windows-crt is required for Windows")
-        if args.windows_rcedit is None or not args.windows_rcedit.is_file():
-            parser.error("--windows-rcedit must point to rcedit-x64.exe for Windows")
-    print(stage(args.target, args.inputs, args.staging, args.model, args.windows_crt, args.windows_rcedit))
+    if args.target == "windows" and args.windows_crt is None:
+        parser.error("--windows-crt is required for Windows")
+    print(stage(args.target, args.inputs, args.staging, args.model, args.windows_crt))
 
 
 if __name__ == "__main__":
