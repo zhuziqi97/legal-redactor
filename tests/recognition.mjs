@@ -186,3 +186,31 @@ test('保留原文声明的机构代称和匿名分支，仍识别具名商号',
   assert.ok(output.startsWith(`${published}提交说明。B银行复函。`));
   assert.ok(output.includes(`${parent}${branch}登记。${parent}${branch}签收。`));
 });
+
+test('机构类型词单独出现时保留，连同具名辖区时识别全称', async () => {
+  const text = '有限公司应依法登记。分公司提交说明。支行负责接收。回执由南京市分公司签发。';
+  const [rows] = await buildPlan(text, {}, () => predictions(text, [
+    ['有限公司', 'organization'], ['分公司', 'organization'], ['支行', 'organization'], ['南京市分公司', 'organization'],
+  ]).map(({start, end, label}) => ({start, end, kind: label, reason: 'Otter', priority: 60})));
+  assert.deepEqual(rows.map(row => row.original), ['南京市分公司']);
+  assert.match(render(text, rows).output, /^有限公司应依法登记。分公司提交说明。支行负责接收。/u);
+});
+
+test('两次模型误带谓词时，后文的正确姓名边界仍沿用登记代号', async () => {
+  const name = '林知远';
+  const text = `姓名：${name}\n\n${name}是在周一到场的。${name}是在会后签收的。${name}是在此办理的。`;
+  const occurrences = [...text.matchAll(/林知远/gu)].slice(1);
+  const [rows] = await buildPlan(text, {}, () => occurrences.map(({index: start}, index) => ({
+    start, end: start + name.length + Number(index < 2), kind: 'person', reason: 'Otter', priority: 60,
+  })));
+  assert.equal(rows.at(-1).original, name);
+  assert.equal(rows.at(-1).replacement, rows[0].replacement);
+  assert.ok(render(text, rows).output.endsWith(`${rows[0].replacement}是在此办理的。`));
+});
+
+test('纯规则模式保留单位名称栏的提示文字，仍识别明确的单位名称', async () => {
+  const text = '单位名称：请见附件。\n单位名称：青禾设备有限公司。';
+  const [rows] = await buildPlan(text);
+  assert.deepEqual(rows.map(row => row.original), ['青禾设备有限公司']);
+  assert.match(render(text, rows).output, /^单位名称：请见附件。\n单位名称：【[^】]+】。$/u);
+});

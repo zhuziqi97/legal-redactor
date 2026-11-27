@@ -26,7 +26,8 @@ const direction = rule('借方?|贷方?|进账|入账|出账|收入|支出');
 const shortDefinition = rule('[（(]\\s*(?:以下)?简称');
 const organizationEnding = rule(OFFICE_TYPE + '|税务所|大队|支队|小学|中学');
 export const genericOrganization = rule('医院|法院|人民法院|检察院|人民检察院|合议庭|(?:保险|物业|快递|物流|担保)?公司|'
-  + '(?:社区|当地|定点|公立|私立)医院|商业银行|银行|大学|学校|小学|中学');
+  + '(?:社区|当地|定点|公立|私立)医院|商业银行|银行|大学|学校|小学|中学|'
+  + [_ORG_SUFFIX_RE.pattern, R.ORG_END.pattern.slice(0, -1), organizationEnding.pattern].join('|'));
 export const referenceLead = rule('^(?:该(?:家|所|名)?|[这那](?:家|所|个|位)|[一各](?:家|所)|某(?:家|所)?|对方(?:的)?|本(?=院|校|公司))');
 const nameClause = rule('^(?:请[向给]|我(?:把|让|送|陪)|由)|让我|让他|让她|如果|所在的?|判决|是在|是由|的是');
 const organizationToken = rule('[\\u3400-\\u9fffA-Za-z0-9（）()·&]+');

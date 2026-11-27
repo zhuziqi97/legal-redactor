@@ -141,14 +141,14 @@ function filterCandidates(text: string, predicted: Hit[], registeredOrgs: Set<st
 function documentOccurrences(text: string, hits: Hit[], layout: Layout) {
   const sections = [...new Set(layout.sections)].sort((a, b) => a - b);
   const scope = (at: number) => bisect(sections, at, true);
-  const names = new Map<string, number>();
+  const names = new Set<string>();
   const knownPeople = new Set<string>();
   const organizations = new Map<string, Set<number>>();
   const villages = new Set<string>();
   for (const item of hits) {
     const raw = slice(text, item.start, item.end);
     if (item.kind === 'person') {
-      names.set(raw, (names.get(raw) ?? 0) + 1);
+      names.add(raw);
       if (item.priority >= 65) knownPeople.add(raw);
     } else if (item.kind === 'organization' && (item.priority >= 65 || organizationValue(raw))) {
       if (!organizations.has(raw)) organizations.set(raw, new Set());
@@ -161,10 +161,9 @@ function documentOccurrences(text: string, hits: Hit[], layout: Layout) {
       }
     }
   }
-  for (const [name, count] of names) if (count >= 2 && hasSurname(name)) knownPeople.add(name);
   const positions = hits.map(item => item.start);
   const extra: Hit[] = [];
-  for (const [raw, start, end] of allSpans(text, [...names.keys(), ...organizations.keys(), ...villages])) {
+  for (const [raw, start, end] of allSpans(text, [...names, ...organizations.keys(), ...villages])) {
     const prior = hits[bisect(positions, start, true) - 1];
     const current = prior && start < prior.end ? prior : undefined;
     const left = slice(text, Math.max(0, start - 24), start);
@@ -281,7 +280,8 @@ class Objects {
 export async function buildPlan(text: string, registry: Registry = {}, scan?: Scan, doc = '',
   displays: Record<string, string> = {}, layout = readFields(text), allocation: Allocation = {}): Promise<Plan> {
   const tentative = scan ? layout.hits.filter(item => item.needs_context) : [];
-  const rules = layout.hits.filter(item => item.kind !== 'signature' && (!item.needs_context || !scan));
+  const rules = layout.hits.filter(item => item.kind !== 'signature'
+    && (!item.needs_context || !scan && item.kind !== 'organization'));
   rules.push(...streetAddresses(text), ...answerNames(text, layout));
   const narrative = [...text];
   for (const [message, [start]] of layout.speakers) narrative.fill(' ', start, message);
