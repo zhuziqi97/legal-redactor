@@ -51,6 +51,10 @@ function groupsOf(value: unknown): Record<string, Group> {
     check(id && group.id === id && typeof group.type === 'string' && Object.hasOwn(labels, group.type)
       && typeof group.primary === 'string' && group.primary.length
       && typeof group.code === 'string' && validCode.fullmatch(group.code), '代号组');
+    if (group.areas !== undefined) {
+      check(Object.entries(record(group.areas, '地域代号')).every(([name, label]) =>
+        name.length && typeof label === 'string' && label.length), '地域代号');
+    }
   }
   return Object.fromEntries(entries) as Record<string, Group>;
 }

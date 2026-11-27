@@ -1,5 +1,5 @@
 import { overlap, type Relation } from './context.js';
-import { displayBase } from './display.js';
+import { availableDisplay, displayBase, projectAreas } from './display.js';
 import { NUMBER_KINDS, PERSON_VALUE, TITLE } from './field-rules.js';
 import { hit, readFields, typicalName, type Hit, type Layout } from './fields.js';
 import { buildPlan, completeNumber, labels, normalized, reviewDecisions, validCode, type Action, type Scan } from './pipeline.js';
@@ -38,12 +38,16 @@ function occupied(state: Workspace) {
   return codes;
 }
 
-function allocateCode(kind: string, raw: string, used: Set<string>) {
-  const [stem, first] = displayBase(kind, raw, labels[kind]);
-  let number = first;
-  let code = `【${stem}${number || ''}】`;
-  while (used.has(code)) code = `【${stem}${++number}】`;
-  return code;
+function areasFor(state: Workspace) {
+  return projectAreas(Object.values(state.groups).map(group => ({
+    kind: group.type, value: group.primary, replacement: group.code, areas: group.areas,
+  })));
+}
+
+function allocateCode(kind: string, raw: string, used: Set<string>, areas: Map<string, string>) {
+  const parts = new Map<string, string>();
+  const [stem, first] = displayBase(kind, normalized(kind, raw), labels[kind], areas, parts);
+  return {code: availableDisplay(stem, first, used), areas: parts.size ? Object.fromEntries(parts) : undefined};
 }
 
 function updateCode(row: Row, code: string) {
@@ -394,13 +398,15 @@ function repairGroups(state: Workspace, detached: ReadonlySet<string>, primaries
 }
 
 type NewId = () => string;
-function newGroup(state: Workspace, type: string, primary: string, code: string, newId: NewId) {
+function newGroup(state: Workspace, type: string, primary: string, code: string, newId: NewId, areas?: Group['areas']) {
   const id = newId();
-  return state.groups[id] = {id, type, primary, code};
+  return state.groups[id] = {id, type, primary, code, ...(areas ? {areas} : {})};
 }
 
 function settleAliases(state: Workspace, newId: NewId) {
   const used = occupied(state);
+  const areas = areasFor(state);
+  const known = reuseRegistry(state).known;
   for (const doc of state.materials) {
     if (!doc.decisions) continue;
     const {rows} = reviewDecisions(doc.text, doc.relations, doc.decisions);
@@ -414,9 +420,13 @@ function settleAliases(state: Workspace, newId: NewId) {
         const key = keyOf(row.type, row.original, row.replacement);
         let group = independent.get(key);
         if (!group) {
-          const code = allocateCode(row.type, row.original, used);
-          used.add(code);
-          group = newGroup(state, row.type, row.original, code, newId);
+          const matchId = row.type === 'person' ? known.get(keyOf('person', row.original)) : undefined;
+          if (matchId) group = state.groups[matchId];
+          else {
+            const allocated = allocateCode(row.type, row.original, used, areas);
+            used.add(allocated.code);
+            group = newGroup(state, row.type, row.original, allocated.code, newId, allocated.areas);
+          }
           independent.set(key, group);
         }
         row.group = group.id;
@@ -473,7 +483,9 @@ async function scanMaterial(state: Workspace, doc: Material, newId: NewId, scan?
       .map(row => hit(row.start, row.end, row.reason === '具名机构用作地点' ? 'address' : row.type, 'Otter', 60)),
     ...await scan(text, free.filter(changes.affects), known),
   ] : scan;
-  const [raw, objects, relations] = await buildPlan(doc.text, records, localScan, doc.id, names, changes?.layout);
+  const areas = areasFor(state);
+  const [raw, objects, relations] = await buildPlan(doc.text, records, localScan, doc.id, names, changes?.layout,
+    {reserved: used, areas});
   const {rows, links: supported} = reviewDecisions(doc.text, relations, raw);
   const retained: Row[] = [];
   const documentUpdates = new Set<(typeof rows)[number]>();
@@ -558,9 +570,11 @@ async function scanMaterial(state: Workspace, doc: Material, newId: NewId, scan?
       (old?.type === row.type && old.action === 'replace' && !old.definitions?.length && !old.aliasType ? old.group : null);
     let group = (knownId && state.groups[knownId]) || local.get(key);
     if (!group) {
-      const code = used.has(row.replacement) ? allocateCode(row.type, row.original, used) : row.replacement;
-      used.add(code);
-      group = newGroup(state, row.type, row.original, code, newId);
+      if (record?.areas) for (const [name, label] of Object.entries(record.areas)) areas.set(name, label);
+      const allocated = used.has(row.replacement) ? allocateCode(row.type, row.original, used, areas)
+        : {code: row.replacement, areas: record?.areas};
+      used.add(allocated.code);
+      group = newGroup(state, row.type, row.original, allocated.code, newId, allocated.areas);
       local.set(key, group);
     }
     attachScanRow(row, group, group.code, literal);
@@ -891,7 +905,8 @@ function apply(state: Workspace, change: Change, newId: NewId, cover: boolean): 
   }
   if (op === 'create') {
     const raw = resolved[0][1].original;
-    const code = trim(change.code ?? '') ? displayCode(change.code!) : allocateCode(kind!, raw, used);
+    const allocated = allocateCode(kind!, raw, used, areasFor(state));
+    const code = trim(change.code ?? '') ? displayCode(change.code!) : allocated.code;
     if (used.has(code)) {
       const issue = literalIssue(state, new Set([code]));
       if (issue) return issue;
@@ -905,7 +920,7 @@ function apply(state: Workspace, change: Change, newId: NewId, cover: boolean): 
         options: eligible.map(candidate => ({groupId: candidate.id, whole: false, selected: true}))}}};
       kind = undefined;
     } else {
-      group = newGroup(state, kind!, raw, code, newId);
+      group = newGroup(state, kind!, raw, code, newId, code === allocated.code ? allocated.areas : undefined);
     }
     used.add(group.code);
   }
@@ -1094,7 +1109,7 @@ export async function runWorkspace(state: Workspace, request: Request, scan?: Sc
   if (op === 'view') return {view: workspaceView(state)};
   if (op === 'candidate') return candidate(lookupMaterial(state, request.materialId), request.start, request.end);
   if (op === 'previewAdjustment') return previewAdjustment(state, request.change, newId);
-  if (op === 'suggest') return allocateCode(request.type, request.text, occupied(state));
+  if (op === 'suggest') return allocateCode(request.type, request.text, occupied(state), areasFor(state)).code;
   if (op === 'output') {
     const doc = lookupMaterial(state, request.materialId);
     if (!doc.decisions) throw new Error('当前修订尚未完成分析。');

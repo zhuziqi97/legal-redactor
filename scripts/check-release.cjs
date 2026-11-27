@@ -76,7 +76,7 @@ async function main(executable, version) {
     await page.locator('#redact-panel').getByRole('status').getByText('已导出 TXT', {exact:true}).waitFor();
     const output = await readFile(exportPath, 'utf8');
     assert.doesNotMatch(output, /张甲|13800138000|91000000MA0REDAC1X/u);
-    assert.match(output, /姓名：\n【张某】/u);
+    assert.match(output, /姓名：\n【张某1】/u);
     assert.match(output, /业务流水号：2031021800004271\n统一社会信用代码：【信用代码1】/u);
     assert.match(output, /备注：材料已核对。/u);
     assert.equal(output, await page.locator('#output-text').textContent());

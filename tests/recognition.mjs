@@ -29,14 +29,14 @@ test('同一答话和未结束句子保留换行作为上下文，跨行预测�
   assert.ok(submitted.includes(prose));
   assert.deepEqual(rows.map(row => row.original), ['张甲', '王明', '周乙']);
   for (const row of rows) assert.equal([...text].slice(row.start, row.end).join(''), row.original);
-  assert.match(render(text, rows).output, /现场。\r\n【王某】负责登记。/u);
+  assert.match(render(text, rows).output, /现场。\r\n【王某1】负责登记。/u);
 });
 
 test('独占一行的标题使用下一行完整值，保留相邻标点和字段', async () => {
   const text = '姓名：\n钱小平，联系电话：13900139000。\n单位名称：\n嘉林市晨星设备有限公司。';
   const [rows] = await buildPlan(text);
   assert.deepEqual(rows.map(row => row.original), ['钱小平', '13900139000', '嘉林市晨星设备有限公司']);
-  assert.match(render(text, rows).output, /^姓名：\n【钱某】，联系电话：【电话1】。\n单位名称：\n【[^】]+】。$/u);
+  assert.match(render(text, rows).output, /^姓名：\n【钱某1】，联系电话：【电话1】。\n单位名称：\n【[^】]+】。$/u);
   assert.deepEqual(readFields('姓名：\n\n备注：待确认。').hits.filter(row => row.kind === 'person'), []);
 });
 
@@ -75,7 +75,7 @@ test('确认完整地点时保留人物、动作、指代和引用标题', async
     ['东原市宝林区万兴街19号', 'address'], ['嘉林市康复医院', 'organization'],
   ]);
   const output = render(text, rows).output;
-  assert.match(output, /查看的是【钱某】居住的【[^】]+】。/u);
+  assert.match(output, /查看的是【钱某1】居住的【[^】]+】。/u);
   assert.match(output, /她把货送到了【[^】]+】。[\s\S]*去医院挂号[\s\S]*《中华人民共和国民法典》第三条。/u);
 });
 
@@ -87,7 +87,7 @@ test('问答更正撤回别称归属，重用问句动词时只替换姓名', as
   assert.ok(!relations.some(link => ['阿林', '阿杨'].includes(link.value)));
   const output = render(text, rows).output;
   assert.doesNotMatch(output, /阿林|阿杨|吴刚/u);
-  assert.match(output, /实际是【[^】]+】。\n问：谁领了单据？\n答：【吴某】领的。/u);
+  assert.match(output, /实际是【[^】]+】。\n问：谁领了单据？\n答：【吴某1】领的。/u);
 });
 
 test('按行政区和机关层级识别全称并保留独立公共机构', async () => {

@@ -351,7 +351,7 @@ test('裁判署名保留职务和原文区间，并沿用另一份材料的人�
   const row = next.current.items.find(item => item.original === '王 明');
   assert.equal(row.group, group.id);
   assert.equal([...next.current.text].slice(row.start, row.end).join(''), '王 明');
-  assert.match(next.current.output, /审 判 员    【王某】\n书 记 员    【李某】/u);
+  assert.match(next.current.output, /审 判 员    【王某1】\n书 记 员    【李某1】/u);
 });
 
 test('修改文首完整住址会更新文末简称，局部编辑只提交受影响的模型文本', async () => {

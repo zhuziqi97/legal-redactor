@@ -196,3 +196,29 @@ test('加密项目可解锁、续存、另存、改密和移除保护', async t 
   assert.equal(clear.protection, undefined);
   assert.deepEqual(encodeProject(clear.state), encodeProject(project.state));
 });
+
+test('重开后按项目地域继续编号，并跳过人工与零位置代号', async t => {
+  const path = await localProject(t);
+  const project = workspace();
+  await project.add('姓名：张甲\n地址：唐山市', '首份材料');
+  const {view} = await project.add('地址：泰安市\n姓名：欧阳宁', '第二份材料');
+  const city = view.groups.find(group => group.primary === '泰安市');
+  const manual = view.groups.find(group => group.primary === '张甲');
+  const rename = {mode: 'rename', groupId: manual.id, code: '当事人甲'};
+  const {preview} = await project.run({op: 'previewAdjustment', change: rename});
+  await project.run({op: 'apply', change: rename, expectedRevision: preview.revision});
+  await project.run({op: 'deleteMaterial', materialId: '2'});
+  const {output} = await project.run({op: 'output', materialId: '1'});
+  await writeProject(path, project.state);
+
+  const {state: restored} = await readProject(path);
+  assert.deepEqual(restored.groups[city.id].areas, {'泰安市': 'T1市'});
+  const added = await runWorkspace(restored, {op: 'add', title: '追加材料',
+    text: '姓名：张甲\n姓名：张乙\n姓名：张丙\n姓名：欧阳平\n字面标记【张某1】。\n'
+      + '住所地：泰安市泰山区青松路28号。\n工作单位：唐山市人民政府。'});
+  const next = await runWorkspace(added.state, {op: 'scan', materialId: added.view.current.id});
+  assert.equal(next.view.current.output, '姓名：【当事人甲】\n姓名：【张某2】\n姓名：【张某3】\n姓名：【欧阳某2】\n字面标记【张某1】。\n'
+    + '住所地：【T1市T区地址1】。\n工作单位：【T市人民政府】。');
+  assert.equal((await runWorkspace(next.state, {op: 'output', materialId: '1'})).output, output);
+  assert.equal(next.state.groups[city.id].code, '【T1市】');
+});

@@ -179,10 +179,10 @@ test('加密项目重开保留共享代号，保存冲突保留当前修改与�
   const project = await open(t, {provider: 'cpu'});
   const {app, page, directory} = project;
   await add(page, '首次笔录');
-  await output(page).getByText('【张某】', {exact: true}).waitFor();
+  await output(page).getByText('【张某1】', {exact: true}).waitFor();
   await add(page, '补充笔录', '姓名：张甲\n联系电话：13800138000\n补充说明已核对。');
   await output(page).getByText(/补充说明已核对。/u).last().waitFor();
-  await renameMapping(page, '张某', '当事人甲');
+  await renameMapping(page, '张某1', '当事人甲');
 
   await app.evaluate(({dialog}, path) => {
     dialog.showOpenDialog = async () => ({canceled: false, filePaths: [path]});
@@ -438,8 +438,8 @@ test('通过映射菜单管理别称，跨材料补位置沿用实际代号', as
   }, path);
   await channel(page.getByRole('tabpanel', {name:'脱敏'}), '打开项目').click();
   const mappings = page.getByRole('region', {name:'映射清单'});
-  const mapping = mappings.locator('.mapping').filter({has:channel(page, '张甲 → 【张某】')});
-  await channel(mapping, '张甲 → 【张某】').click();
+  const mapping = mappings.locator('.mapping').filter({has:channel(page, '张甲 → 【张某1】')});
+  await channel(mapping, '张甲 → 【张某1】').click();
   const positions = mappings.getByRole('region', {name:'出现位置'});
   await positions.getByLabel('按原词或别称筛选位置').selectOption('小宁');
   assert.equal(await positions.getByRole('button', {name:'小宁的别称操作'}).count(), 0);
@@ -477,7 +477,7 @@ test('通过映射菜单管理别称，跨材料补位置沿用实际代号', as
   assert.equal(await adjust.getByRole('checkbox', {name:/选择合成笔录.*小宁/u}).count(), 0);
   const locate = channel(adjust, '第 1 行 · 定位原文');
   await locate.waitFor();
-  assert.deepEqual(await adjust.locator('.impact-entry dd').allTextContents(), ['小宁', '【张某-曾用名1】']);
+  assert.deepEqual(await adjust.locator('.impact-entry dd').allTextContents(), ['小宁', '【张某1-曾用名1】']);
   await locate.click();
   await page.locator('#source-text').getByText(/已提交回执/u).waitFor();
   assert.equal(await channel(page, '导出 TXT').isDisabled(), true);
@@ -488,16 +488,16 @@ test('通过映射菜单管理别称，跨材料补位置沿用实际代号', as
   assert.equal(await channel(page, '导出 TXT').isDisabled(), true);
   await channel(adjust, '应用到所选 1 处').click();
   await term.getByText('2 处', {exact:true}).waitFor();
-  await output(page).getByText('【张某-曾用名1】', {exact:true}).waitFor();
+  await output(page).getByText('【张某1-曾用名1】', {exact:true}).waitFor();
   assert.equal(await channel(page, '导出 TXT').isEnabled(), true);
 
   await channel(term, '小宁的位置操作').click();
   await channel(term, '改绑位置').click();
-  await channel(adjust, '赵敏 → 【赵某】 1 处').click();
+  await channel(adjust, '赵敏 → 【赵某1】 1 处').click();
   await adjust.getByRole('checkbox', {name:/选择合成补录.*小宁/u}).check();
   await channel(adjust, '改绑所选 1 处').click();
   await term.getByText('1 处', {exact:true}).waitFor();
-  await output(page).getByText('【赵某-曾用名1】', {exact:true}).waitFor();
+  await output(page).getByText('【赵某1-曾用名1】', {exact:true}).waitFor();
   await channel(term, '小宁的位置操作').click();
   await channel(term, '移出位置').click();
   await adjust.getByRole('checkbox', {name:'全选本次结果'}).check();
@@ -510,7 +510,7 @@ test('移除最后一份材料后可以搜索、修改、保存、恢复和删�
   const project = await open(t, {provider:'cpu'});
   const {app, page, directory} = project;
   await add(page, '初次笔录', '被询问人：张甲\n问：你以前叫什么？\n答：我以前叫小宁。');
-  await output(page).getByText('【张某-曾用名1】', {exact:true}).waitFor();
+  await output(page).getByText('【张某1-曾用名1】', {exact:true}).waitFor();
   const review = page.getByRole('region', {name:'映射清单'});
   const scope = review.getByLabel('映射材料范围');
   await scope.selectOption('current');
@@ -520,7 +520,7 @@ test('移除最后一份材料后可以搜索、修改、保存、恢复和删�
   assert.deepEqual(await removal.locator('p').allTextContents(), ['从项目中移除「初次笔录」？']);
   assert.equal(await removal.getByRole('combobox').count(), 0);
   await channel(removal, '确认移除').click();
-  const group = review.locator('.mapping').filter({has:channel(page, '张甲 → 【张某】')});
+  const group = review.locator('.mapping').filter({has:channel(page, '张甲 → 【张某1】')});
   await group.getByText('0 处', {exact:true}).waitFor();
   assert.equal(await scope.inputValue(), 'all');
   assert.match(await (await app.browserWindow(page)).evaluate(window => window.getTitle()), /\*/u);
@@ -561,7 +561,7 @@ test('移除最后一份材料后可以搜索、修改、保存、恢复和删�
   await savedMapping.waitFor();
   await reopen.page.getByRole('tab', {name:'恢复'}).click();
   const restore = reopen.page.getByRole('tabpanel', {name:'恢复'});
-  const aliasCode = '【张某-曾用名1】';
+  const aliasCode = '【张某1-曾用名1】';
   await restore.getByRole('textbox', {name:'待恢复文本'}).fill(`【当事人甲】与${aliasCode}\n这里再见${aliasCode}`);
   await channel(restore, '完成').click();
   const mappings = restore.getByRole('region', {name:'恢复映射清单'});

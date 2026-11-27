@@ -1,6 +1,6 @@
 import { allSpans, answerNames, choose, definitions, identityEvidence, namesInStatements, type Relation } from './context.js';
 import { PERSON_ALIAS } from './context-rules.js';
-import { displayBase } from './display.js';
+import { availableDisplay, displayBase, projectAreas } from './display.js';
 import { NUMBER_KINDS, PERSON_VALUE, TITLE } from './field-rules.js';
 import { administrativeParts, genericOrganization, hit, languageRules, organizationValue, readFields, referenceLead,
   streetAddresses, typicalName, type Hit, type Layout, type Passage } from './fields.js';
@@ -23,9 +23,10 @@ export type Decision = {
   action: Action; replacement: string; name: string | null; definitions?: number[]; alias_display?: string;
 };
 export type Registered = {
-  kind: string; value: string; identity?: string | null; replacement: string; scope?: string | null;
+  kind: string; value: string; identity?: string | null; replacement: string; scope?: string | null; areas?: Record<string, string>;
 };
 export type Registry = Record<string, Registered>;
+type Allocation = {reserved?: Set<string>; areas?: Map<string, string>};
 export type Scan = (text: string, free: Passage[], known: Hit[]) => Promise<Hit[]> | Hit[];
 export type Plan = [rows: Decision[], objects: Registry, relations: Relation[]];
 
@@ -219,10 +220,12 @@ class Objects {
   readonly records: Registry;
   readonly names: Map<string, string>;
   private readonly used: Set<string>;
+  private readonly areas: Map<string, string>;
   private readonly keys = new Map<string, string>();
   private nextId: number;
 
-  constructor(registry: Registry, displays: Record<string, string>, private text: string, private document: string) {
+  constructor(registry: Registry, displays: Record<string, string>, private text: string, private document: string,
+    allocation: Allocation) {
     this.records = Object.fromEntries(Object.entries(registry).map(([key, item]) => [key, {...item}]));
     this.names = new Map(Object.entries(displays));
     this.nextId = Math.max(0, ...Object.keys(this.records).map(Number)) + 1;
@@ -231,20 +234,15 @@ class Objects {
       const lookup = keyOf(item.kind, normalized(item.kind, item.value), item.identity ?? null, item.scope ?? null);
       if (!this.keys.has(lookup)) this.keys.set(lookup, key);
     }
-    this.used = new Set([...Object.values(this.records).map(item => item.replacement), ...this.names.values()]);
+    this.areas = allocation.areas ? new Map(allocation.areas) : projectAreas(Object.values(this.records));
+    this.used = new Set([...allocation.reserved ?? [], ...Object.values(this.records).map(item => item.replacement), ...this.names.values()]);
   }
 
-  allocate(kind: string, value: string) {
-    const [base, initial] = displayBase(kind, value, labels[kind]);
-    let number = initial;
-    while (true) {
-      const display = `【${base}${number || ''}】`;
-      if (!this.used.has(display) && !this.text.includes(display)) {
-        this.used.add(display);
-        return display;
-      }
-      number++;
-    }
+  allocate(kind: string, value: string, parts = new Map<string, string>()) {
+    const [base, first] = displayBase(kind, value, labels[kind], this.areas, parts);
+    const code = availableDisplay(base, first, this.used, this.text);
+    this.used.add(code);
+    return code;
   }
 
   name(value: string) {
@@ -258,7 +256,10 @@ class Objects {
     const key = keyOf(kind, value, identity, scope);
     if (!this.keys.has(key)) {
       const id = String(this.nextId++);
-      this.records[id] = {kind, value, identity, replacement: kind === 'person' ? this.name(value) : this.allocate(kind, value), scope};
+      const parts = new Map<string, string>();
+      const replacement = kind === 'person' ? this.name(value) : this.allocate(kind, value, parts);
+      this.records[id] = {kind, value, identity, replacement, scope,
+        ...(parts.size ? {areas: Object.fromEntries(parts)} : {})};
       this.keys.set(key, id);
     }
     return this.keys.get(key)!;
@@ -266,7 +267,7 @@ class Objects {
 }
 
 export async function buildPlan(text: string, registry: Registry = {}, scan?: Scan, doc = '',
-  displays: Record<string, string> = {}, layout = readFields(text)): Promise<Plan> {
+  displays: Record<string, string> = {}, layout = readFields(text), allocation: Allocation = {}): Promise<Plan> {
   const tentative = scan ? layout.hits.filter(item => item.needs_context) : [];
   const rules = layout.hits.filter(item => item.kind !== 'signature' && (!item.needs_context || !scan));
   rules.push(...streetAddresses(text), ...answerNames(text, layout));
@@ -333,11 +334,10 @@ export async function buildPlan(text: string, registry: Registry = {}, scan?: Sc
   const people = new Set(hits.filter(item => item.kind === 'person').map(item => slice(text, item.start, item.end)));
   const chosen = choose([...candidates, ...eligible(extra)]);
   const evidence = identityEvidence(text, chosen);
-  const objects = new Objects(registry, displays, text, doc);
+  const objects = new Objects(registry, displays, text, doc, allocation);
   const direct = new Map(links.map(link => [keyOf(link.start, link.end), link]));
-  const rows: Decision[] = [];
-  for (const item of chosen) {
-    if (item.kind === 'keep') continue;
+  const resolved = chosen.flatMap(item => {
+    if (item.kind === 'keep') return [];
     const {start, end, reason} = item;
     const raw = slice(text, start, end);
     const key = keyOf(start, end);
@@ -350,6 +350,16 @@ export async function buildPlan(text: string, registry: Registry = {}, scan?: Sc
     }
     if (kind === 'nickname' && ['发言者', '通话方'].includes(reason) && PERSON_VALUE.fullmatch(raw) &&
         (objects.names.has(raw) || people.has(raw))) kind = 'person';
+    return [{item, kind, target, link}];
+  });
+  for (const {kind, target, link} of resolved) {
+    if (kind === 'person') objects.name(target);
+    else if (kind === 'nickname' && link && ['聊天昵称', '曾用名'].includes(link.type)) objects.name(link.name!);
+  }
+  const rows: Decision[] = [];
+  for (const {item: {start, end, reason, priority}, kind, target, link} of resolved) {
+    const key = keyOf(start, end);
+    const raw = slice(text, start, end);
     let object: string | null;
     let replacement: string;
     if (kind === 'person') {
@@ -370,7 +380,7 @@ export async function buildPlan(text: string, registry: Registry = {}, scan?: Sc
       }
     }
     const row: Decision = {start, end, original: raw, type: kind, reason, object,
-      action: item.priority === 54 ? 'review' : 'replace', replacement, name: kind === 'person' ? target : null};
+      action: priority === 54 ? 'review' : 'replace', replacement, name: kind === 'person' ? target : null};
     if (reason === '全文称呼' || link) {
       row.definitions = targets.get(key)?.[1] ?? [start];
       row.alias_display = replacement;
@@ -447,6 +457,8 @@ export function reviewDecisions<Row extends Decision>(text: string, relations: R
   }
   const used = new Set(rows.map(row => row.replacement));
   const independent = new Map<string, string>();
+  const independentPeople = new Map(rows.filter(row => row.type === 'person' && row.action === 'replace' && !row.definitions?.length)
+    .map(row => [row.name || row.original, row.replacement]));
   for (const row of rows) {
     const evidence = row.definitions;
     if (!evidence?.length || evidence.some(value => supported.has(value))) continue;
@@ -461,16 +473,15 @@ export function reviewDecisions<Row extends Decision>(text: string, relations: R
       row.reason = '称呼归属未确认';
       continue;
     }
-    const key = keyOf(evidence, row.original);
-    if (!independent.has(key)) {
+    const key = row.type === 'person' ? row.original : keyOf(evidence, row.original);
+    const allocations = row.type === 'person' ? independentPeople : independent;
+    if (!allocations.has(key)) {
       const [base, first] = displayBase(row.type, row.original, labels[row.type]);
-      let index = first;
-      let code = `【${base}${index || ''}】`;
-      while (used.has(code) || text.includes(code)) code = `【${base}${++index}】`;
-      independent.set(key, code);
+      const code = availableDisplay(base, first, used, text);
+      allocations.set(key, code);
       used.add(code);
     }
-    row.replacement = independent.get(key)!;
+    row.replacement = allocations.get(key)!;
     row.reason = '按出现位置独立遮盖';
   }
   return {rows, links};

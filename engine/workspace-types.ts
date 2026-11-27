@@ -4,7 +4,7 @@ import type { Action, Decision } from './pipeline.js';
 export type Row = Decision & {
   id: number; group: string | null; aliasType?: string; match?: [kind: string, value: string]; sourceDefinitions?: number[];
 };
-export type Group = {id: string; type: string; primary: string; code: string};
+export type Group = {id: string; type: string; primary: string; code: string; areas?: Record<string, string>};
 export type PreviousReview = {text: string; decisions: Row[]; relations: Relation[]; groups: Record<string, Group>};
 export type Material = {
   id: string; title: string; text: string; sourcePath: string | null;
