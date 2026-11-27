@@ -1,4 +1,5 @@
 /** Pattern sources and labels from the Python case_fields reference. */
+import { addressComponent } from './housing.js';
 import { rule } from './text.js';
 
 export const REFERENCE_IDS = new Set(['设备编号', '设备号', '流水号', '业务流水号', '交易流水号']);
@@ -120,7 +121,7 @@ export const INTERNATIONAL = rule("(?<![0-9A-Za-z])(?:\\+|00)[0-9]{1,3}[ \\t　�
 const INTERNATIONAL_NUMBER = rule("(?:(?:[+＋]|00)[0-9]{1,3}[ \\t　－—-]*)?(?:[（(][0-9]{1,5}[）)][ \\t　－—-]*)?[0-9xX*×]+(?:[ \\t　－—-]+[0-9xX*×]+)*");
 export const GROUPED_CARD = rule("\\d{4}(?:[ \\t　－—-]+\\d{4}){3}(?:[ \\t　－—-]+\\d{3})?");
 export const ADDRESS_CONTINUATION = rule("\\s*(?:[\\u3400-\\u9fff]{1,8}(?:省|市|县|区|镇|乡|街道|路|街|巷|村)|\\d+[A-Za-z]?(?:号|栋|楼|层|单元|室|房))");
-export const ADDRESS_DETAIL = rule("(?:(?:[0-9A-Za-z]+(?:号楼|号|楼|栋|幢|层|单元|座|室|房)|[零〇一二两三四五六七八九十百]+(?:楼|层|栋|幢|单元|室)|[东西南北中](?:区|楼|栋|座|单元))[ \\t]*)+(?:\\d{1,6})?");
+export const ADDRESS_DETAIL = rule(String.raw`(?:${addressComponent}[ \t]*)+(?:\d{1,6})?`);
 export const TAIL = rule("(?:尾号|后四位)(?:为|是|[：:]\\s*)?\\s*([0-9]{4})(?![0-9])");
 export const PARTY_DEFINITION = rule("^\\s*(甲方|乙方)\\s*(?:系|为)\\s*([^，。；;\\r\\n]+)");
 export const TURN = rule("^\\s*(问话|答话|问|答)\\s*[：:]");

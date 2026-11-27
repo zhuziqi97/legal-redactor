@@ -1,5 +1,6 @@
 import { ADDRESS_BREAK, ADDRESS_DETAIL, NOTE } from './field-rules.js';
 import { addressComponentEnd, administrativeParts, deliveryEnd, hit, type Hit, type Passage } from './fields.js';
+import { layoutCount } from './housing.js';
 import { publicUnits, REGIONAL_UNIT } from './organizations.js';
 import * as R from './location-rules.js';
 import { bisect, char, indexOf, length, rule, slice, startsAny, trim } from './text.js';
@@ -122,7 +123,7 @@ export function locationBoundaries(text: string, predicted: Hit[], language: Hit
     if (end > start) result.push(hit(start, end, 'address', '定位语境中的完整地点', 87));
   }
   for (const room of roomInProse.finditer(text)) {
-    if (roomContext.search(slice(text, Math.max(0, room.start() - 5), room.start()))) {
+    if (roomContext.search(slice(text, Math.max(0, room.start() - 5), room.start())) && !layoutCount.match(text, room.end())) {
       result.push(hit(...room.span(), 'address', '叙述中的房室', 63));
     }
   }

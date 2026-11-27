@@ -130,3 +130,29 @@ test('即使段落中重复出现，诉讼角色本身也不形成姓名映射',
   ]);
   assert.equal(render(text, rows).output, text);
 });
+
+test('正文只续用同一段中有房屋依据的室号，保留户型和数量', async () => {
+  const text = '附注😀：经核对，房号为7-306。该单元306室业主到场，306室等待验收。'
+    + '库存为306，展馆共306室，户型为3室2厅。交付6栋2单元401、402室。\n\n306室另有备注。';
+  const [rows] = await buildPlan(text);
+  const rooms = rows.filter(row => row.type === 'address');
+  assert.deepEqual(rooms.map(row => row.original), ['7-306', '306室', '306室', '6栋2单元401', '402室']);
+  for (const row of rooms) assert.equal([...text].slice(row.start, row.end).join(''), row.original);
+  assert.match(render(text, rows).output, /库存为306，展馆共306室，户型为3室2厅。交付【[^】]+】、【[^】]+】。\n\n306室另有备注。/u);
+});
+
+test('完整住所优先于独立室号，匿名处所只遮盖可见楼室', async () => {
+  const address = '琼川花苑605室';
+  const text = `查明${address}业主到场，605室已交接。钥匙来自某花园5号楼 2单元 702室。`;
+  const [rows] = await buildPlan(text, {}, () => [{start: 2, end: 2 + address.length,
+    kind: 'address', reason: 'Otter', priority: 60}]);
+  assert.deepEqual(rows.filter(row => row.type === 'address').map(row => row.original), [address, '605室', '5号楼 2单元 702室']);
+  assert.match(render(text, rows).output, /来自某花园【[^】]+】。$/u);
+});
+
+test('表格房屋编号覆盖有序楼室及带连接号的房号', async () => {
+  const text = '序号\t房屋信息\t备注\n1\tA栋 2单元 305室\t已交\n2\t3－4－706室\t待核';
+  const [rows] = await buildPlan(text);
+  assert.deepEqual(rows.filter(row => row.type === 'address').map(row => row.original), ['A栋 2单元 305室', '3－4－706室']);
+  assert.match(render(text, rows).output, /\n1\t【[^】]+】\t已交\n2\t【[^】]+】\t待核$/u);
+});

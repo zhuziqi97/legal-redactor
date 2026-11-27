@@ -4,6 +4,7 @@ import { availableDisplay, displayBase, projectAreas } from './display.js';
 import { NUMBER_KINDS, PERSON_VALUE, ROLE, TITLE } from './field-rules.js';
 import { administrativeParts, genericOrganization, hit, languageRules, organizationValue, readFields, referenceLead,
   streetAddresses, typicalName, type Hit, type Layout, type Passage } from './fields.js';
+import { localRooms, proseRooms } from './housing.js';
 import { departmentEnd, locationBoundaries, parkingSites } from './locations.js';
 import { GENERIC_OFFICE, independentForms, publicForms } from './organizations.js';
 import { commonPlaces, completePhrases } from './phrases.js';
@@ -296,6 +297,11 @@ export async function buildPlan(text: string, registry: Registry = {}, scan?: Sc
 
   const boundaries = locationBoundaries(text, predicted, language, rules);
   boundaries.push(...completePhrases(text, predicted, rules, boundaries, language), ...parkingSites(text, layout.free));
+  for (const {start, end} of layout.free) {
+    const passage = slice(text, start, end);
+    for (const [a, b] of proseRooms(passage)) boundaries.push(hit(start + a, start + b, 'address', '正文楼室结构', 65));
+    for (const [a, b] of localRooms(passage)) boundaries.push(hit(start + a, start + b, 'address', '正文独立室号', 59));
+  }
   for (const reply of layout.courtReplies) {
     if (!identityStatement.search(text, reply.start, reply.end)) continue;
     for (const field of identityFields.finditer(text, reply.start, reply.end)) {

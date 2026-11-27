@@ -1,5 +1,6 @@
 import { OFFICE_TYPE } from './organizations.js';
 import * as R from './field-rules.js';
+import { addressComponent, housingEnd, propertyCode, roomIdentifier } from './housing.js';
 import { _BANK_PREFIX, _EMAIL, _LABELED_USCC, _USCC } from './number-rules.js';
 import { structuralCandidates, luhn, translateWidth } from './numbers.js';
 import { hasSurname, languageSuspects } from './suspects.js';
@@ -379,7 +380,6 @@ const propertyUnit = rule('(?:[\\u3400-\\u9fff]{1,8}[ \\t]*(?=\\d))?'
 const propertyDetail = rule('(?:宿舍)?(?:由[东南西北]向[东南西北])?第[ \\t]*[一二三四五六七八九十百\\d]+'
   + '(?:[ \\t]*间(?:及前方)?|个(?:车位|柱子)|至第[一二三四五六七八九十百\\d]+个柱子之间)');
 
-const propertyCode = rule("\\d{1,3}-\\d{1,3}-\\d{2,5}");
 const propertyFloor = rule("(?:地下室栋)?(?:-?\\d+(?:栋|幢|楼|层|单元))*-?\\d+(?:号|室|房)");
 const propertySite = rule("[一-鿿]{1,10}(?:花园|小区|大厦)(?=\\d)");
 const roomCode = rule("(?:公寓|商铺|车库|车位|住宅|宿舍|[A-Za-z](?:栋|座|区))?\\d{1,6}(?:[-－]\\d{1,5})*(?=[ \\t]*(?:$|[（(]|等[一二两三四五六七八九十\\d]+[间套户个]))");
@@ -402,7 +402,7 @@ function propertyEnd(value: string) {
     end = propertyFloor.match(value, site?.end() ?? end)?.end() ?? end;
   }
   const detail = prefix && propertyDetail.match(value, prefix.end());
-  return Math.max(end, roomCode.match(value)?.end() ?? 0, detail?.end() ?? 0);
+  return Math.max(end, housingEnd(value, 0), roomCode.match(value)?.end() ?? 0, detail?.end() ?? 0);
 }
 
 function columnLabels(values: string[], delim: string | null, legacy: boolean) {
@@ -771,7 +771,7 @@ const streetPart = rule("[一-鿿A-Za-z0-9]{1,14}?(?:大道|大街|道路|路|�
 const roadDirection = rule("(?:以[东西南北]|[东西南北](?:侧|段|面))");
 const crossing = rule("与[一-鿿A-Za-z0-9]{1,14}?(?:大道|大街|道路|路|街|巷|弄|环[东西南北]段)交(?:叉|会)口(?:向[东西南北]\\d+米(?:路[东西南北])?)?");
 const residenceSite = rule("[一-鿿A-Za-z0-9]{1,16}?(?:(?:小区|社区|花园|公寓|大厦|广场|家园|新村|园区|苑)|公馆|院内|办公楼|住宅楼)|(?:办公|住宅)楼");
-const residenceUnit = rule("(?:\\d+号院|\\d+[-－]\\d+层|\\d+内(?=\\d+层)|\\d+(?:、\\d+)+室|(?:(?:[0-9A-Za-z]+[ \\t]*(?:号楼|楼|栋|幢|层|单元|座|室|房)|\\d+(?:[-－]\\d+)?号|\\d+#楼)|[零〇一二两三四五六七八九十百]+(?:楼|层|栋|幢|单元|室)|[东西南北中](?:区|楼|栋|座|单元)))");
+const residenceUnit = rule(String.raw`(?:${roomIdentifier}|\d+号院|\d+[-－]\d+层|\d+内(?=\d+层)|\d+(?:、\d+)+室|${addressComponent})`);
 const residenceStop = rule("[，,。；;！？!?（）()\\r\\n：:《》的在]|另寄|改寄|搬离|(?:步行|开车|搬|迁|转|走|送)(?:到了?|至|往)|已(?:经|搬|迁)|工作日|签收|收件|交付|交货|办理|登记|经营|收到|前往|随后|然后|转至|并(?:于|向)|住院|住过|曾在|来到|走到|离开|前去|到达|参加|要求|称其|购买|上班");
 
 function residenceEnd(text: string, start: number) {

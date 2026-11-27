@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { gunzipSync } from 'node:zlib';
-import { hit, type Hit } from './fields.js';
+import { administrativeParts, hit, type Hit } from './fields.js';
+import { housingEnd } from './housing.js';
 import { REGIONAL_UNIT } from './organizations.js';
 import { char, length, point, rule, slice, startsAny, endsAny, unit } from './text.js';
 
@@ -14,10 +15,11 @@ const settlement = rule('(?:新区|开发区|园区|街道|镇|村|乡|县|区|�
 const addressLabel = rule('(?:户籍地址|户籍地|住址|住所地?|地址)(?:在|位于)?[：: ]*$');
 const zone = rule('([一-鿿]{1,7}?)(?:开发区|园区)');
 const mask = rule('[＊*×某Xx]');
-const maskedRoad = rule('(?:(?:[＊*×某Xx]+)(?:大道|街道|路|街|巷|弄))+(?<door>\\d+(?:[-－]\\d+)?号)');
-const floors = rule('(?:、[ \\t]*(?:地下)?\\d+(?:楼|层|室))+');
+const maskedRoad = rule('(?:[＊*×某Xx]+(?:大道|街道|路|街|巷|弄))+(?:(?<door>\\d+(?:[-－]\\d+)?号)|[＊*×某Xx]+号)');
+const anonymousSite = rule('(?:某+|[×＊*Xx]+)(?<site>(?:[一-鿿]{0,4}?)(?:小区|社区|花园|家园|公寓|住宅楼|大厦))?');
+const floors = rule('(?:、[ \\t]*(?:地下)?\\d+(?:楼|层))+');
 const ward = rule('(?:住院部|门诊部)(?:[一-鿿]{1,4}?科)?');
-const residenceLabel = rule('(?:户籍地址|户籍地|住所地|住址)[：:]?');
+const addressLead = rule('(?:户籍地址|户籍地|住所地?|住址)[：:]?(?:位于|在)?|(?:居住在|居住于|住在|位于|坐落于|到达|前往|从|往|在|到)');
 const floorEnding = rule('\\d+(?:楼|层|室)$');
 let vocabulary: ReturnType<typeof loadVocabulary> | undefined;
 let genericPlaces: Set<string> | undefined;
@@ -106,7 +108,7 @@ function* territorialNames(text: string): Iterable<Hit> {
     const road = maskedRoad.match(text, shortEnd);
     if (road) {
       yield hit(start, shortEnd, 'address', '遮名道路中的地域', 96);
-      yield hit(...road.span('door'), 'address', '遮名道路中的门牌', 96);
+      if (road.group('door')) yield hit(...road.span('door'), 'address', '遮名道路中的门牌', 96);
       continue;
     }
     const office = localUnit.match(text, cursor) ?? REGIONAL_UNIT.match(text, cursor);
@@ -148,6 +150,19 @@ export function completePhrases(text: string, predicted: Hit[], fields: Hit[], e
   const evidence = [...predicted, ...fields, ...existing, ...language]
     .filter(row => ['address', 'organization'].includes(row.kind) && row.reason !== 'org_suffix');
   const result: Hit[] = [];
+  for (const site of anonymousSite.finditer(text)) {
+    const end = housingEnd(text, site.end(), !!site.group('site'));
+    if (end <= site.end()) continue;
+    result.push(hit(site.end(), end, 'address', '已隐名处所的可见房号', 103));
+    for (const row of evidence) {
+      if (row.kind !== 'address' || row.start >= site.start() || row.end < site.end()) continue;
+      const prefix = slice(text, row.start, site.start());
+      const parts = [...administrativeParts(prefix)];
+      if (parts.at(-1)?.[3] === length(prefix)) {
+        result.push(hit(row.start, site.start(), 'address', '已隐名处所前的辖区', 103));
+      }
+    }
+  }
   for (const row of territorialNames(text)) {
     const inside = (ref: Hit) => row.start <= ref.start && ref.end <= row.end;
     if (evidence.some(ref => row.start < ref.end && ref.start < row.end && !inside(ref) &&
@@ -164,14 +179,21 @@ export function completePhrases(text: string, predicted: Hit[], fields: Hit[], e
       if (next && !link.search(next.value)) result.push(hit(row.start, next.end(), row.kind, '具名医院科室', Math.max(69, row.priority)));
     }
     if (row.kind !== 'address') continue;
+    if (endsAny(value, ['园', '苑', '小区', '公寓', '大厦', '号']) && !mask.search(value)) {
+      const end = housingEnd(text, row.end);
+      if (end > row.end && !evidence.some(other => other.kind === 'address' && other.start <= row.start && end <= other.end
+          && (other.start < row.start || end < other.end))) {
+        result.push(hit(row.start, end, 'address', '已知处所与房号', Math.max(88, row.priority)));
+      }
+    }
     const suffix = slice(value, 1);
     if (row.reason === 'Otter' && startsAny(value, ['到', '从', '往', '在']) && settlement.search(suffix) &&
         length(value) >= 4 && (lexicon.codes.has(suffix) || endsAny(value, ['新区', '街道']))) {
       result.push(hit(row.start + 1, row.end, row.kind, '去向与地域边界', row.priority + 1));
     }
-    const label = row.reason === 'Otter' ? residenceLabel.match(value) : undefined;
+    const label = row.reason === 'Otter' ? addressLead.match(value) : undefined;
     if (label && lexicon.initial.get(char(value, label.end()))?.some(term => slice(value, label.end()).startsWith(term))) {
-      result.push(hit(row.start + label.end(), row.end, row.kind, '住所标签与地域边界', row.priority + 1));
+      result.push(hit(row.start + label.end(), row.end, row.kind, '正文地域起点', row.priority + 1));
     }
     if (value.endsWith('的') && settlement.search(slice(value, 0, -1))) {
       result.push(hit(row.start, row.end - 1, row.kind, '地域与所属助词', row.priority + 1));
