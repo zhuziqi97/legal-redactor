@@ -67,10 +67,9 @@ export type RedactionAPI = {
   onConfirmClose: (callback: () => void) => void;
 };
 
-export type WorkspaceJob = {id: number} & (
-  {material: Material} | {state: Workspace; request: Request; provider: string; rulesOnly: boolean}
-);
-export type WorkspaceResult = WorkspaceWorkerReply | EngineReplies['open'];
+export type WorkspaceJob = {material: Material}
+  | {state: Workspace; request: Request; provider: string; rulesOnly: boolean};
+export type WorkspaceResult = WorkspaceWorkerReply | EngineReplies['open'] | {state: Workspace};
 export type WorkspaceWorkerMessage = {id: number} & (
   {inference: {texts: string[]; labels: string[]}} | {diagnostic: Record<string, unknown>} |
   {phase: string} | {error: string} | {result: WorkspaceResult}

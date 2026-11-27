@@ -91,7 +91,7 @@ function createProjectActions({sessions, lastProject, preferredDirectory, rememb
         openWindow({ state, file, view, protection });
         return null;
       }
-      Object.assign(session, { state, file, protection, changeSeq: 0, savedSeq: 0 });
+      Object.assign(session, { state, file, protection, changeSeq: 0, savedSeq: 0, analysisRevision: 0 });
       updateProjectTitle(session);
       return { view };
     });

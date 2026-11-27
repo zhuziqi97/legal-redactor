@@ -157,23 +157,27 @@ function createAnalysis({nativeModel, rulesOnly, preference, diagnose, statusCha
     return child;
   }
 
-  async function runEngine<R extends Exclude<EngineRequest, {op: 'findOriginal'}>>(session: Session, request: R,
-    progress: (phase: string) => void, device = cpuDevice): Promise<EngineReply<R>> {
+  function requestWorkspace(session: Session, job: WorkspaceJob, progress: (phase: string) => void, device = cpuDevice) {
     if (session.pending) throw new Error('请等待当前操作完成。');
     const id = ++session.nextId;
+    const child = session.worker ?? startWorker(session);
+    return new Promise<WorkspaceResult>((resolve, reject) => {
+      session.pending = {id, resolve, reject, progress, device, started: performance.now()};
+      child.postMessage({id, ...job});
+    });
+  }
+
+  async function runEngine<R extends Exclude<EngineRequest, {op: 'findOriginal' | 'scan' | 'reviseMaterial'}>>(session: Session,
+    request: R, progress: (phase: string) => void): Promise<EngineReply<R>> {
     let job: WorkspaceJob;
     if (request.op === 'open') {
       const material = session.state.materials.find(doc => doc.id === request.materialId);
       if (!material) throw new Error('找不到这份材料。');
-      job = {id, material};
+      job = {material};
     } else {
-      job = {id, state: session.state, request, provider: device.id, rulesOnly};
+      job = {state: session.state, request, provider: cpuDevice.id, rulesOnly};
     }
-    const child = session.worker ?? startWorker(session);
-    const result = await new Promise<WorkspaceResult>((resolve, reject) => {
-      session.pending = {id, resolve, reject, progress, device, started: performance.now()};
-      child.postMessage(job);
-    });
+    const result = await requestWorkspace(session, job, progress);
     if (request.op === 'open') session.state = {...session.state, activeId: request.materialId};
     if (typeof result === 'object' && 'state' in result) {
       const {state, ...payload} = result;
@@ -220,24 +224,35 @@ function createAnalysis({nativeModel, rulesOnly, preference, diagnose, statusCha
       const route = rulesOnly ? undefined : await infer('prepare', device, undefined, phase) as InferenceRoute;
       assertCurrent();
       for (;;) {
-        const base = await serialize(session, () => { assertCurrent(); return session.state; });
-        analysis.state = base;
-        await runEngine(analysis, input, phase, device);
+        const {base, analysisRevision} = await serialize(session, () => {
+          assertCurrent();
+          return {base: session.state, analysisRevision: session.analysisRevision};
+        });
+        const prepared = await requestWorkspace(analysis, {state: base, request: input, provider: device.id, rulesOnly}, phase, device);
+        if (typeof prepared !== 'object' || !('state' in prepared) || !prepared.state) throw new Error('未收到材料识别结果。');
+        const next = prepared.state;
+        const changed = next.revision !== base.revision;
         const result = await serialize(session, async () => {
           assertCurrent();
-          if (session.state.revision !== base.revision) return null;
-          const exported = new Map(session.state.materials.map(doc => [doc.id, doc.exported]));
-          for (const doc of analysis.state.materials) {
-            const output = exported.get(doc.id);
-            if (output === undefined) delete doc.exported;
-            else doc.exported = output;
+          if (session.analysisRevision !== analysisRevision) return null;
+          const latest = new Map(session.state.materials.map(doc => [doc.id, doc]));
+          for (const doc of next.materials) {
+            const current = latest.get(doc.id)!;
+            doc.title = current.title;
+            if (current.exported === undefined) delete doc.exported;
+            else doc.exported = current.exported;
           }
-          analysis.state.activeId = session.state.activeId;
+          next.activeId = session.state.activeId;
+          next.revision = session.state.revision + Number(changed);
+          analysis.state = next;
           const previewStart = performance.now();
           const view = await runEngine(analysis, { op: 'view' }, phase);
           assertCurrent();
-          session.state = analysis.state;
-          if (session.state.revision !== base.revision) projectChanged(session);
+          session.state = next;
+          if (changed) {
+            session.analysisRevision++;
+            projectChanged(session);
+          }
           diagnose({stage: 'analysis-view', preferredEP, provider: route && device.backend,
             device: route && device.name, deviceIndex: route && device.index, usedFallback,
             reusedSession: route?.reusedSession, modelLoadMs: route?.loadMs, queueMs: input.queueMs ?? 0, firstFeedbackMs,

@@ -1,6 +1,7 @@
 import type { WorkspaceJob, WorkspaceWorkerMessage } from './contract.js';
 type Prediction = import('../engine/model.js').Prediction;
 
+type Job = WorkspaceJob & {id: number};
 type Reply = {id: number; predictions?: Prediction[][]; inferenceError?: string};
 
 const port = (process as NodeJS.Process & {parentPort: Electron.ParentPort}).parentPort;
@@ -8,8 +9,8 @@ const cache = new Map<string, {provider: string; batches: Map<string, Prediction
 const modules = Promise.all([(import('./engine/workspace.js' as string) as Promise<typeof import('../engine/workspace.js')>), (import('./engine/model.js' as string) as Promise<typeof import('../engine/model.js')>)]);
 let prediction: {id: number; resolve: (result: Prediction[][]) => void; reject: (error: Error) => void} | undefined;
 
-async function dispatch(job: WorkspaceJob) {
-  const [{runWorkspace, materialView}, {scanCandidates}] = await modules;
+async function dispatch(job: Job) {
+  const [{runWorkspace, materialView, analyzeMaterial}, {scanCandidates}] = await modules;
   if ('material' in job) return {current: materialView(job.material)};
   const {id, state, request, provider, rulesOnly} = job;
   if (request.op !== 'scan' && request.op !== 'reviseMaterial') return runWorkspace(state, request);
@@ -44,7 +45,7 @@ async function dispatch(job: WorkspaceJob) {
   }
 
   phase('正在分析');
-  const result = await runWorkspace(state, request, rulesOnly ? undefined : async (text, free, known) => {
+  await analyzeMaterial(state, request, rulesOnly ? undefined : async (text, free, known) => {
     const hits = await scanCandidates(text, free, known, predict, (done, total) => {
       phase(`已分析 ${done} / ${total} 段`);
     });
@@ -54,10 +55,10 @@ async function dispatch(job: WorkspaceJob) {
   cache.set(request.materialId, {provider, batches: current});
   send({id, diagnostic: {stage: 'analysis', revision: request.revision, native: !rulesOnly, preferredEP: rulesOnly ? '' : provider,
     reused, evaluated, modelMs, totalMs: performance.now() - started}});
-  return result;
+  return {state};
 }
 
-port.on('message', ({data}: {data: WorkspaceJob | Reply}) => {
+port.on('message', ({data}: {data: Job | Reply}) => {
   if ('request' in data || 'material' in data) {
     void dispatch(data).then(
       result => port.postMessage({id: data.id, result} satisfies WorkspaceWorkerMessage),

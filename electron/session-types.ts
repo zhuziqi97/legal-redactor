@@ -40,6 +40,7 @@ export type WindowSession = Session & {
   fileOperation?: boolean;
   savingTo?: string;
   changeSeq: number;
+  analysisRevision: number;
   savedSeq: number;
   editingDraft?: boolean;
   protection?: ProjectProtection;

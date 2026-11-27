@@ -1136,10 +1136,37 @@ export type WorkspaceReplies = {
 type WithState<T> = T extends ViewResult ? T & {state?: Workspace} : T;
 export type WorkspaceWorkerReply = WithState<WorkspaceReplies[Request['op']]>;
 
+const randomGroupId = () => crypto.randomUUID().replaceAll('-', '');
+
+export async function analyzeMaterial(state: Workspace, request: Extract<Request, {op: 'scan' | 'reviseMaterial'}>,
+  scan?: Scan, newId: NewId = randomGroupId) {
+  const doc = lookupMaterial(state, request.materialId);
+  const revision = doc.revision ?? 1;
+  if (request.op === 'reviseMaterial') {
+    if (revision !== request.revision) throw new Error('材料已更新，请再打开原文编辑。');
+    const text = normalizedText(request.text);
+    if (text === doc.text) return false;
+    const edit = doc.decisions ? {
+      previous: {text: doc.text, decisions: doc.decisions, relations: doc.relations, groups: {...state.groups}},
+      changes: collectRevision(doc, text, readFields(text)),
+    } : undefined;
+    doc.text = text;
+    await scanMaterial(state, doc, newId, scan, edit);
+    doc.revision = revision + 1;
+  } else {
+    if ((request.revision ?? revision) !== revision) throw new Error('材料已更新，请分析最新修订。');
+    await scanMaterial(state, doc, newId, scan);
+  }
+  delete doc.previousOutput;
+  delete doc.previousReview;
+  state.revision++;
+  return true;
+}
+
 export function runWorkspace<R extends Request>(state: Workspace, request: R, scan?: Scan, newId?: NewId):
   Promise<WithState<WorkspaceReplies[R['op']]>>;
 export async function runWorkspace(state: Workspace, request: Request, scan?: Scan,
-  newId: NewId = () => crypto.randomUUID().replaceAll('-', '')): Promise<WorkspaceWorkerReply> {
+  newId: NewId = randomGroupId): Promise<WorkspaceWorkerReply> {
   // The caller owns the committed snapshot. Only a returned state may replace it.
   const op = request.op;
   if (op === 'search') return search(state, request);
@@ -1148,6 +1175,10 @@ export async function runWorkspace(state: Workspace, request: Request, scan?: Sc
   if (op === 'candidate') return candidate(lookupMaterial(state, request.materialId), request.start, request.end);
   if (op === 'previewAdjustment') return previewAdjustment(state, request.change, newId);
   if (op === 'suggest') return allocateCode(request.type, request.text, occupied(state), areasFor(state)).code;
+  if (op === 'scan' || op === 'reviseMaterial') {
+    const changed = await analyzeMaterial(state, request, scan, newId);
+    return {view: workspaceView(state), ...(changed ? {state} : {})};
+  }
   if (op === 'output') {
     const doc = lookupMaterial(state, request.materialId);
     if (!doc.decisions) throw new Error('当前修订尚未完成分析。');
@@ -1207,31 +1238,8 @@ export async function runWorkspace(state: Workspace, request: Request, scan?: Sc
       state.undo = null;
     }
     state.revision++;
-  } else if (op === 'reviseMaterial') {
-    const doc = lookupMaterial(state, request.materialId);
-    if ((doc.revision ?? 1) !== request.revision) throw new Error('材料已更新，请再打开原文编辑。');
-    const text = normalizedText(request.text);
-    if (text === doc.text) return {view: workspaceView(state)};
-    const edit = doc.decisions ? {
-      previous: {text: doc.text, decisions: doc.decisions, relations: doc.relations, groups: {...state.groups}},
-      changes: collectRevision(doc, text, readFields(text)),
-    } : undefined;
-    doc.text = text;
-    await scanMaterial(state, doc, newId, scan, edit);
-    doc.revision = request.revision + 1;
-    delete doc.previousOutput;
-    delete doc.previousReview;
-    state.revision++;
-  } else if (op === 'scan' || op === 'markExported') {
-    const doc = lookupMaterial(state, request.materialId);
-    if (op === 'scan') {
-      const revision = doc.revision ?? 1;
-      if ((request.revision ?? revision) !== revision) throw new Error('材料已更新，请分析最新修订。');
-      await scanMaterial(state, doc, newId, scan);
-      delete doc.previousOutput;
-      delete doc.previousReview;
-      state.revision++;
-    } else if (op === 'markExported') doc.exported = request.text;
+  } else if (op === 'markExported') {
+    lookupMaterial(state, request.materialId).exported = request.text;
   } else throw new Error('未知操作。');
   return {...result, state, view: workspaceView(state)};
 }

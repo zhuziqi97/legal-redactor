@@ -116,6 +116,45 @@ test('作业取消后丢弃 GPU 的迟到结果，并可重新识别', async t =
   await output(page).getByText(/【电话/u).first().waitFor();
 });
 
+for (const change of ['title', 'mapping']) {
+  test(change === 'title' ? '识别期间重命名另一份材料只计算一轮' : '识别期间更改映射会基于新映射重新提交', async t => {
+    const {crossCategoryProject} = require('./mapping-fixture.cjs');
+    const {readProject, writeProject} = require('../build/project-file.cjs');
+    const project = await open(t, {provider: 'cpu', mode: 'hold'});
+    const {app, page, directory, behavior} = project;
+    const path = join(directory, '同时复核.lrproj');
+    await writeProject(path, crossCategoryProject());
+    await app.evaluate(({dialog}, path) => {
+      dialog.showOpenDialog = async () => ({canceled:false, filePaths:[path]});
+    }, path);
+    await channel(page.getByRole('tabpanel', {name:'脱敏'}), '打开项目').click();
+    await page.locator('.material-row').filter({hasText:'合成笔录'}).waitFor();
+    await add(page, '待识别笔录', '经确认，工作人员已经核对清单并按通知完成交接。\n联系电话：13800138000');
+    await waitForOp(project, 'predict:cpu');
+
+    const response = await page.evaluate(kind => window.redaction.engine(kind === 'title'
+      ? {op:'renameMaterial', materialId:'1', title:'修正后的材料名'}
+      : {op:'apply', change:{mode:'rename', groupId:'person', code:'【修改后的代号】'}}), change);
+    assert.equal('issue' in response, false);
+    await writeFile(behavior, 'ok');
+    await output(page).getByText(/【电话/u).first().waitFor();
+    const events = (await readFile(join(directory, 'diagnostics.jsonl'), 'utf8')).trim().split('\n').map(JSON.parse);
+    assert.equal(events.filter(row => row.stage === 'analysis').length, change === 'title' ? 1 : 2);
+    assert.equal((await project.ops()).filter(op => op === 'predict:cpu').length, 1);
+    await page.evaluate(() => window.redaction.saveProject());
+    const {state} = await readProject(path);
+    if (change === 'title') {
+      assert.equal(state.materials[0].title, '修正后的材料名');
+      const row = page.locator('.mapping-toggle').filter({hasText:'【柳某甲】'});
+      await row.click();
+      await page.locator('.position-list').getByText(/修正后的材料名/u).first().waitFor();
+    } else {
+      assert.equal(state.groups.person.code, '【修改后的代号】');
+      await page.locator('.mapping-toggle').filter({hasText:'【修改后的代号】'}).waitFor();
+    }
+  });
+}
+
 for (const phase of ['prepare', 'predict']) {
   test('自动模式的 GPU ' + phase + ' 失败后用 CPU 重试一次', async t => {
     const project = await open(t, {mode: 'fail-' + phase});

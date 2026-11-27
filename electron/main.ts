@@ -302,7 +302,9 @@ ipcMain.handle('redaction:engine', (event, request: EngineRequest): Promise<Engi
     const revision = session.state.revision;
     const exported = request.op === 'markExported' && session.state.materials.find(doc => doc.id === request.materialId)?.exported;
     const payload = await runEngine(session, request, progress);
-    if (session.state.revision !== revision || request.op === 'markExported' && exported !== request.text) projectChanged(session);
+    const changed = session.state.revision !== revision;
+    if (changed && request.op !== 'renameMaterial') session.analysisRevision++;
+    if (changed || request.op === 'markExported' && exported !== request.text) projectChanged(session);
     return payload;
   });
 });
@@ -430,7 +432,7 @@ function openWindow(initial?: ProjectSnapshot, resume = false) {
   const session: WindowSession = {
     window, state: initial?.state ?? { materials: [], groups: {}, activeId: null, undo: null, revision: 0 },
     file: initial?.file, protection: initial?.protection, initialView: initial?.view, resumeOnStartup: resume,
-    nextId: 0, changeSeq: 0, savedSeq: 0,
+    nextId: 0, changeSeq: 0, savedSeq: 0, analysisRevision: 0,
   };
   sessions.set(id, session);
   lastWorkspaceId = id;
