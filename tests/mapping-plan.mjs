@@ -426,3 +426,32 @@ test('局部修订复核依赖已登记姓名的后文，保留未受影响的�
   assert.equal(changed.current.items.find(row => row.original === '张甲').replacement, '【人工甲】');
   assert.ok(windows.every(value => !value.includes('表示已提交')));
 });
+
+test('局部更新明确的机构代称时同时更新后文位置，保留人工代号', async () => {
+  const w = workspace();
+  const name = 'B银行北京市分行';
+  const text = `${name}提交说明。\n\n归档部门已核实。\n\nB银行复函。\n\n姓名：张甲`;
+  const submitted = [];
+  const scan = (source, free) => {
+    submitted.push(...free.map(({start, end}) => source.slice(start, end)));
+    return [name, 'B银行'].flatMap((value, index) => {
+      const start = index ? source.lastIndexOf(value) : source.indexOf(value);
+      return free.some(row => row.start <= start && start + value.length <= row.end)
+        ? [hit(start, start + value.length, 'organization', 'Otter', 60)] : [];
+    });
+  };
+  await w.run({op:'add', text, title:'合成说明'});
+  const {view: initial} = await w.run({op:'scan', materialId:'1'}, scan);
+  assert.ok(initial.current.items.some(row => row.original === 'B银行'));
+  const nameGroup = initial.groups.find(group => group.primary === '张甲');
+  const {view: renamed} = await w.apply({mode:'rename', groupId:nameGroup.id, code:'人工甲'});
+  submitted.length = 0;
+  const declared = text.replace(name, `${name}（以下简称B银行）`);
+  const {view: protectedView} = await w.run({op:'reviseMaterial', materialId:'1', revision:renamed.current.revision, text:declared}, scan);
+  assert.equal(protectedView.current.items.find(row => row.original === '张甲').replacement, '【人工甲】');
+  assert.ok(protectedView.current.output.includes('B银行复函。'));
+  assert.ok(protectedView.current.output.includes(`${name}（以下简称B银行）`));
+  const {view: reverted} = await w.run({op:'reviseMaterial', materialId:'1', revision:protectedView.current.revision, text}, scan);
+  assert.ok(reverted.current.items.some(row => row.original === 'B银行' && row.action === 'replace'));
+  assert.ok(submitted.every(value => !value.includes('归档部门已核实')));
+});

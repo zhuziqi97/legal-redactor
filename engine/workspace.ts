@@ -440,7 +440,7 @@ function settleAliases(state: Workspace, newId: NewId) {
 
 function collectRevision(doc: Material, text: string, layout: Layout) {
   const blocks = [...revisionBlocks(doc.text, text)];
-  const ranges = revisionRanges(text, blocks, readFields(doc.text), layout);
+  const ranges = revisionRanges(doc.text, text, blocks, readFields(doc.text), layout);
   const affects = ({start, end}: {start: number; end: number}) => ranges.some(([a, b]) => a < end && start < b);
   // Existing coverage follows unchanged text. Newly analyzed ranges use the current rules.
   const previousValues = doc.sourceValues ?? sourceValues(readFields(doc.text, true));

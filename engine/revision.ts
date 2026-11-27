@@ -1,5 +1,6 @@
 import type { Relation } from './context.js';
 import type { Layout } from './fields.js';
+import { publishedOrganizationSpans } from './phrases.js';
 import { bisect, keyOf, length, type Span } from './text.js';
 
 type Opcode = 'equal' | 'replace' | 'insert' | 'delete';
@@ -130,7 +131,7 @@ export function project(blocks: Block[], start: number, end: number): [number, n
   return ranges.length ? [ranges[0][0], ranges.at(-1)![1], unchanged] : null;
 }
 
-export function revisionRanges(text: string, blocks: Block[], before: Layout, after: Layout): Span[] {
+export function revisionRanges(original: string, text: string, blocks: Block[], before: Layout, after: Layout): Span[] {
   const starts = offsets(lines(text));
   const ranges: Span[] = [];
   const addLines = (start: number, end: number) => {
@@ -154,6 +155,9 @@ export function revisionRanges(text: string, blocks: Block[], before: Layout, af
   }
   compare(before.free, after.free, row => row.context);
   compare(before.hits, after.hits, row => keyOf(row.kind, row.reason, row.priority, row.needs_context));
+  // A changed declaration also changes recognition at its other occurrences.
+  const published = (value: string) => publishedOrganizationSpans(value).map(([start, end]) => ({start, end}));
+  compare(published(original), published(text), () => '');
 
   const answers = [
     ...after.answers.map(([question, answer]): Span => [question[0], answer[1]]),
