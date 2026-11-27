@@ -188,12 +188,15 @@ test('保留原文声明的机构代称和匿名分支，仍识别具名商号',
 });
 
 test('机构类型词单独出现时保留，连同具名辖区时识别全称', async () => {
-  const text = '有限公司应依法登记。分公司提交说明。支行负责接收。回执由南京市分公司签发。';
+  const statutoryRoles = '有限责任公司股东或者股份有限公司';
+  const text = `有限公司应依法登记。分公司提交说明。支行负责接收。回执由南京市分公司签发。应登记${statutoryRoles}发起人的姓名。`;
   const [rows] = await buildPlan(text, {}, () => predictions(text, [
     ['有限公司', 'organization'], ['分公司', 'organization'], ['支行', 'organization'], ['南京市分公司', 'organization'],
+    [statutoryRoles, 'organization'],
   ]).map(({start, end, label}) => ({start, end, kind: label, reason: 'Otter', priority: 60})));
   assert.deepEqual(rows.map(row => row.original), ['南京市分公司']);
   assert.match(render(text, rows).output, /^有限公司应依法登记。分公司提交说明。支行负责接收。/u);
+  assert.ok(render(text, rows).output.includes(`应登记${statutoryRoles}发起人的姓名。`));
 });
 
 test('两次模型误带谓词时，后文的正确姓名边界仍沿用登记代号', async () => {
@@ -206,6 +209,16 @@ test('两次模型误带谓词时，后文的正确姓名边界仍沿用登记�
   assert.equal(rows.at(-1).original, name);
   assert.equal(rows.at(-1).replacement, rows[0].replacement);
   assert.ok(render(text, rows).output.endsWith(`${rows[0].replacement}是在此办理的。`));
+});
+
+test('已有重复姓名且有发言语境时，补齐模型未给出的位置', async () => {
+  const text = '周宁提交笔录。记录中提到周宁已签收。核对完毕后，周宁说需补充材料。';
+  const [rows] = await buildPlan(text, {}, () => [...text.matchAll(/周宁/gu)].slice(0, 2).map(({index: start}) => ({
+    start, end: start + 2, kind: 'person', reason: 'Otter', priority: 60,
+  })));
+  assert.deepEqual(rows.map(row => row.original), ['周宁', '周宁', '周宁']);
+  assert.equal(rows.at(-1).reason, '全文姓名');
+  assert.equal(rows.at(-1).replacement, rows[0].replacement);
 });
 
 test('纯规则模式保留单位名称栏的提示文字，仍识别明确的单位名称', async () => {

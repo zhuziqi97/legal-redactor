@@ -141,14 +141,14 @@ function filterCandidates(text: string, predicted: Hit[], registeredOrgs: Set<st
 function documentOccurrences(text: string, hits: Hit[], layout: Layout) {
   const sections = [...new Set(layout.sections)].sort((a, b) => a - b);
   const scope = (at: number) => bisect(sections, at, true);
-  const names = new Set<string>();
+  const names = new Map<string, number>();
   const knownPeople = new Set<string>();
   const organizations = new Map<string, Set<number>>();
   const villages = new Set<string>();
   for (const item of hits) {
     const raw = slice(text, item.start, item.end);
     if (item.kind === 'person') {
-      names.add(raw);
+      names.set(raw, (names.get(raw) ?? 0) + 1);
       if (item.priority >= 65) knownPeople.add(raw);
     } else if (item.kind === 'organization' && (item.priority >= 65 || organizationValue(raw))) {
       if (!organizations.has(raw)) organizations.set(raw, new Set());
@@ -163,7 +163,7 @@ function documentOccurrences(text: string, hits: Hit[], layout: Layout) {
   }
   const positions = hits.map(item => item.start);
   const extra: Hit[] = [];
-  for (const [raw, start, end] of allSpans(text, [...names, ...organizations.keys(), ...villages])) {
+  for (const [raw, start, end] of allSpans(text, [...names.keys(), ...organizations.keys(), ...villages])) {
     const prior = hits[bisect(positions, start, true) - 1];
     const current = prior && start < prior.end ? prior : undefined;
     const left = slice(text, Math.max(0, start - 24), start);
@@ -180,10 +180,11 @@ function documentOccurrences(text: string, hits: Hit[], layout: Layout) {
         && (villageLead.search(left) || ['人', '其家'].some(tail => slice(text, end, end + 2).startsWith(tail)))) {
       extra.push(hit(start, end, 'address', '全文村名', 66));
     } else if (names.has(raw)) {
+      const repeated = !current && names.get(raw)! >= 2 && hasSurname(raw);
       if (current?.kind === 'person' && current.start === start && current.end < end && hasSurname(raw)
           && (knownPeople.has(raw) || personRole.search(left))) {
         extra.push(hit(start, end, 'person', '全文姓名边界', 74));
-      } else if (knownPeople.has(raw) &&
+      } else if ((knownPeople.has(raw) || repeated) &&
           ((start === 0 || '\r\n。！？；，：:'.includes(char(text, start - 1))) && personAction.match(text, end)
            || bodyPart.match(text, end)
            || [...PERSON_ALIAS.finditer(left)].some(item => item.end() === length(left)))) {
