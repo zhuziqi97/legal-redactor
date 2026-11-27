@@ -2,6 +2,11 @@ import type { RedactionAPI } from './contract.js';
 const { contextBridge, ipcRenderer } = require('electron') as typeof import('electron');
 
 const api: RedactionAPI = {
+  windowChrome: () => ipcRenderer.invoke('redaction:window-chrome'),
+  onWindowTitle: callback => {
+    ipcRenderer.on('redaction:window-title', (_event, title: string) => callback(title));
+  },
+  runWindowMenu: (menu, item) => ipcRenderer.invoke('redaction:window-menu', menu, item),
   open: (mode?: 'restore') => ipcRenderer.invoke('redaction:open', mode),
   onWordExtracting: (callback: () => void) => ipcRenderer.on('redaction:word-extracting', () => callback()),
   cancelWordImport: () => ipcRenderer.send('redaction:cancel-word-import'),

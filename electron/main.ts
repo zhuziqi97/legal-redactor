@@ -1,4 +1,4 @@
-import type { EngineReply, EngineRequest, ImportSelection, ProjectCommand, ProjectDestination, RedactionAPI } from './contract.js';
+import type { EngineReply, EngineRequest, ImportSelection, ProjectCommand, ProjectDestination, RedactionAPI, WindowChrome, WindowMenuItem } from './contract.js';
 // Prefer Simplified Chinese glyphs in the native Linux menus.
 if (process.platform === 'linux') process.env.FC_LANG ||= 'zh-cn';
 
@@ -9,7 +9,7 @@ const { Worker } = require('node:worker_threads') as typeof import('node:worker_
 const { decodeInput } = require('./text-input.cjs') as typeof import('./text-input.js');
 const { findOriginal } = require('./text-engine.cjs') as typeof import('./text-engine.js');
 import type { ProjectSnapshot, Session, WindowSession } from './session-types.js';
-const { projectDirty, projectChanged, updateProjectTitle, serialize } =
+const { projectDirty, projectChanged, projectTitle, updateProjectTitle, serialize } =
   require('./workspace-session.cjs') as typeof import('./workspace-session.js');
 const { comparablePath, createProjectActions } = require('./project-actions.cjs') as typeof import('./project-actions.js');
 const { createAnalysis } = require('./analysis.cjs') as typeof import('./analysis.js');
@@ -29,6 +29,10 @@ type ViewSwitch = import('../engine/preferences.js').ViewSwitch;
 const project = resolve(__dirname, '..');
 const appPage = join(project, 'dist', 'index.html');
 const applicationIcon = join(project, 'dist', process.platform === 'win32' ? 'legal-redactor-icon.ico' : 'legal-redactor-icon.png');
+const mac = process.platform === 'darwin';
+const titleBar: Electron.BrowserWindowConstructorOptions = mac
+  ? { titleBarStyle: 'hidden', trafficLightPosition: { x: 13, y: 11 } }
+  : { titleBarStyle: 'hidden', titleBarOverlay: { color: '#f5f7fb', symbolColor: '#414b5c', height: 36 } };
 const bundledModel = join(process.resourcesPath, 'otter');
 const nativeModel = app.isPackaged ? bundledModel : process.env.REDACTOR_ONNX_DIR;
 const userData = process.env.REDACTOR_USER_DATA;
@@ -416,11 +420,12 @@ function openWindow(initial?: ProjectSnapshot, resume = false) {
     x: Math.min(position.x, workArea.x + workArea.width - width), y: Math.min(position.y, workArea.y + workArea.height - height),
   } : {};
   const window = new BrowserWindow({
-    ...placement, width, height, minWidth, minHeight,
+    ...placement, ...titleBar, width, height, minWidth, minHeight,
     icon: applicationIcon,
     backgroundColor: '#f5f7fb',
     webPreferences: { preload: join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true },
   });
+  if (!mac) window.setMenuBarVisibility(false);
   const id = window.webContents.id;
   const session: WindowSession = {
     window, state: initial?.state ?? { materials: [], groups: {}, activeId: null, undo: null, revision: 0 },
@@ -473,7 +478,7 @@ function openSettings(section?: SettingsSection) {
   }
   settingsTarget = section;
   const window = new BrowserWindow({
-    width: 780, height: 570, minWidth: 610, minHeight: 420, show: false, title: '设置 · LegalRedactor',
+    ...titleBar, width: 780, height: 570, minWidth: 610, minHeight: 420, show: false, title: '设置 · LegalRedactor',
     icon: applicationIcon, backgroundColor: '#fff',
     webPreferences: { preload: join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true },
   });
@@ -507,6 +512,31 @@ function viewMenu(key: ViewSwitch): Electron.MenuItemConstructorOptions {
     },
   };
 }
+
+function describeMenuItem(item: Electron.MenuItem): WindowMenuItem {
+  if (item.type === 'separator') return { type: 'separator' };
+  return {
+    type: 'command', label: item.label,
+    accelerator: item.accelerator?.replace(/CommandOrControl|CmdOrCtrl/g, 'Ctrl'),
+    viewSwitch: viewKeys.find(key => item.id === `view-${key}`),
+  };
+}
+
+ipcMain.handle('redaction:window-chrome', ({ sender }): WindowChrome => {
+  const session = sessions.get(sender.id);
+  return {
+    title: session ? projectTitle(session) : '设置', mac, view: preferences.value.view,
+    menus: !mac && session ? (Menu.getApplicationMenu()?.items ?? []).map(item => ({
+      label: item.label, items: item.submenu?.items.map(describeMenuItem) ?? [],
+    })) : [],
+  };
+});
+
+ipcMain.handle('redaction:window-menu', ({ sender }, menu: number, index: number) => {
+  const { window } = windowSession(sender);
+  const item = Menu.getApplicationMenu()?.items[menu]?.submenu?.items[index];
+  if (item?.enabled && item.type !== 'separator') item.click({}, window, sender);
+});
 
 if (app.requestSingleInstanceLock()) {
   const ready = app.whenReady().then(() => preferences.load());

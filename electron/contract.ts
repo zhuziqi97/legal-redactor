@@ -1,5 +1,5 @@
 import type { Backend, InferenceStatus } from '../engine/inference-devices.js';
-import type { PreferencePatch, PreferenceSnapshot, SettingsChanges, SettingsSection, UpdateStatus } from '../engine/preferences.js';
+import type { PreferencePatch, PreferenceSnapshot, SettingsChanges, SettingsSection, UpdateStatus, ViewOptions, ViewSwitch } from '../engine/preferences.js';
 import type { WorkspaceReplies, WorkspaceView, WorkspaceWorkerReply } from '../engine/workspace.js';
 import type { Occurrence, Request, Row } from '../engine/workspace-types.js';
 
@@ -10,6 +10,13 @@ export type ProjectOpening = { view: WorkspaceView } | { locked: true; title: st
 export type ProjectDestination = { name: string; directory: string };
 export type ProjectSaveResult = { dirty: boolean } | null;
 export type ProjectCommand = 'open' | 'save' | 'saveAs' | 'password';
+export type WindowMenuItem = { type: 'separator' } | {
+  type: 'command'; label: string; accelerator?: string; viewSwitch?: ViewSwitch;
+};
+export type WindowChrome = {
+  title: string; mac: boolean; view: ViewOptions;
+  menus: { label: string; items: WindowMenuItem[] }[];
+};
 export type ProjectSaveStatus = ProjectDestination & { hasFile: boolean; protected: boolean };
 export type EngineRequest = Exclude<Request, {op: 'output' | 'scan'}>
   | {op: 'output'; materialId: string}
@@ -22,6 +29,9 @@ type EngineReplies = Omit<WorkspaceReplies, 'output'> & {
 export type EngineReply<R extends EngineRequest> = EngineReplies[R['op']];
 
 export type RedactionAPI = {
+  windowChrome: () => Promise<WindowChrome>;
+  onWindowTitle: (callback: (title: string) => void) => void;
+  runWindowMenu: (menu: number, item: number) => Promise<void>;
   preferences: () => Promise<PreferenceSnapshot>;
   changePreferences: (patch: PreferencePatch) => Promise<PreferenceSnapshot>;
   applySettings: (changes: SettingsChanges, reset: boolean) => Promise<PreferenceSnapshot>;

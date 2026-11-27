@@ -9,10 +9,16 @@ function projectDirty(session: WindowSession) {
   return session.file ? session.changeSeq !== session.savedSeq : hasProjectContent(session);
 }
 
+function projectTitle(session: WindowSession) {
+  const name = session.file ? basename(session.file.path, extname(session.file.path)) : '未命名项目';
+  return `${name}${projectDirty(session) ? ' *' : ''}`;
+}
+
 function updateProjectTitle(session: WindowSession) {
   if (session.window.isDestroyed()) return;
-  const name = session.file ? basename(session.file.path, extname(session.file.path)) : '未命名项目';
-  session.window.setTitle(`${name}${projectDirty(session) ? ' *' : ''} · LegalRedactor`);
+  const title = projectTitle(session);
+  session.window.setTitle(`${title} · LegalRedactor`);
+  session.window.webContents.send('redaction:window-title', title);
 }
 
 function projectChanged(session: WindowSession) {
@@ -26,4 +32,4 @@ function serialize<T>(session: Session, task: () => T | Promise<T>) {
   return result;
 }
 
-export = { hasProjectContent, projectDirty, updateProjectTitle, projectChanged, serialize };
+export = { hasProjectContent, projectDirty, projectTitle, updateProjectTitle, projectChanged, serialize };
