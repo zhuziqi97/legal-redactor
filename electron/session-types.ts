@@ -13,6 +13,7 @@ type Pending = {
   reject: (error: Error) => void;
   progress: (phase: string) => void;
   device: InferenceDevice;
+  watchdog?: { coldMs: number; warmMs: number; cold: boolean };
   inferenceError?: Error;
   started: number;
 };

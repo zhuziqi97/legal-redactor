@@ -20,9 +20,11 @@ type AnalysisDependencies = {
   statusChanged: (status: InferenceStatus) => void;
   chooseDevice: () => void;
   idleReleaseMs: number;
+  inferenceTimeouts: { prepareMs: number; firstPredictMs: number; predictMs: number };
 };
 
-function createAnalysis({nativeModel, rulesOnly, preference, diagnose, statusChanged, chooseDevice, idleReleaseMs}: AnalysisDependencies) {
+function createAnalysis({nativeModel, rulesOnly, preference, diagnose, statusChanged, chooseDevice, idleReleaseMs,
+  inferenceTimeouts}: AnalysisDependencies) {
   const nativeEnabled = !!nativeModel && existsSync(join(nativeModel, 'otter.onnx'));
 
   type InferenceRoute = {reusedSession: boolean; loadMs: number};
@@ -32,6 +34,9 @@ function createAnalysis({nativeModel, rulesOnly, preference, diagnose, statusCha
     progress?: (phase: string) => void;
     owner?: Session;
     message: object;
+    op: 'discover' | 'prepare' | 'predict';
+    device?: InferenceDevice;
+    timeoutMs?: number;
   };
 
   class InferenceError extends Error {}
@@ -82,6 +87,43 @@ function createAnalysis({nativeModel, rulesOnly, preference, diagnose, statusCha
   let nativeWorker: ReturnType<typeof utilityProcess.fork> | undefined;
   let inferenceId = 0;
   let idleTimer: ReturnType<typeof setTimeout> | undefined;
+  let activeTimer: ReturnType<typeof setTimeout> | undefined;
+  let activeTimeoutId: number | undefined;
+
+  function clearWatchdog() {
+    clearTimeout(activeTimer);
+    activeTimer = undefined;
+    activeTimeoutId = undefined;
+  }
+
+  // Only time the head-of-queue request so queued windows never falsely time out while waiting.
+  function syncWatchdog() {
+    const head = inferencePending.entries().next().value as [number, InferencePending] | undefined;
+    if (!head || !head[1].timeoutMs) {
+      clearWatchdog();
+      return;
+    }
+    const [id, waiter] = head;
+    if (activeTimeoutId === id) return;
+    clearWatchdog();
+    activeTimeoutId = id;
+    activeTimer = setTimeout(() => timeoutInference(id, waiter), waiter.timeoutMs);
+  }
+
+  function timeoutInference(id: number, waiter: InferencePending) {
+    clearWatchdog();
+    const child = nativeWorker;
+    if (!child || inferencePending.get(id) !== waiter) return;
+    diagnose({stage: 'inference-timeout', op: waiter.op, provider: waiter.device?.backend,
+      device: waiter.device?.name, timeoutMs: waiter.timeoutMs});
+    nativeWorker = undefined;
+    child.kill();
+    inferencePending.delete(id);
+    waiter.reject(new InferenceError('推理设备响应超时。'));
+    for (const remaining of inferencePending.values()) inferenceWorker().postMessage(remaining.message);
+    syncWatchdog();
+    scheduleRelease();
+  }
 
   function inferenceWorker() {
     if (nativeWorker) return nativeWorker;
@@ -94,6 +136,7 @@ function createAnalysis({nativeModel, rulesOnly, preference, diagnose, statusCha
         return;
       }
       inferencePending.delete(message.id);
+      syncWatchdog();
       if (message.error) waiter.reject(new InferenceError(message.error));
       else waiter.resolve(message.result);
       scheduleRelease();
@@ -101,6 +144,7 @@ function createAnalysis({nativeModel, rulesOnly, preference, diagnose, statusCha
     child.on('exit', () => {
       if (nativeWorker !== child) return;
       nativeWorker = undefined;
+      clearWatchdog();
       for (const waiter of inferencePending.values()) waiter.reject(new InferenceError('ONNX Runtime 进程已经退出。'));
       inferencePending.clear();
     });
@@ -109,13 +153,14 @@ function createAnalysis({nativeModel, rulesOnly, preference, diagnose, statusCha
   }
 
   function infer(op: 'discover' | 'prepare' | 'predict', device?: InferenceDevice, input?: { texts: string[]; labels: string[] },
-    progress?: (phase: string) => void, owner?: Session) {
+    progress?: (phase: string) => void, owner?: Session, timeoutMs?: number) {
     clearTimeout(idleTimer);
     const id = ++inferenceId;
     const message = op === 'discover' ? { id, op } : { id, op, directory: nativeModel, device, ...input };
     return new Promise((resolve, reject) => {
-      inferencePending.set(id, { resolve, reject, progress, owner, message });
+      inferencePending.set(id, { resolve, reject, progress, owner, message, op, device, timeoutMs });
       inferenceWorker().postMessage(message);
+      syncWatchdog();
     });
   }
 
@@ -127,6 +172,7 @@ function createAnalysis({nativeModel, rulesOnly, preference, diagnose, statusCha
   // Ending the process returns the model session, its GPU memory and any loaded runtime to the system.
   function releaseInference() {
     clearTimeout(idleTimer);
+    clearWatchdog();
     const child = nativeWorker;
     if (!child || inferencePending.size) return;
     nativeWorker = undefined;
@@ -138,6 +184,7 @@ function createAnalysis({nativeModel, rulesOnly, preference, diagnose, statusCha
     const child = nativeWorker;
     const abandoned = [...inferencePending].filter(([, waiter]) => waiter.owner === owner);
     if (!child || !abandoned.length) return;
+    clearWatchdog();
     nativeWorker = undefined;
     child.kill();
     for (const [id, waiter] of abandoned) {
@@ -145,6 +192,7 @@ function createAnalysis({nativeModel, rulesOnly, preference, diagnose, statusCha
       waiter.reject(new InferenceError('已取消识别。'));
     }
     for (const waiter of inferencePending.values()) inferenceWorker().postMessage(waiter.message);
+    syncWatchdog();
     scheduleRelease();
   }
 
@@ -166,7 +214,10 @@ function createAnalysis({nativeModel, rulesOnly, preference, diagnose, statusCha
         const reply = (value: object) => {
           if (session.worker === child && session.pending === pending) child.postMessage({id: pending.id, ...value});
         };
-        infer('predict', pending.device, message.inference, pending.progress, session).then(result => {
+        const timeoutMs = pending.watchdog
+          ? (pending.watchdog.cold ? pending.watchdog.coldMs : pending.watchdog.warmMs) : undefined;
+        infer('predict', pending.device, message.inference, pending.progress, session, timeoutMs).then(result => {
+          if (pending.watchdog) pending.watchdog.cold = false;
           if (session.worker === child && session.pending === pending &&
               selectedDevice()?.id === pending.device.id && activeDevice !== pending.device.name) {
             activeDevice = pending.device.name;
@@ -196,12 +247,13 @@ function createAnalysis({nativeModel, rulesOnly, preference, diagnose, statusCha
     return child;
   }
 
-  function requestWorkspace(session: Session, job: WorkspaceJob, progress: (phase: string) => void, device = cpuDevice) {
+  function requestWorkspace(session: Session, job: WorkspaceJob, progress: (phase: string) => void, device = cpuDevice,
+    watchdog?: { coldMs: number; warmMs: number; cold: boolean }) {
     if (session.pending) throw new Error('请等待当前操作完成。');
     const id = ++session.nextId;
     const child = session.worker ?? startWorker(session);
     return new Promise<WorkspaceResult>((resolve, reject) => {
-      session.pending = {id, resolve, reject, progress, device, started: performance.now()};
+      session.pending = {id, resolve, reject, progress, device, watchdog, started: performance.now()};
       child.postMessage({id, ...job});
     });
   }
@@ -262,14 +314,20 @@ function createAnalysis({nativeModel, rulesOnly, preference, diagnose, statusCha
       progress(message);
     };
     async function recognize(device: InferenceDevice, usedFallback: boolean) {
-      const route = rulesOnly ? undefined : await infer('prepare', device, undefined, phase, analysis) as InferenceRoute;
+      const autoGpu = preferredEP === 'auto' && device.backend !== 'cpu';
+      const route = rulesOnly ? undefined : await infer('prepare', device, undefined, phase, analysis,
+        autoGpu ? inferenceTimeouts.prepareMs : undefined) as InferenceRoute;
       assertCurrent();
+      const watchdog = autoGpu
+        ? { coldMs: inferenceTimeouts.firstPredictMs, warmMs: inferenceTimeouts.predictMs, cold: !route?.reusedSession }
+        : undefined;
       for (;;) {
         const {base, analysisRevision} = await serialize(session, () => {
           assertCurrent();
           return {base: session.state, analysisRevision: session.analysisRevision};
         });
-        const prepared = await requestWorkspace(analysis, {state: base, request: input, provider: device.id, rulesOnly}, phase, device);
+        const prepared = await requestWorkspace(analysis, {state: base, request: input, provider: device.id, rulesOnly},
+          phase, device, watchdog);
         if (typeof prepared !== 'object' || !('state' in prepared) || !prepared.state) throw new Error('未收到材料识别结果。');
         const next = prepared.state;
         const changed = next.revision !== base.revision;

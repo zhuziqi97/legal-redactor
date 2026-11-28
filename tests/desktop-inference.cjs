@@ -21,7 +21,7 @@ parentPort.on('message', ({data: {id, op, device, texts}}) => {
   } else if (op === 'prepare') {
     hold(() => route === 'webgpu' && mode() === 'hold-prepare', () => reply({result: {reusedSession: false, loadMs: 0}}));
   } else if (op === 'predict') {
-    hold(() => mode() === 'hold' || mode() === 'hold-predict', () => {
+    hold(() => mode() === 'hold' || (route === 'webgpu' && mode() === 'hold-predict'), () => {
       log('complete:' + route);
       reply({result: texts.map(() => [])});
     });

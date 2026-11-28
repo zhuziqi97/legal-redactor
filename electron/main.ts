@@ -130,12 +130,16 @@ const sessions = new Map<number, WindowSession>();
 const { openProject, saveProject, projectSaveDefaults, projectOperation } = createProjectActions({
   sessions, lastProject: () => preferences.value.usage.lastProject, preferredDirectory, rememberProject, openWindow,
 });
+const timeoutOverride = !app.isPackaged ? Number(process.env.REDACTOR_INFERENCE_TIMEOUT_MS) : 0;
 const { analyze, cancelAnalysis, runEngine, stopWorker, inferenceStatus, selectedDevice, deviceChanged, detectEnvironment } =
   createAnalysis({
     nativeModel, rulesOnly, preference: () => preferences.value.inference, diagnose,
     statusChanged: status => broadcast('redaction:inference-status', status),
     chooseDevice: () => openSettings('inference'),
     idleReleaseMs: (!app.isPackaged && Number(process.env.REDACTOR_INFERENCE_IDLE_MS)) || 300_000,
+    inferenceTimeouts: timeoutOverride > 0
+      ? { prepareMs: timeoutOverride, firstPredictMs: timeoutOverride, predictMs: timeoutOverride }
+      : { prepareMs: 90_000, firstPredictMs: 90_000, predictMs: 45_000 },
   });
 function windowSession(sender: { id: number }) {
   const session = sessions.get(sender.id);

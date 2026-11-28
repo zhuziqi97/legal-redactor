@@ -202,7 +202,30 @@ for (const phase of ['prepare', 'predict']) {
     assert.ok(ops.includes('complete:cpu'));
     assert.equal(JSON.parse(await readFile(project.settings, 'utf8')).inference.provider, 'auto');
   });
+
+  test('自动模式的 GPU ' + phase + ' 超时后终止进程并用 CPU 重试', async t => {
+    const project = await open(t, {mode: 'hold-' + phase, env: {REDACTOR_INFERENCE_TIMEOUT_MS: '300'}});
+    await add(project.page, '超时回退');
+    await output(project.page).getByText(/【电话/u).first().waitFor();
+    const ops = await project.ops();
+    assert.ok(ops.includes(phase + ':webgpu'));
+    assert.equal(await count(project, 'start'), 2);
+    assert.ok(ops.includes('complete:cpu'));
+    assert.equal(JSON.parse(await readFile(project.settings, 'utf8')).inference.provider, 'auto');
+  });
 }
+
+test('手动设备不因自动超时而切到 CPU', async t => {
+  const project = await open(t, {provider: 'webgpu', mode: 'hold-predict', env: {REDACTOR_INFERENCE_TIMEOUT_MS: '250'}});
+  await add(project.page, '手动等待');
+  await waitForOp(project, 'predict:webgpu');
+  await new Promise(resolve => setTimeout(resolve, 600));
+  assert.ok(!(await project.ops()).some(value => value.endsWith(':cpu')));
+  await writeFile(project.behavior, 'ok');
+  await output(project.page).getByText(/【电话/u).first().waitFor();
+  assert.ok((await project.ops()).includes('complete:webgpu'));
+  assert.equal(await count(project, 'start'), 1);
+});
 
 test('手动设备报错后保留材料及其偏好', async t => {
   const project = await open(t, {provider: 'webgpu', mode: 'fail-predict'});
