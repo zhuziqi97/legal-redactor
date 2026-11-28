@@ -54,15 +54,20 @@ int main() {
         ComPtr<IDXGIAdapter> adapter;
         if (FAILED(factory->EnumAdapters(index, &adapter))) break;
         ComPtr<IDXGIAdapter1> extended;
+        ComPtr<ID3D12Device> device;
         DXGI_ADAPTER_DESC1 info{};
         if (FAILED(adapter.As(&extended)) || FAILED(extended->GetDesc1(&info)) ||
             (info.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) ||
-            FAILED(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_11_0, __uuidof(ID3D12Device), nullptr))) continue;
+            FAILED(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)))) continue;
+        // Unified memory marks adapters that share system memory, such as integrated GPUs.
+        D3D12_FEATURE_DATA_ARCHITECTURE architecture{};
+        const bool shared = SUCCEEDED(device->CheckFeatureSupport(D3D12_FEATURE_ARCHITECTURE, &architecture,
+                                                                  sizeof(architecture))) && architecture.UMA;
         const auto match = std::find_if(preferred.begin(), preferred.end(),
                                         [&](LUID luid) { return same_adapter(luid, info.AdapterLuid); });
         const auto rank = match == preferred.end() ? preferred.size() + index : match - preferred.begin();
-        std::printf("%u\t%zu\t%s\t%s\n", index, static_cast<size_t>(rank),
-                    device_key(info).c_str(), utf8(info.Description).c_str());
+        std::printf("%u\t%zu\t%s\t%s\t%d\n", index, static_cast<size_t>(rank),
+                    device_key(info).c_str(), utf8(info.Description).c_str(), shared ? 1 : 0);
     }
     return 0;
 }

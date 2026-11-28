@@ -13,8 +13,29 @@ async function output(executable: string, args: string[] = []) {
   catch { return ''; }
 }
 
-function gpu(backend: Backend, name = automaticGpu): InferenceDevice {
-  return { id: backend, backend, name };
+function gpu(backend: Backend, name = automaticGpu, automatic = true): InferenceDevice {
+  return automatic ? { id: backend, backend, name } : { id: backend, backend, name, automatic };
+}
+
+// Shared-memory adapters stay selectable, but measured Otter runs on them were slower than on the CPU.
+function windowsDevices(probe: string, directML: boolean, webgpu: boolean): InferenceDevice[] {
+  const adapters = probe.trim().split('\n').flatMap(line => {
+    const [index, rank, key, name, shared] = line.trimEnd().split('\t');
+    return key && name ? [{ index: Number(index), rank: Number(rank), key, name, shared: shared === '1' }] : [];
+  }).sort((first, second) => first.rank - second.rank);
+  if (!adapters.length) return [];
+  const dedicated = adapters.some(adapter => !adapter.shared);
+  const devices: InferenceDevice[] = [];
+  if (directML) {
+    for (const { index, key, name, shared } of adapters) {
+      if (adapters.filter(adapter => adapter.key === key).length !== 1) continue;
+      devices.push({ id: 'dml:' + Buffer.from(key).toString('base64url'), backend: 'dml', name, index,
+        ...(shared ? { automatic: false } : {}) });
+    }
+    devices.push(gpu('dml', automaticGpu, dedicated));
+  }
+  if (webgpu) devices.push(gpu('webgpu', automaticGpu, dedicated));
+  return devices;
 }
 
 async function discoverInferenceEnvironment(): Promise<{ devices: InferenceDevice[]; backends: string[] }> {
@@ -24,18 +45,9 @@ async function discoverInferenceEnvironment(): Promise<{ devices: InferenceDevic
   const devices: InferenceDevice[] = [];
 
   if (process.platform === 'win32') {
-    const adapters = (await output(join(__dirname, 'inference-probe.exe'))).trim().split('\n').flatMap(line => {
-      const [index, rank, key, name] = line.trimEnd().split('\t');
-      return key && name ? [{ index: Number(index), rank: Number(rank), key, name }] : [];
-    }).sort((first, second) => first.rank - second.rank);
-    if (adapters.length && backends.includes('dml') && existsSync(join(binding, 'DirectML.dll'))) {
-      for (const { index, key, name } of adapters) {
-        if (adapters.filter(adapter => adapter.key === key).length !== 1) continue;
-        devices.push({ id: 'dml:' + Buffer.from(key).toString('base64url'), backend: 'dml', name, index });
-      }
-      devices.push(gpu('dml'));
-    }
-    if (adapters.length && backends.includes('webgpu')) devices.push(gpu('webgpu'));
+    const probe = await output(join(__dirname, 'inference-probe.exe'));
+    devices.push(...windowsDevices(probe, backends.includes('dml') && existsSync(join(binding, 'DirectML.dll')),
+      backends.includes('webgpu')));
   }
 
   if (process.platform === 'linux') {
@@ -71,4 +83,4 @@ async function linuxProviderAvailable(binding: string, name: string) {
   return !!libraries && !/not found|not a dynamic executable/u.test(libraries);
 }
 
-export = { discoverInferenceEnvironment };
+export = { discoverInferenceEnvironment, windowsDevices };

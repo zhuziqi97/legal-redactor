@@ -8,6 +8,8 @@ export type InferenceDevice = {
   backend: Backend;
   name: string;
   index?: number;
+  /** False keeps a device out of the automatic choice while it remains selectable. */
+  automatic?: boolean;
 };
 export type InferenceOption = { id: string; label: string };
 export type InferenceStatus = {
@@ -24,7 +26,7 @@ export function deviceOption(device: InferenceDevice): InferenceOption {
 }
 
 export function selectDevice(devices: InferenceDevice[], choice: string) {
-  if (choice === 'auto') return devices[0] ?? cpuDevice;
+  if (choice === 'auto') return devices.find(device => device.automatic !== false) ?? cpuDevice;
   if (choice === 'cpu') return cpuDevice;
   return devices.find(device => device.id === choice);
 }

@@ -7,6 +7,7 @@ const { createPreferences } = require('../build/preferences.cjs');
 const { createUpdates, describeRelease } = require('../build/updates.cjs');
 const { defaultPreferences, inferenceBackends } = require('../build/engine/preferences.js');
 const { selectDevice, deviceOption } = require('../build/engine/inference-devices.js');
+const { windowsDevices } = require('../build/inference-environment.cjs');
 
 async function profile(t) {
   const directory = await mkdtemp(join(tmpdir(), 'redactor-preferences-'));
@@ -29,6 +30,18 @@ test('自动优先使用探测到的 GPU，手动选择保持设备和后端', a
   assert.equal(selectDevice([cuda, trt], trt.id), trt);
   assert.equal(selectDevice([cuda], trt.id), undefined);
   assert.equal(deviceOption(trt).label, 'NVIDIA GPU · TensorRT');
+  const igpuOnly = windowsDevices('0\t0\tintel-uhd\tIntel(R) UHD Graphics 770\t1\n', true, true);
+  assert.equal(igpuOnly.length, 3);
+  assert.equal(selectDevice(igpuOnly, 'auto').backend, 'cpu');
+  assert.equal(selectDevice(igpuOnly, igpuOnly[0].id), igpuOnly[0]);
+  assert.equal(deviceOption(igpuOnly[0]).label, 'Intel(R) UHD Graphics 770 · DirectML');
+  const dualGpu = windowsDevices(
+    '1\t1\tintel-uhd\tIntel(R) UHD Graphics 770\t1\n0\t0\tnvidia-rtx\tNVIDIA GeForce RTX 4070 SUPER\t0\n',
+    true, true,
+  );
+  assert.equal(selectDevice(dualGpu, 'auto').name, 'NVIDIA GeForce RTX 4070 SUPER');
+  assert.equal(selectDevice(dualGpu, dualGpu[1].id).name, 'Intel(R) UHD Graphics 770');
+  assert.equal(dualGpu.find(device => device.id === 'webgpu').automatic, undefined);
   const store = createPreferences(directory);
   await store.load();
   await store.update(next => { next.inference = { provider: trt.id, label: deviceOption(trt).label }; });
