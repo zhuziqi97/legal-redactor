@@ -8,12 +8,29 @@ const { createUpdates, describeRelease } = require('../build/updates.cjs');
 const { defaultPreferences, inferenceBackends } = require('../build/engine/preferences.js');
 const { selectDevice, deviceOption } = require('../build/engine/inference-devices.js');
 const { windowsDevices } = require('../build/inference-environment.cjs');
+const { cpuThreadCount, batchShape } = require('../build/otter.cjs');
 
 async function profile(t) {
   const directory = await mkdtemp(join(tmpdir(), 'redactor-preferences-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   return { directory, file: join(directory, 'preferences', 'settings.json') };
 }
+
+test('CPU 线程数按核心数自适应且不低于 4 核基线，DirectML 分桶仅对 6 GiB+ 独显启用', () => {
+  assert.deepEqual([2, 4, 6, 8, 12, 16, 24, 32].map(cpuThreadCount), [2, 4, 4, 4, 6, 8, 8, 8]);
+  const rtx4070 = { backend: 'dml', memoryMiB: 11997 };
+  const rtx2060 = { backend: 'dml', memoryMiB: 5980 };
+  const gtx1650 = { backend: 'dml', memoryMiB: 3962 };
+  const igpu = { backend: 'dml' };
+  assert.deepEqual(batchShape(rtx4070, 62, 1), { tokenCount: 128, batchSize: 1 });
+  assert.deepEqual(batchShape(rtx4070, 140, 3), { tokenCount: 192, batchSize: 8 });
+  assert.deepEqual(batchShape(rtx2060, 210, 8), { tokenCount: 256, batchSize: 8 });
+  assert.deepEqual(batchShape(rtx4070, 300, 3), { tokenCount: 300, batchSize: 3 });
+  assert.deepEqual(batchShape(gtx1650, 140, 3), { tokenCount: 140, batchSize: 3 });
+  assert.deepEqual(batchShape(igpu, 140, 3), { tokenCount: 140, batchSize: 3 });
+  assert.deepEqual(batchShape({ backend: 'webgpu', memoryMiB: 11997 }, 140, 3), { tokenCount: 140, batchSize: 3 });
+  assert.deepEqual(batchShape({ backend: 'cpu' }, 140, 3), { tokenCount: 140, batchSize: 3 });
+});
 
 test('正式发行目标使用预置后端选项', () => {
   assert.deepEqual(inferenceBackends('win32', 'x64'), ['auto', 'cpu', 'dml', 'webgpu']);
