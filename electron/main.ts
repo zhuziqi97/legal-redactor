@@ -75,7 +75,7 @@ async function changePreferences(change: (next: Preferences) => Preferences | vo
     syncViewMenu();
     broadcast('redaction:preferences-changed', preferences.snapshot(), reset);
     if (reset || previousChoice !== preferences.value.inference.provider) {
-      resetDeviceStatus();
+      deviceChanged();
     }
     if (!preferences.value.updates.automatic) updates.stopAutomatic();
     else if (!before || reset) void automaticCheck();
@@ -130,11 +130,12 @@ const sessions = new Map<number, WindowSession>();
 const { openProject, saveProject, projectSaveDefaults, projectOperation } = createProjectActions({
   sessions, lastProject: () => preferences.value.usage.lastProject, preferredDirectory, rememberProject, openWindow,
 });
-const { analyze, cancelAnalysis, runEngine, stopWorker, inferenceStatus, selectedDevice, resetDeviceStatus, detectEnvironment } =
+const { analyze, cancelAnalysis, runEngine, stopWorker, inferenceStatus, selectedDevice, deviceChanged, detectEnvironment } =
   createAnalysis({
     nativeModel, rulesOnly, preference: () => preferences.value.inference, diagnose,
     statusChanged: status => broadcast('redaction:inference-status', status),
     chooseDevice: () => openSettings('inference'),
+    idleReleaseMs: (!app.isPackaged && Number(process.env.REDACTOR_INFERENCE_IDLE_MS)) || 300_000,
   });
 function windowSession(sender: { id: number }) {
   const session = sessions.get(sender.id);

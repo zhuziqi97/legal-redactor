@@ -47,7 +47,7 @@ after(async () => {
   for (const path of [fixture, temp]) if (path) await rm(path, {recursive: true, force: true, maxRetries: 4});
 });
 
-async function open(t, {provider = 'auto', model = true, mode = 'ok', profile} = {}) {
+async function open(t, {provider = 'auto', model = true, mode = 'ok', profile, env: extra = {}} = {}) {
   const directory = profile ?? await mkdtemp(join(temp, 'p-'));
   const settings = join(directory, 'preferences', 'settings.json');
   const log = join(directory, 'worker.log');
@@ -58,7 +58,7 @@ async function open(t, {provider = 'auto', model = true, mode = 'ok', profile} =
   }
   await writeFile(log, '');
   await writeFile(behavior, mode);
-  const env = {...process.env, REDACTOR_USER_DATA: directory, DESKTOP_TEST_LOG: log, DESKTOP_TEST_MODE: behavior};
+  const env = {...process.env, ...extra, REDACTOR_USER_DATA: directory, DESKTOP_TEST_LOG: log, DESKTOP_TEST_MODE: behavior};
   delete env.ELECTRON_RUN_AS_NODE;
   delete env.REDACTOR_RULES_ONLY;
   if (model) env.REDACTOR_ONNX_DIR = join(temp, 'model');
@@ -101,19 +101,55 @@ const output = page => page.locator('#output-text');
 const settingsWindow = ({app, page}, section) => Promise.all([
   app.waitForEvent('window'), page.evaluate(section => window.redaction.openSettings(section), section),
 ]).then(([settings]) => settings);
+const count = async (project, op) => (await project.ops()).filter(value => value === op).length;
 
-test('作业取消后丢弃 GPU 的迟到结果，并可重新识别', async t => {
-  const project = await open(t, {mode: 'hold'});
-  const {page, behavior} = project;
-  await add(page, '待取消材料');
-  await waitForOp(project, 'predict:webgpu');
-  await channel(page, '取消识别').click();
-  await channel(page, '重新识别').waitFor();
-  await writeFile(behavior, 'ok');
-  await waitForOp(project, 'complete:webgpu');
-  assert.equal(await output(page).getByText(/【电话/u).count(), 0);
-  await channel(page, '重新识别').click();
-  await output(page).getByText(/【电话/u).first().waitFor();
+async function waitForCount(project, op, expected) {
+  for (let attempt = 0; attempt < 120; attempt++) {
+    if (await count(project, op) >= expected) return;
+    await new Promise(resolve => setTimeout(resolve, 35));
+  }
+  assert.fail(`Expected ${expected} worker events: ${op}`);
+}
+
+for (const phase of ['prepare', 'predict']) {
+  test('取消 GPU ' + phase + ' 时结束推理进程，并可重新识别', async t => {
+    const project = await open(t, {mode: 'hold-' + phase});
+    const {page, behavior} = project;
+    await add(page, '待取消材料');
+    await waitForOp(project, phase + ':webgpu');
+    await channel(page, '取消识别').click();
+    await channel(page, '重新识别').waitFor();
+    await writeFile(behavior, 'ok');
+    await channel(page, '重新识别').click();
+    await output(page).getByText(/【电话/u).first().waitFor();
+    assert.equal(await count(project, 'start'), 2);
+    assert.equal(await count(project, 'complete:webgpu'), 1);
+  });
+}
+
+test('推理空闲后结束进程，下次识别重新启动', async t => {
+  const project = await open(t, {env: {REDACTOR_INFERENCE_IDLE_MS: '300'}});
+  await add(project.page, '首份材料');
+  await waitForCount(project, 'complete:webgpu', 1);
+  const started = await count(project, 'start');
+  await new Promise(resolve => setTimeout(resolve, 900));
+  await add(project.page, '空闲后的材料');
+  await waitForCount(project, 'complete:webgpu', 2);
+  assert.equal(await count(project, 'start'), started + 1);
+});
+
+test('切换推理设备后结束原进程，新设备重新加载', async t => {
+  const project = await open(t);
+  await add(project.page, '首份材料');
+  await waitForCount(project, 'complete:webgpu', 1);
+  assert.equal(await count(project, 'start'), 1);
+  const settings = await settingsWindow(project, 'inference');
+  await settings.getByRole('combobox', {name: '推理设备'}).selectOption('cpu');
+  await channel(settings, '应用').click();
+  await settings.getByText('设置已应用。').waitFor();
+  await add(project.page, '改用 CPU 的材料');
+  await waitForCount(project, 'complete:cpu', 1);
+  assert.equal(await count(project, 'start'), 2);
 });
 
 for (const change of ['title', 'mapping']) {
@@ -186,7 +222,7 @@ test('无模型时可应用偏好，重启可读，更新提醒可打开更新�
   assert.equal(JSON.parse(await readFile(project.settings, 'utf8')).inference.provider, 'auto');
   await channel(settings, '应用').click();
   await settings.getByText('设置已应用。').waitFor();
-  assert.deepEqual(await project.ops(), ['discover']);
+  assert.deepEqual(await project.ops(), ['start', 'discover']);
   await project.close();
 
   const resumed = await open(t, {profile: project.directory, model: false});

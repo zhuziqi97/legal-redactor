@@ -19,9 +19,10 @@ type AnalysisDependencies = {
   diagnose: (record: Record<string, unknown>) => void;
   statusChanged: (status: InferenceStatus) => void;
   chooseDevice: () => void;
+  idleReleaseMs: number;
 };
 
-function createAnalysis({nativeModel, rulesOnly, preference, diagnose, statusChanged, chooseDevice}: AnalysisDependencies) {
+function createAnalysis({nativeModel, rulesOnly, preference, diagnose, statusChanged, chooseDevice, idleReleaseMs}: AnalysisDependencies) {
   const nativeEnabled = !!nativeModel && existsSync(join(nativeModel, 'otter.onnx'));
 
   type InferenceRoute = {reusedSession: boolean; loadMs: number};
@@ -29,6 +30,8 @@ function createAnalysis({nativeModel, rulesOnly, preference, diagnose, statusCha
     resolve: (value: unknown) => void;
     reject: (error: Error) => void;
     progress?: (phase: string) => void;
+    owner?: Session;
+    message: object;
   };
 
   class InferenceError extends Error {}
@@ -78,35 +81,71 @@ function createAnalysis({nativeModel, rulesOnly, preference, diagnose, statusCha
   const inferencePending = new Map<number, InferencePending>();
   let nativeWorker: ReturnType<typeof utilityProcess.fork> | undefined;
   let inferenceId = 0;
-  function infer(op: 'discover' | 'prepare' | 'predict', device?: InferenceDevice, input?: { texts: string[]; labels: string[] },
-    progress?: (phase: string) => void) {
-    if (!nativeWorker) {
-      const child = utilityProcess.fork(join(__dirname, 'inference-worker.cjs'), [], { serviceName: 'Otter ONNX Runtime' });
-      child.on('message', (message: { id: number; result?: unknown; error?: string; phase?: string }) => {
-        const waiter = inferencePending.get(message.id);
-        if (!waiter) return;
-        if (message.phase !== undefined) {
-          waiter.progress?.(message.phase);
-          return;
-        }
-        inferencePending.delete(message.id);
-        if (message.error) waiter.reject(new InferenceError(message.error));
-        else waiter.resolve(message.result);
-      });
-      child.on('exit', () => {
-        if (nativeWorker !== child) return;
-        nativeWorker = undefined;
-        for (const waiter of inferencePending.values()) waiter.reject(new InferenceError('ONNX Runtime 进程已经退出。'));
-        inferencePending.clear();
-      });
-      nativeWorker = child;
-    }
-    const id = ++inferenceId;
-    const worker = nativeWorker;
-    return new Promise((resolve, reject) => {
-      inferencePending.set(id, { resolve, reject, progress });
-      worker.postMessage(op === 'discover' ? { id, op } : { id, op, directory: nativeModel, device, ...input });
+  let idleTimer: ReturnType<typeof setTimeout> | undefined;
+
+  function inferenceWorker() {
+    if (nativeWorker) return nativeWorker;
+    const child = utilityProcess.fork(join(__dirname, 'inference-worker.cjs'), [], { serviceName: 'Otter ONNX Runtime' });
+    child.on('message', (message: { id: number; result?: unknown; error?: string; phase?: string }) => {
+      const waiter = inferencePending.get(message.id);
+      if (!waiter || nativeWorker !== child) return;
+      if (message.phase !== undefined) {
+        waiter.progress?.(message.phase);
+        return;
+      }
+      inferencePending.delete(message.id);
+      if (message.error) waiter.reject(new InferenceError(message.error));
+      else waiter.resolve(message.result);
+      scheduleRelease();
     });
+    child.on('exit', () => {
+      if (nativeWorker !== child) return;
+      nativeWorker = undefined;
+      for (const waiter of inferencePending.values()) waiter.reject(new InferenceError('ONNX Runtime 进程已经退出。'));
+      inferencePending.clear();
+    });
+    nativeWorker = child;
+    return child;
+  }
+
+  function infer(op: 'discover' | 'prepare' | 'predict', device?: InferenceDevice, input?: { texts: string[]; labels: string[] },
+    progress?: (phase: string) => void, owner?: Session) {
+    clearTimeout(idleTimer);
+    const id = ++inferenceId;
+    const message = op === 'discover' ? { id, op } : { id, op, directory: nativeModel, device, ...input };
+    return new Promise((resolve, reject) => {
+      inferencePending.set(id, { resolve, reject, progress, owner, message });
+      inferenceWorker().postMessage(message);
+    });
+  }
+
+  function scheduleRelease() {
+    clearTimeout(idleTimer);
+    if (nativeWorker && !inferencePending.size) idleTimer = setTimeout(releaseInference, idleReleaseMs);
+  }
+
+  // Ending the process returns the model session, its GPU memory and any loaded runtime to the system.
+  function releaseInference() {
+    clearTimeout(idleTimer);
+    const child = nativeWorker;
+    if (!child || inferencePending.size) return;
+    nativeWorker = undefined;
+    child.kill();
+  }
+
+  // A native run cannot be interrupted, so cancelling restarts the process and resubmits other windows' requests.
+  function abandonInference(owner: Session) {
+    const child = nativeWorker;
+    const abandoned = [...inferencePending].filter(([, waiter]) => waiter.owner === owner);
+    if (!child || !abandoned.length) return;
+    nativeWorker = undefined;
+    child.kill();
+    for (const [id, waiter] of abandoned) {
+      inferencePending.delete(id);
+      waiter.reject(new InferenceError('已取消识别。'));
+    }
+    for (const waiter of inferencePending.values()) inferenceWorker().postMessage(waiter.message);
+    scheduleRelease();
   }
 
   function finishWorker(session: Session, child: ReturnType<typeof utilityProcess.fork>, message: string) {
@@ -127,7 +166,7 @@ function createAnalysis({nativeModel, rulesOnly, preference, diagnose, statusCha
         const reply = (value: object) => {
           if (session.worker === child && session.pending === pending) child.postMessage({id: pending.id, ...value});
         };
-        infer('predict', pending.device, message.inference, pending.progress).then(result => {
+        infer('predict', pending.device, message.inference, pending.progress, session).then(result => {
           if (session.worker === child && session.pending === pending &&
               selectedDevice()?.id === pending.device.id && activeDevice !== pending.device.name) {
             activeDevice = pending.device.name;
@@ -197,7 +236,9 @@ function createAnalysis({nativeModel, rulesOnly, preference, diagnose, statusCha
   function cancelAnalysis(session: Session) {
     if (!session.scan) return;
     session.scan.cancelled = true;
-    if (session.analysis) stopWorker(session.analysis);
+    if (!session.analysis) return;
+    stopWorker(session.analysis);
+    abandonInference(session.analysis);
   }
 
   async function analyze(session: WindowSession, input: Extract<Request, {op: 'scan' | 'reviseMaterial'}> & {queueMs?: number},
@@ -221,7 +262,7 @@ function createAnalysis({nativeModel, rulesOnly, preference, diagnose, statusCha
       progress(message);
     };
     async function recognize(device: InferenceDevice, usedFallback: boolean) {
-      const route = rulesOnly ? undefined : await infer('prepare', device, undefined, phase) as InferenceRoute;
+      const route = rulesOnly ? undefined : await infer('prepare', device, undefined, phase, analysis) as InferenceRoute;
       assertCurrent();
       for (;;) {
         const {base, analysisRevision} = await serialize(session, () => {
@@ -301,12 +342,13 @@ function createAnalysis({nativeModel, rulesOnly, preference, diagnose, statusCha
     return environmentReady;
   }
 
-  function resetDeviceStatus() {
+  function deviceChanged() {
     activeDevice = '';
     publishInferenceStatus();
+    releaseInference();
   }
 
-  return { analyze, cancelAnalysis, runEngine, stopWorker, inferenceStatus, selectedDevice, resetDeviceStatus, detectEnvironment };
+  return { analyze, cancelAnalysis, runEngine, stopWorker, inferenceStatus, selectedDevice, deviceChanged, detectEnvironment };
 }
 
 export = { createAnalysis };
