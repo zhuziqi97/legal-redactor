@@ -24,9 +24,9 @@ def unpack_zip(archive, destination):
                 (destination / member.filename).chmod(mode)
 
 
-def set_windows_icon(folder, executable):
+def set_windows_icon(folder, executable, version):
     icon = folder / "resources" / "app" / "dist" / "legal-redactor-icon.ico"
-    subprocess.run(["node", PROJECT / "scripts" / "set-windows-icon.mjs", folder / executable, icon], check=True)
+    subprocess.run(["node", PROJECT / "scripts" / "set-windows-icon.mjs", folder / executable, icon, version], check=True)
 
 
 def stage_mac_bundle(archive, folder, version):
@@ -108,7 +108,7 @@ def stage(target, inputs, staging, model, windows_crt):
     for path in ("dist", "build"):
         shutil.copytree(PROJECT / path, app / path)
     if target == "windows":
-        set_windows_icon(folder, executable)
+        set_windows_icon(folder, executable, metadata["version"])
     node_modules = app / "node_modules"
     native = PROJECT / "node_modules"
     shutil.copytree(native / "@zip.js" / "zip.js", node_modules / "@zip.js" / "zip.js")
