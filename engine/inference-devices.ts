@@ -8,6 +8,8 @@ export type InferenceDevice = {
   backend: Backend;
   name: string;
   index?: number;
+  /** Dedicated GPU memory in MiB when known. */
+  memoryMiB?: number;
   /** False keeps a device out of the automatic choice while it remains selectable. */
   automatic?: boolean;
 };

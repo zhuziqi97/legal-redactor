@@ -66,8 +66,9 @@ int main() {
         const auto match = std::find_if(preferred.begin(), preferred.end(),
                                         [&](LUID luid) { return same_adapter(luid, info.AdapterLuid); });
         const auto rank = match == preferred.end() ? preferred.size() + index : match - preferred.begin();
-        std::printf("%u\t%zu\t%s\t%s\t%d\n", index, static_cast<size_t>(rank),
-                    device_key(info).c_str(), utf8(info.Description).c_str(), shared ? 1 : 0);
+        std::printf("%u\t%zu\t%s\t%s\t%d\t%llu\n", index, static_cast<size_t>(rank),
+                    device_key(info).c_str(), utf8(info.Description).c_str(), shared ? 1 : 0,
+                    static_cast<unsigned long long>(info.DedicatedVideoMemory >> 20));
     }
     return 0;
 }

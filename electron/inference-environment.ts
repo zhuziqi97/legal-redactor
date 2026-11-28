@@ -17,20 +17,28 @@ function gpu(backend: Backend, name = automaticGpu, automatic = true): Inference
   return automatic ? { id: backend, backend, name } : { id: backend, backend, name, automatic };
 }
 
-// Shared-memory adapters stay selectable, but measured Otter runs on them were slower than on the CPU.
+// Otter needs ~1.8-2.1 GiB on DirectML; skip shared-memory and low-VRAM (<= 3 GiB) adapters in auto mode.
+const MIN_AUTO_VRAM_MIB = 3072;
+
 function windowsDevices(probe: string, directML: boolean, webgpu: boolean): InferenceDevice[] {
   const adapters = probe.trim().split('\n').flatMap(line => {
-    const [index, rank, key, name, shared] = line.trimEnd().split('\t');
-    return key && name ? [{ index: Number(index), rank: Number(rank), key, name, shared: shared === '1' }] : [];
+    const [index, rank, key, name, shared, memory] = line.trimEnd().split('\t');
+    const memoryMiB = memory !== undefined && memory !== '' ? Number(memory) : undefined;
+    const dedicatedMemory = memoryMiB !== undefined && Number.isFinite(memoryMiB) && memoryMiB >= 0 ? memoryMiB : undefined;
+    return key && name ? [{
+      index: Number(index), rank: Number(rank), key, name, shared: shared === '1', memoryMiB: dedicatedMemory,
+      automatic: shared !== '1' && (dedicatedMemory === undefined || dedicatedMemory >= MIN_AUTO_VRAM_MIB),
+    }] : [];
   }).sort((first, second) => first.rank - second.rank);
   if (!adapters.length) return [];
-  const dedicated = adapters.some(adapter => !adapter.shared);
+  const dedicated = adapters.some(adapter => adapter.automatic);
   const devices: InferenceDevice[] = [];
   if (directML) {
-    for (const { index, key, name, shared } of adapters) {
+    for (const { index, key, name, shared, memoryMiB, automatic } of adapters) {
       if (adapters.filter(adapter => adapter.key === key).length !== 1) continue;
       devices.push({ id: 'dml:' + Buffer.from(key).toString('base64url'), backend: 'dml', name, index,
-        ...(shared ? { automatic: false } : {}) });
+        ...(!shared && memoryMiB !== undefined ? { memoryMiB } : {}),
+        ...(!automatic ? { automatic: false } : {}) });
     }
     devices.push(gpu('dml', automaticGpu, dedicated));
   }
